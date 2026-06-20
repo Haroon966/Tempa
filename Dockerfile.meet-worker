@@ -1,0 +1,23 @@
+# noble = Ubuntu 24.04 with Python 3.12 (jammy images ship Python 3.10; tempa requires >=3.11)
+FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl xvfb && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml prd.md ./
+COPY config ./config
+COPY src ./src
+COPY scripts/meet-worker-entrypoint.sh /usr/local/bin/meet-worker-entrypoint.sh
+RUN chmod +x /usr/local/bin/meet-worker-entrypoint.sh
+
+# Pin playwright to the version bundled in this image (avoids browser binary mismatch)
+RUN pip install --no-cache-dir -e . \
+    && pip install --no-cache-dir "playwright==1.49.1"
+
+ENV DISPLAY=:99
+ENV TEMPA_MEET_WORKER_POLL_SECONDS=3
+ENV PYTHONUNBUFFERED=1
+
+CMD ["/usr/local/bin/meet-worker-entrypoint.sh"]

@@ -1,0 +1,90 @@
+@import url("../shared/theme.css");
+
+header {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--tempa-midnight-border);
+  background: var(--tempa-midnight);
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: var(--tempa-white);
+}
+
+nav button {
+  margin-right: 6px;
+  background: var(--tempa-midnight-deep);
+  color: var(--tempa-muted);
+  border: 1px solid var(--tempa-midnight-border);
+}
+
+nav button.active {
+  background: var(--tempa-midnight-accent);
+  border-color: var(--tempa-midnight-bright);
+  color: var(--tempa-white);
+}
+
+main {
+  padding: 12px 14px;
+}
+
+.tab {
+  display: none;
+}
+
+.tab.active {
+  display: block;
+}
+
+input,
+button {
+  margin-top: 8px;
+}
+
+#qr-image {
+  max-width: 260px;
+  display: none;
+  margin-top: 8px;
+  border-radius: var(--tempa-radius);
+  border: 2px solid var(--tempa-white);
+  background: var(--tempa-white);
+  padding: 8px;
+}
+
+#chat-log,
+#agents-log,
+#meetings-list {
+  min-height: 200px;
+  max-height: 360px;
+  overflow: auto;
+  background: var(--tempa-midnight-deep);
+  border: 1px solid var(--tempa-midnight-border);
+  border-radius: var(--tempa-radius);
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.memory-hit {
+  padding: 8px;
+  margin: 6px 0;
+  background: var(--tempa-midnight);
+  border: 1px solid var(--tempa-midnight-border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.transcript {
+  max-height: 200px;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+#meeting-detail pre {
+  background: var(--tempa-midnight-deep);
+  border: 1px solid var(--tempa-midnight-border);
+  padding: 8px;
+  border-radius: 6px;
+  color: var(--tempa-white);
+}

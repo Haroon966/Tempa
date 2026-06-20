@@ -1,0 +1,127 @@
+/* Tempa — midnight blue, white, black + Futura */
+@import url("https://fonts.cdnfonts.com/css/futura-pt");
+
+:root {
+  --tempa-midnight: #0c1a33;
+  --tempa-midnight-deep: #060d18;
+  --tempa-midnight-card: #122240;
+  --tempa-midnight-border: #1e3a66;
+  --tempa-midnight-accent: #2a4f8f;
+  --tempa-midnight-bright: #3d6cb9;
+  --tempa-white: #ffffff;
+  --tempa-black: #000000;
+  --tempa-muted: #b8c4d9;
+  --tempa-font: "Futura PT", Futura, "Century Gothic", "Trebuchet MS", sans-serif;
+  --tempa-radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--tempa-font);
+  background: var(--tempa-midnight-deep);
+  color: var(--tempa-white);
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--tempa-font);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+a {
+  color: var(--tempa-midnight-bright);
+}
+
+code {
+  font-family: ui-monospace, monospace;
+  background: var(--tempa-midnight);
+  color: var(--tempa-white);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+input, textarea, select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--tempa-midnight-border);
+  background: var(--tempa-midnight-deep);
+  color: var(--tempa-white);
+  font-family: var(--tempa-font);
+}
+
+input::placeholder {
+  color: var(--tempa-muted);
+}
+
+button {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--tempa-midnight-accent);
+  background: var(--tempa-midnight-accent);
+  color: var(--tempa-white);
+  font-family: var(--tempa-font);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+button:hover {
+  background: var(--tempa-midnight-bright);
+  border-color: var(--tempa-midnight-bright);
+}
+
+button.secondary {
+  background: transparent;
+  border-color: var(--tempa-midnight-border);
+  color: var(--tempa-muted);
+}
+
+.card {
+  background: var(--tempa-midnight-card);
+  border: 1px solid var(--tempa-midnight-border);
+  border-radius: var(--tempa-radius);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  margin: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.badge.ok {
+  background: var(--tempa-midnight-accent);
+  color: var(--tempa-white);
+}
+
+.badge.bad {
+  background: var(--tempa-black);
+  color: var(--tempa-white);
+  border: 1px solid #4a2030;
+}
+
+.muted {
+  font-size: 12px;
+  color: var(--tempa-muted);
+}
+
+.ok {
+  color: #7eb8ff;
+}
+
+.bad {
+  color: #ff8a8a;
+}

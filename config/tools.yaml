@@ -1,0 +1,7 @@
+# Tempa tool/plugin registry
+plugins:
+  enabled: []
+  builtin:
+    - tempa.pc.tools
+    - tempa.channels.whatsapp.reply
+    - tempa.meet.service

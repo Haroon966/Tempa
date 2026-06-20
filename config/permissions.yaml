@@ -1,0 +1,38 @@
+allowed_paths:
+  - "${TEMPA_DATA_DIR}"
+  - "${HOME}/Documents"
+  - "${HOME}/projects"
+
+allowed_delete_paths: []
+
+allowed_shell_commands:
+  - ls
+  - pwd
+  - cat
+  - echo
+  - mkdir
+  - touch
+  - cp
+  - mv
+  - code
+  - xdg-open
+  - open
+
+shell_timeout_seconds: 60
+max_file_read_lines: 500
+destructive_ops_require_confirmation: true
+pending_action_ttl_seconds: 3600
+
+transfer:
+  enabled: true
+  bind_host: "0.0.0.0"
+  port: 8788
+  max_file_mb: 100
+  token_ttl_seconds: 300
+
+gmail:
+  sync_on_startup: true
+  poll_interval_seconds: 120
+  max_messages_per_sync: 50
+
+whatsapp_auto_reply_skip_confirm: true

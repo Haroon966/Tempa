@@ -1,0 +1,14 @@
+[Unit]
+Description=Tempa AI daemon
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tempa
+EnvironmentFile=-/opt/tempa/.env
+ExecStart=/opt/tempa/.venv/bin/tempa start
+Restart=unless-stopped
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

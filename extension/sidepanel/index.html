@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tempa</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Tempa</h1>
+    <nav id="tabs">
+      <button data-tab="connections" class="active">Connections</button>
+      <button data-tab="chat">Chat</button>
+      <button data-tab="meetings">Meetings</button>
+      <button data-tab="memory">Memory</button>
+      <button data-tab="agents">Agents</button>
+      <button data-tab="pending">Approvals</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="connections" class="tab active">
+      <div id="connection-badges"></div>
+      <div class="card">
+        <h2>Daemon</h2>
+        <button id="stop-daemon">Stop daemon</button>
+        <button id="restart-daemon">Restart daemon</button>
+        <p id="daemon-status">Run <code>tempa start</code> to start</p>
+      </div>
+      <div class="card">
+        <h2>Recording consent</h2>
+        <button id="grant-consent">Grant consent</button>
+        <p id="consent-status"></p>
+      </div>
+      <div class="card">
+        <h2>Groq API</h2>
+        <input id="groq-key" type="password" placeholder="GROQ_API_KEY" />
+        <button id="save-groq">Save & Test</button>
+        <p id="groq-status"></p>
+        <p id="groq-models" class="muted"></p>
+      </div>
+      <div class="card">
+        <h2>Google Calendar</h2>
+        <button id="connect-google">Connect Google Calendar</button>
+        <p id="google-status"></p>
+      </div>
+      <div class="card">
+        <h2>Gmail</h2>
+        <button id="connect-gmail">Connect Gmail</button>
+        <p id="gmail-status"></p>
+      </div>
+      <div class="card">
+        <h2>WhatsApp QR</h2>
+        <div id="qr-container">
+          <img id="qr-image" alt="WhatsApp QR" />
+          <p id="wa-status"></p>
+        </div>
+        <button id="refresh-qr">Refresh QR</button>
+      </div>
+    </section>
+
+    <section id="chat" class="tab">
+      <div id="chat-log"></div>
+      <form id="chat-form">
+        <input id="chat-input" placeholder="Message Tempa..." />
+        <button type="submit">Send</button>
+      </form>
+    </section>
+
+    <section id="meetings" class="tab">
+      <ul id="meetings-list"></ul>
+      <div id="meeting-detail"></div>
+    </section>
+
+    <section id="memory" class="tab">
+      <form id="memory-form">
+        <input id="memory-query" placeholder="Search unified memory..." />
+        <button type="submit">Search</button>
+      </form>
+      <div id="memory-results"></div>
+    </section>
+
+    <section id="agents" class="tab">
+      <ul id="agents-log"></ul>
+    </section>
+
+    <section id="pending" class="tab">
+      <div id="pending-list"></div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

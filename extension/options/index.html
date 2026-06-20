@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Tempa Options</title>
+  <link rel="stylesheet" href="../shared/theme.css" />
+  <style>
+    body { max-width: 520px; margin: 24px auto; padding: 0 16px; }
+    label { display: block; margin-top: 12px; color: var(--tempa-muted); font-size: 13px; }
+    label input[type="checkbox"] { width: auto; margin-right: 8px; }
+    button { margin-top: 16px; }
+    #status { margin-top: 12px; color: var(--tempa-muted); }
+    hr { border: none; border-top: 1px solid var(--tempa-midnight-border); margin: 24px 0; }
+  </style>
+</head>
+<body>
+  <h1>Tempa Options</h1>
+  <label>Daemon URL <input id="daemon-url" placeholder="http://localhost:8787" /></label>
+  <label>Reminder minutes before events <input id="reminder-min" type="number" min="1" max="120" /></label>
+  <label><input id="auto-join" type="checkbox" checked /> Auto-join Meet on reminder</label>
+  <label><input id="consent" type="checkbox" /> Grant meeting recording consent</label>
+  <button id="save">Save</button>
+  <p id="status"></p>
+  <hr />
+  <button id="stop-daemon">Stop daemon</button>
+  <p>Start daemon: <code>tempa start</code> in terminal</p>
+  <script src="options.js"></script>
+</body>
+</html>

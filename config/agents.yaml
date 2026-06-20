@@ -1,0 +1,35 @@
+coordinator:
+  name: Coordinator
+  role: Decompose user requests into parallel sub-tasks and merge results
+  model_category: reasoning
+  plan_preview: false
+
+specialists:
+  meet:
+    name: Meet Agent
+    role: Join Google Meet, record, transcribe, produce minutes
+    model_category: tool_use
+  channel:
+    name: Channel Agent
+    role: WhatsApp messaging and inbound handling
+    model_category: text
+  gmail:
+    name: Gmail Agent
+    role: Read, search, compose, and send email via Gmail API
+    model_category: tool_use
+  calendar:
+    name: Calendar Agent
+    role: Google Calendar polling, Meet link detection, reminders
+    model_category: tool_use
+  rag:
+    name: RAG Agent
+    role: Unified memory retrieval and agentic grading
+    model_category: reasoning
+  pc:
+    name: PC Agent
+    role: Shell, files, apps, browser control with allowlist
+    model_category: tool_use
+  plugin:
+    name: Plugin Agent
+    role: Execute registered plugin tools via function calling
+    model_category: tool_use
