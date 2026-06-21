@@ -39,6 +39,27 @@ def _load_history() -> None:
         pass
 
 
+def has_assistant_reply_for(message_id: str) -> bool:
+    """True when this inbound message already has an assistant reply recorded."""
+    if not message_id:
+        return False
+    _load_history()
+    msgs = list(_recent_messages)
+    user_idx: int | None = None
+    for i, row in enumerate(msgs):
+        if row.get("role") == "user" and row.get("id") == message_id:
+            user_idx = i
+            break
+    if user_idx is None:
+        return False
+    for row in msgs[user_idx + 1 : user_idx + 8]:
+        if row.get("role") == "user":
+            return False
+        if row.get("role") == "assistant":
+            return True
+    return False
+
+
 def get_recent_messages(limit: int = 20) -> list[dict[str, Any]]:
     _load_history()
     return list(_recent_messages)[-limit:]

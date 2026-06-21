@@ -213,6 +213,35 @@ async function updateStatus(name: string, status: "open" | "close" | "connecting
   });
 }
 
+function isReadableJid(jid: string): boolean {
+  return !jid.includes("@broadcast") && !jid.includes("@newsletter");
+}
+
+async function shouldAutoReadMessages(instanceId: string): Promise<boolean> {
+  const row = await prisma.setting.findUnique({ where: { instanceId } });
+  return row?.readMessages ?? true;
+}
+
+async function markInboundMessageRead(
+  socket: WASocket,
+  msg: proto.IWebMessageInfo,
+): Promise<void> {
+  const key = msg.key;
+  if (!key?.remoteJid || !key.id || key.fromMe || !isReadableJid(key.remoteJid)) return;
+  try {
+    await socket.readMessages([
+      {
+        remoteJid: key.remoteJid,
+        id: key.id,
+        fromMe: false,
+        ...(key.participant ? { participant: key.participant } : {}),
+      },
+    ]);
+  } catch (err) {
+    console.warn("Failed to mark message as read:", err);
+  }
+}
+
 async function handleConnectionUpdate(name: string, update: Partial<ConnectionState>): Promise<void> {
   const live = instances.get(name);
   if (!live) return;
@@ -326,13 +355,18 @@ async function connectSocket(name: string, phoneNumber?: string): Promise<WASock
     });
 
     socket.ev.on("messages.upsert", async ({ messages, type }) => {
-      if (type !== "notify") return;
+      const autoRead = await shouldAutoReadMessages(live.db.id);
       for (const msg of messages) {
-        await emitWebhook(live.webhook, {
-          event: "MESSAGES_UPSERT",
-          instance: name,
-          data: msg,
-        });
+        if (type === "notify") {
+          await emitWebhook(live.webhook, {
+            event: "MESSAGES_UPSERT",
+            instance: name,
+            data: msg,
+          });
+        }
+        if (autoRead) {
+          void markInboundMessageRead(socket, msg);
+        }
       }
     });
 
@@ -352,6 +386,7 @@ async function connectSocket(name: string, phoneNumber?: string): Promise<WASock
 
 export async function bootstrapInstances(): Promise<void> {
   await fs.mkdir(config.instanceDir, { recursive: true });
+  await prisma.setting.updateMany({ data: { readMessages: true } });
   const rows = await prisma.instance.findMany({
     where: { clientName: config.clientName },
     include: { Webhook: true },
@@ -426,7 +461,7 @@ export async function createInstanceRecord(body: {
       rejectCall: false,
       groupsIgnore: false,
       alwaysOnline: false,
-      readMessages: false,
+      readMessages: true,
       readStatus: false,
       syncFullHistory: false,
     },
@@ -452,7 +487,7 @@ export async function createInstanceRecord(body: {
       rejectCall: false,
       groupsIgnore: false,
       alwaysOnline: false,
-      readMessages: false,
+      readMessages: true,
       readStatus: false,
       syncFullHistory: false,
     },
@@ -605,6 +640,32 @@ export async function setWebhookConfig(
   });
   live.webhook = row;
   return row;
+}
+
+export async function markMessagesAsRead(
+  name: string,
+  readMessages: Array<{
+    remoteJid: string;
+    id: string;
+    fromMe?: boolean;
+    participant?: string;
+  }>,
+): Promise<{ message: string; read: string }> {
+  const live = instances.get(name);
+  if (!live?.socket) throw new Error("Instance not connected");
+  const keys = readMessages
+    .filter((item) => item.remoteJid && item.id && isReadableJid(item.remoteJid))
+    .map((item) => ({
+      remoteJid: item.remoteJid,
+      id: item.id,
+      fromMe: item.fromMe ?? false,
+      ...(item.participant ? { participant: item.participant } : {}),
+    }));
+  if (!keys.length) {
+    return { message: "No readable messages", read: "skipped" };
+  }
+  await live.socket.readMessages(keys);
+  return { message: "Read messages", read: "success" };
 }
 
 export async function sendText(name: string, number: string, text: string): Promise<unknown> {

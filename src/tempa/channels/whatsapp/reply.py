@@ -89,9 +89,13 @@ async def handle_inbound_whatsapp(
 
     raw_item = raw_item or {}
     remember_message_lid_mapping(raw_item)
-    text = await _resolve_message_text(text, raw_item)
 
-    from tempa.channels.whatsapp.conversation import record_conversation_turn
+    from tempa.channels.whatsapp.conversation import has_assistant_reply_for, record_conversation_turn
+
+    if message_id and has_assistant_reply_for(message_id):
+        return {"handled": 0, "duplicate": True, "message_id": message_id}
+
+    text = await _resolve_message_text(text, raw_item)
 
     record_conversation_turn(
         role="user",
@@ -119,17 +123,17 @@ async def handle_inbound_whatsapp(
             hypothesis_id="H6",
         )
         # #endregion
-        asyncio.create_task(
-            asyncio.to_thread(
-                _ingest_inbound,
-                text,
-                participant=participant,
-                participants=participants,
-                is_group=is_group,
-            )
+    asyncio.create_task(
+        asyncio.to_thread(
+            _ingest_inbound,
+            text,
+            participant=participant,
+            participants=participants,
+            is_group=is_group,
         )
-        logger.debug("Ingested WhatsApp from %s (no auto-reply)", from_number)
-        return {"handled": 0, "ingested": True, "skipped_reply": True, "from": from_number}
+    )
+    logger.debug("Ingested WhatsApp from %s (no auto-reply)", from_number)
+    return {"handled": 0, "ingested": True, "skipped_reply": True, "from": from_number}
 
     meet_url = _MEET_URL_RE.search(text)
     meet_url = meet_url.group(0) if meet_url else None

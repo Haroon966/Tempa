@@ -53,6 +53,29 @@ def _mark_seen(key: str) -> bool:
     return True
 
 
+_seen_bootstrapped = False
+
+
+def _bootstrap_seen_from_history() -> None:
+    global _seen_bootstrapped
+    if _seen_bootstrapped:
+        return
+    _seen_bootstrapped = True
+    from tempa.channels.whatsapp.conversation import get_recent_messages as _get
+
+    msgs = _get(500)
+    for i, row in enumerate(msgs):
+        mid = row.get("id")
+        if row.get("role") != "user" or not mid:
+            continue
+        for later in msgs[i + 1 : i + 8]:
+            if later.get("role") == "user":
+                break
+            if later.get("role") == "assistant":
+                _seen_message_ids.add(str(mid))
+                break
+
+
 async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
     # #region agent log
     agent_log(
@@ -78,12 +101,16 @@ async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
     event = model.event.upper().replace(".", "_")
 
     if event in {"MESSAGES_UPSERT", "MESSAGES.UPSERT"}:
+        from tempa.channels.whatsapp.conversation import has_assistant_reply_for
         from tempa.channels.whatsapp.numbers import remember_message_lid_mapping
 
+        _bootstrap_seen_from_history()
         messages = parse_messages_upsert(payload)
         queued = 0
         for msg in messages:
             remember_message_lid_mapping(msg.raw_item)
+            if msg.message_id and has_assistant_reply_for(msg.message_id):
+                continue
             key = _dedupe_key(msg)
             if not _mark_seen(key):
                 continue

@@ -531,6 +531,36 @@ class WhatsAppBridgeClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def mark_messages_as_read(self, raw_item: dict[str, Any]) -> dict[str, Any]:
+        """Send read receipts so the sender sees messages as viewed (blue ticks)."""
+        key = raw_item.get("key") if isinstance(raw_item, dict) else None
+        if not isinstance(key, dict):
+            return {"read": "skipped", "reason": "missing key"}
+        remote_jid = str(key.get("remoteJid") or "")
+        message_id = str(key.get("id") or "")
+        if not remote_jid or not message_id or key.get("fromMe"):
+            return {"read": "skipped", "reason": "invalid key"}
+        payload: dict[str, Any] = {
+            "readMessages": [
+                {
+                    "remoteJid": remote_jid,
+                    "id": message_id,
+                    "fromMe": bool(key.get("fromMe")),
+                }
+            ]
+        }
+        participant = key.get("participant")
+        if isinstance(participant, str) and participant:
+            payload["readMessages"][0]["participant"] = participant
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{self.base_url}/chat/markMessageAsRead/{self.instance}",
+                json=payload,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def send_media(
         self,
         number: str,

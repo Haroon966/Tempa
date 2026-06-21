@@ -229,14 +229,14 @@ async def lifespan(app: FastAPI):
     await init_db()
     await init_contacts_db()
     sweep_stale_tasks()
-    await ensure_webhook_worker()
 
     def _warm_embedder() -> None:
         from tempa.rag.embeddings import get_embedder
 
         get_embedder().embed("tempa warmup")
 
-    asyncio.create_task(asyncio.to_thread(_warm_embedder))
+    await asyncio.to_thread(_warm_embedder)
+    await ensure_webhook_worker()
 
     async def _whatsapp_startup() -> None:
         from tempa.channels.whatsapp.qr_tasks import auto_manage_connection

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import re
 from typing import Any
@@ -39,6 +40,10 @@ _PC_HINTS = (
     "read file",
 )
 _GMAIL_HINTS = ("gmail", "inbox", "email", "e-mail")
+_TRIVIAL_CHAT_RE = re.compile(
+    r"^(hi|hello|hey|salam|aoa|assalam|ok|thanks|thank you|yo|hiya)[\s!.?]*$",
+    re.I,
+)
 
 _WHATSAPP_SYSTEM = """You are Tempa, the owner's personal AI assistant on WhatsApp.
 You are warm, direct, and proactive — like a trusted chief of staff texting back.
@@ -109,6 +114,18 @@ def _is_follow_up(text: str) -> bool:
             "?",
         )
     )
+
+
+def _is_trivial_chat(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if _TRIVIAL_CHAT_RE.match(stripped):
+        return True
+    lower = stripped.lower()
+    if len(stripped) <= 40 and lower.startswith(("hi ", "hello ", "hey ", "hi,", "hello,", "hey,")):
+        return True
+    return False
 
 
 def _wants_calendar(text: str) -> bool:
@@ -245,15 +262,24 @@ def _run_actions(user_message: str, context: dict[str, Any]) -> tuple[list[str],
     return successes, failures
 
 
-def _fetch_memory_answer(user_message: str) -> str:
-    try:
-        from tempa.rag.agent import run_rag_agent
+def _fetch_memory_answer(user_message: str, *, timeout_s: float = 4.0) -> str:
+    """Lightweight memory lookup for WhatsApp — never block on full RAG graph."""
+    if _is_trivial_chat(user_message):
+        return "No matching memory yet."
 
-        return run_rag_agent(user_message, mode="fast")
-    except Exception as exc:
-        logger.warning("Fast RAG failed, falling back to chat memory: %s", exc)
-        memories = search_chat_memory(user_message, top_k=5)
+    def _search() -> str:
+        memories = search_chat_memory(user_message, top_k=3)
         return _format_memory_block(memories)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_search).result(timeout=timeout_s)
+    except concurrent.futures.TimeoutError:
+        logger.warning("WhatsApp memory search timed out after %.1fs", timeout_s)
+        return "No matching memory yet."
+    except Exception as exc:
+        logger.warning("WhatsApp memory search failed: %s", exc)
+        return "No matching memory yet."
 
 
 def _run_whatsapp_reply_sync(user_message: str, context: dict[str, Any]) -> str:
@@ -263,9 +289,7 @@ def _run_whatsapp_reply_sync(user_message: str, context: dict[str, Any]) -> str:
 
     recent = get_recent_messages(12)
 
-    include_calendar = _wants_calendar(user_message) or (
-        _is_follow_up(user_message) and any("meeting" in m.get("text", "").lower() for m in recent[-4:])
-    )
+    include_calendar = _wants_calendar(user_message)
     action_successes, action_failures = _run_actions(user_message, context)
     action_notes = action_successes + action_failures
     memory_answer = _fetch_memory_answer(user_message)
@@ -391,31 +415,39 @@ async def run_whatsapp_reply(user_message: str, context: dict[str, Any] | None =
     from tempa.channels.whatsapp.intent import WhatsAppIntent, route_whatsapp_intent
 
     context = context or {}
-    live = await _try_live_meeting_command(user_message)
-    if live:
-        return live
 
-    intent = route_whatsapp_intent(user_message, context)
+    async def _generate() -> str:
+        live = await _try_live_meeting_command(user_message)
+        if live:
+            return live
 
-    if intent == WhatsAppIntent.ACTION_STATUS_FOLLOWUP:
-        explanation = explain_last_action()
-        if explanation:
-            return explanation
+        intent = route_whatsapp_intent(user_message, context)
 
-    if intent == WhatsAppIntent.GMAIL:
-        return await _run_gmail_whatsapp_reply(user_message, context)
+        if intent == WhatsAppIntent.ACTION_STATUS_FOLLOWUP:
+            explanation = explain_last_action()
+            if explanation:
+                return explanation
 
-    if intent == WhatsAppIntent.COORDINATOR:
-        from tempa.agents.graph import run_coordinator
+        if intent == WhatsAppIntent.GMAIL:
+            return await _run_gmail_whatsapp_reply(user_message, context)
 
-        merged_context = {
-            **context,
-            "channel": "whatsapp",
-            "inbound_whatsapp": True,
-        }
-        return await run_coordinator(user_message, merged_context)
+        if intent == WhatsAppIntent.COORDINATOR:
+            from tempa.agents.graph import run_coordinator
 
-    if intent in (WhatsAppIntent.CHAT, WhatsAppIntent.CALENDAR):
+            merged_context = {
+                **context,
+                "channel": "whatsapp",
+                "inbound_whatsapp": True,
+            }
+            return await run_coordinator(user_message, merged_context)
+
+        if intent in (WhatsAppIntent.CHAT, WhatsAppIntent.CALENDAR):
+            return await asyncio.to_thread(_run_whatsapp_reply_sync, user_message, context)
+
         return await asyncio.to_thread(_run_whatsapp_reply_sync, user_message, context)
 
-    return await asyncio.to_thread(_run_whatsapp_reply_sync, user_message, context)
+    try:
+        return await asyncio.wait_for(_generate(), timeout=40.0)
+    except asyncio.TimeoutError:
+        logger.warning("WhatsApp reply generation timed out")
+        return "I'm here — that took too long. Please try again."
