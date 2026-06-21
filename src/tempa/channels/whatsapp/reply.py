@@ -123,17 +123,17 @@ async def handle_inbound_whatsapp(
             hypothesis_id="H6",
         )
         # #endregion
-    asyncio.create_task(
-        asyncio.to_thread(
-            _ingest_inbound,
-            text,
-            participant=participant,
-            participants=participants,
-            is_group=is_group,
+        asyncio.create_task(
+            asyncio.to_thread(
+                _ingest_inbound,
+                text,
+                participant=participant,
+                participants=participants,
+                is_group=is_group,
+            )
         )
-    )
-    logger.debug("Ingested WhatsApp from %s (no auto-reply)", from_number)
-    return {"handled": 0, "ingested": True, "skipped_reply": True, "from": from_number}
+        logger.debug("Ingested WhatsApp from %s (no auto-reply)", from_number)
+        return {"handled": 0, "ingested": True, "skipped_reply": True, "from": from_number}
 
     meet_url = _MEET_URL_RE.search(text)
     meet_url = meet_url.group(0) if meet_url else None
@@ -163,16 +163,6 @@ async def handle_inbound_whatsapp(
         text=reply,
         from_number=from_number,
         chat_id=chat_id or from_number,
-    )
-
-    asyncio.create_task(
-        asyncio.to_thread(
-            _ingest_inbound,
-            text,
-            participant=participant,
-            participants=participants,
-            is_group=is_group,
-        )
     )
 
     return {"handled": 1, "reply": reply, "send": send_result, "meet_url": meet_url}

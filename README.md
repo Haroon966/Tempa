@@ -1,124 +1,117 @@
-<div align="center">
-
-<!-- Hero: video + name -->
-<div style="background:#f4f6f6;border-radius:20px;border:1px solid #3d6cb925;padding:28px 36px;max-width:720px;margin:0 auto;box-shadow:0 8px 32px #3d6cb912;">
-<table cellpadding="0" cellspacing="16">
+<p align="center">
+<table cellpadding="8">
 <tr>
 <td align="center" valign="middle">
-<video autoplay loop muted playsinline width="200" style="display:block;">
-  <source src="animated_tempa.mp4" type="video/mp4">
-</video>
+
+<img src="tempa.png" alt="Tempa" width="200" />
+</a>
 </td>
 <td align="left" valign="middle">
-<h1 style="margin:0 0 10px;border:none;font-size:2.8em;letter-spacing:-0.02em;color:#1e3a66;">Tempa</h1>
-<p style="margin:0 0 8px;font-size:1.1em;color:#0f172a;"><b>The AI that lives in your system core</b><br/>always on · always connected</p>
-<p style="margin:0;font-size:0.95em;color:#64748b;line-height:1.6;">Gmail · Calendar · Google Meet · WhatsApp<br/>Unified memory · multi-agent · local-first</p>
+<h1>Tempa</h1>
+<p><strong>The AI that lives in your system core</strong><br />
+always on · always connected</p>
+<p>Gmail · Calendar · Google Meet · WhatsApp<br />
+Unified memory · multi-agent · local-first</p>
 </td>
 </tr>
 </table>
-</div>
+</p>
 
-<br />
+<p align="center">
+https://github.com/Haroon966/Tempa/raw/main/animated_tempa.mp4
+</p>
 
-<!-- Dashboard preview -->
-<div style="max-width:920px;margin:0 auto;">
-<img src="overview_tab.png" alt="Tempa dashboard — system health, integrations, and active tasks" width="100%" style="border-radius:16px;border:1px solid #e2e8f0;box-shadow:0 20px 60px #3d6cb914;" />
-</div>
+<p align="center">
+<img src="overview_tab.png" alt="Tempa dashboard — system health, integrations, and active tasks" width="920" />
+</p>
 
-<br />
+<p align="center">
+<a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-3d6cb9?style=for-the-badge&amp;logo=python&amp;logoColor=white" alt="Python 3.11+" /></a>
+<a href="https://fastapi.tiangolo.com/"><img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&amp;logo=fastapi&amp;logoColor=white" alt="FastAPI" /></a>
+<a href="docker-compose.yml"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&amp;logo=docker&amp;logoColor=white" alt="Docker Compose" /></a>
+<a href="https://console.groq.com/"><img src="https://img.shields.io/badge/Groq-inference-f55036?style=for-the-badge" alt="Groq" /></a>
+</p>
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-3d6cb9?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](docker-compose.yml)
-[![Groq](https://img.shields.io/badge/Groq-inference-f55036?style=for-the-badge)](https://console.groq.com/)
-
-<br /><br />
-
+<p align="center">
 <a href="http://localhost:8787"><img src="https://img.shields.io/badge/▶_Open_Dashboard-localhost:8787-3d6cb9?style=for-the-badge" alt="Open dashboard" /></a>
-
-</div>
-
-<br />
+</p>
 
 ---
-
-<br />
 
 ## ✦ Features
 
 <table>
 <tr>
 <td width="50%" valign="top">
-
-| | |
-|:--|:--|
-| 💬 | **WhatsApp** — QR login once; read, reply & remind with RAG context |
-| 📧 | **Gmail** — OAuth inbox; compose, search & manage mail |
-| 📅 | **Calendar** — sync events, schedule & WhatsApp reminders |
-| 🎥 | **Meet** — auto-join, record, transcribe & archive calls |
-
+<ul>
+<li>💬 <strong>WhatsApp</strong> — QR login once; read, reply &amp; remind with RAG context</li>
+<li>📧 <strong>Gmail</strong> — OAuth inbox; compose, search &amp; manage mail</li>
+<li>📅 <strong>Calendar</strong> — sync events, schedule &amp; WhatsApp reminders</li>
+<li>🎥 <strong>Meet</strong> — auto-join, record, transcribe &amp; archive calls</li>
+</ul>
 </td>
 <td width="50%" valign="top">
-
-| | |
-|:--|:--|
-| 🧠 | **Unified RAG** — one ChromaDB store, no memory silos |
-| 🤖 | **Multi-agent** — LangGraph coordinator + parallel specialists |
-| 🧩 | **Extension** — chat & connections from Chrome |
-| 🔒 | **Local-first** — your data stays on your machine |
-
+<ul>
+<li>🧠 <strong>Unified RAG</strong> — one ChromaDB store, no memory silos</li>
+<li>🤖 <strong>Multi-agent</strong> — LangGraph coordinator + parallel specialists</li>
+<li>🧩 <strong>Extension</strong> — chat &amp; connections from Chrome</li>
+<li>🔒 <strong>Local-first</strong> — your data stays on your machine</li>
+</ul>
 </td>
 </tr>
 </table>
 
-<br />
-
 ---
-
-<br />
 
 ## ✦ Architecture
 
 ```mermaid
 flowchart TB
-    subgraph UI[" Clients "]
+    subgraph UI["Clients"]
         direction LR
-        D["🖥 Dashboard"]
-        E["🧩 Extension"]
+        D["Dashboard"]
+        E["Extension"]
     end
 
-    T([" ⚡ Tempa daemon "])
+    T(["Tempa daemon"]):::daemon
 
-    subgraph AI[" Intelligence "]
+    subgraph AI["Intelligence"]
         direction LR
         G["Groq API"]
         R["ChromaDB RAG"]
     end
 
-    subgraph IO[" Channels "]
+    subgraph IO["Channels"]
         direction LR
         W["WhatsApp bridge"]
         GA["Google APIs"]
         M["Meet worker"]
     end
 
-    D & E --> T
-    T --> G & R
-    T --> W & GA & M
+    D --> T
+    E --> T
+    T --> G
+    T --> R
+    T --> W
+    T --> GA
+    T --> M
 
-    style T fill:#3d6cb9,color:#fff,stroke:#1e3a66,stroke-width:2px
-    style UI fill:#f8fafc,stroke:#e2e8f0
-    style AI fill:#eef3fb,stroke:#3d6cb9
-    style IO fill:#f0fdf4,stroke:#86efac
+    classDef daemon fill:#3d6cb9,color:#fff,stroke:#1e3a66,stroke-width:2px
+    classDef ui fill:#f8fafc,stroke:#e2e8f0
+    classDef ai fill:#eef3fb,stroke:#3d6cb9
+    classDef io fill:#f0fdf4,stroke:#86efac
+    class UI ui
+    class AI ai
+    class IO io
 ```
 
 <table>
 <tr>
-<td align="center"><code>8787</code><br/><sub>Tempa daemon</sub></td>
+<td align="center"><code>8787</code><br /><sub>Tempa daemon</sub></td>
 <td align="center">→</td>
-<td align="center"><code>8080</code><br/><sub>WhatsApp bridge</sub></td>
+<td align="center"><code>8080</code><br /><sub>WhatsApp bridge</sub></td>
 <td align="center">→</td>
-<td align="center"><code>5432</code><br/><sub>Postgres</sub></td>
+<td align="center"><code>5432</code><br /><sub>Postgres</sub></td>
 </tr>
 </table>
 
@@ -129,66 +122,38 @@ flowchart TB
 | **Meet worker** | — | Playwright join / record / transcribe |
 | **Postgres** | `5432` | WhatsApp session storage |
 
-<br />
-
 ---
-
-<br />
 
 ## ✦ Quick start
 
 <table>
 <tr>
 <td width="50%" valign="top">
-
-### 🐳 Docker
-<sub>recommended</sub>
-
-**①** Copy env & add keys
-```bash
-cp .env.example .env
-```
-
-**②** Launch stack
-```bash
-docker compose up -d
-```
-
-**③** Connect services at **Connections**
-
+<h3>🐳 Docker</h3>
+<p><sub>recommended</sub></p>
+<p><strong>①</strong> Copy env &amp; add keys</p>
+<pre><code>cp .env.example .env</code></pre>
+<p><strong>②</strong> Launch stack</p>
+<pre><code>docker compose up -d</code></pre>
+<p><strong>③</strong> Connect services at <strong>Connections</strong></p>
 </td>
 <td width="50%" valign="top">
-
-### 🛠 Native
-
-**①** Install
-```bash
-python3 -m venv .venv
+<h3>🛠 Native</h3>
+<p><strong>①</strong> Install</p>
+<pre><code>python3 -m venv .venv
 .venv/bin/pip install -e .
-cp .env.example .env
-```
-
-**②** Run
-```bash
-./scripts/run-native.sh
-```
-
-**③** Dev UI *(optional)*
-```bash
-cd dashboard && npm i && npm run dev
-```
-
+cp .env.example .env</code></pre>
+<p><strong>②</strong> Run</p>
+<pre><code>./scripts/run-native.sh</code></pre>
+<p><strong>③</strong> Dev UI <em>(optional)</em></p>
+<pre><code>cd dashboard &amp;&amp; npm i &amp;&amp; npm run dev</code></pre>
 </td>
 </tr>
 </table>
 
 > **Prerequisites** — Python 3.11+ · Docker · [Groq API key](https://console.groq.com/) · Google OAuth
 
-<br />
-
 ---
-
-<br />
 
 ## ✦ Configuration
 
@@ -203,27 +168,19 @@ cd dashboard && npm i && npm run dev
 
 📄 [`.env.example`](.env.example) · [`services/whatsapp-bridge/.env.example`](services/whatsapp-bridge/.env.example)
 
-<br />
-
 ---
-
-<br />
 
 ## ✦ CLI
 
 ```bash
-tempa start          # 🚀 start daemon
-tempa setup          # ⚙️  first-run wizard
-tempa chat           # 💬 terminal chat
-tempa whatsapp-qr    # 📱 show WhatsApp QR
-tempa meet-auth      # 🎥 Meet browser auth
+tempa start          # start daemon
+tempa setup          # first-run wizard
+tempa chat           # terminal chat
+tempa whatsapp-qr    # show WhatsApp QR
+tempa meet-auth      # Meet browser auth
 ```
 
-<br />
-
 ---
-
-<br />
 
 ## ✦ WhatsApp bridge
 
@@ -234,22 +191,13 @@ In-repo **Baileys bridge** at [`services/whatsapp-bridge/`](services/whatsapp-br
 ```
 
 <details>
-<summary><b>↳ Migrating from Evolution API</b></summary>
-<br />
-
-Compatible session data if you used `evoapicloud/evolution-api` with Postgres `evolution` / `evolution:evolution`.
-
-Rename volume `evolution_instances` → `whatsapp_instances`, or remount at `/app/instances`.
-
-Env vars unchanged: `EVOLUTION_API_URL` · `EVOLUTION_API_KEY` · `TEMPA_INSTANCE_NAME`
-
+<summary><strong>Migrating from Evolution API</strong></summary>
+<p>Compatible session data if you used <code>evoapicloud/evolution-api</code> with Postgres <code>evolution</code> / <code>evolution:evolution</code>.</p>
+<p>Rename volume <code>evolution_instances</code> → <code>whatsapp_instances</code>, or remount at <code>/app/instances</code>.</p>
+<p>Env vars unchanged: <code>EVOLUTION_API_URL</code> · <code>EVOLUTION_API_KEY</code> · <code>TEMPA_INSTANCE_NAME</code></p>
 </details>
 
-<br />
-
 ---
-
-<br />
 
 ## ✦ Development
 
@@ -259,18 +207,6 @@ Env vars unchanged: `EVOLUTION_API_URL` · `EVOLUTION_API_KEY` · `TEMPA_INSTANC
 .venv/bin/ruff check src tests       # lint
 ```
 
-<br />
-
 ---
 
-<div align="center">
-
-<br />
-
-<p style="color:#64748b;font-size:0.9em;">
-<b style="color:#3d6cb9;">Tempa</b> v0.1.0 · self-hosted AI personal core agent
-</p>
-
-<br />
-
-</div>
+<p align="center"><strong>Tempa</strong> v0.1.0 · self-hosted AI personal core agent</p>

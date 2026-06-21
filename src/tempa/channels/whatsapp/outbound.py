@@ -40,6 +40,10 @@ async def send_whatsapp_message(
     if require_user_confirmation is None:
         require_user_confirmation = source_channel not in ("whatsapp_auto_reply", "whatsapp")
 
+    auto_reply = source_channel in ("whatsapp_auto_reply", "whatsapp")
+    if auto_reply:
+        skip_safety = True
+
     if require_user_confirmation and not skip_safety:
         from tempa.core.notifications import notify
         from tempa.core.pending_actions import create_pending_action
@@ -76,17 +80,18 @@ async def send_whatsapp_message(
         return {"status": "blocked", "reason": reason}
     client = WhatsAppBridgeClient()
     result = await client.send_text(number, text)
-    record_conversation_turn(role="assistant", text=text, from_number=number)
-    asyncio.create_task(
-        asyncio.to_thread(
-            ingest_text,
-            text,
-            tool="whatsapp",
-            source=number,
-            participants=[number],
-            tags=["outbound"],
+    record_conversation_turn(role="assistant", text=text, from_number=number, chat_id=number)
+    if not auto_reply:
+        asyncio.create_task(
+            asyncio.to_thread(
+                ingest_text,
+                text,
+                tool="whatsapp",
+                source=number,
+                participants=[number],
+                tags=["outbound"],
+            )
         )
-    )
     await event_bus.publish_json("channel", "sent", number)
     return {"status": "sent", "result": result}
 

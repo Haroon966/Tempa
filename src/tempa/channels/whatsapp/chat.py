@@ -11,6 +11,11 @@ from tempa.router.groq_router import get_router
 
 logger = logging.getLogger(__name__)
 
+_whatsapp_reply_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="whatsapp-reply",
+)
+
 _MEET_URL_RE = re.compile(r"https://meet\.google\.com/[a-z0-9\-]+", re.I)
 _CALENDAR_HINTS = (
     "calendar",
@@ -442,9 +447,17 @@ async def run_whatsapp_reply(user_message: str, context: dict[str, Any] | None =
             return await run_coordinator(user_message, merged_context)
 
         if intent in (WhatsAppIntent.CHAT, WhatsAppIntent.CALENDAR):
-            return await asyncio.to_thread(_run_whatsapp_reply_sync, user_message, context)
+            loop = asyncio.get_running_loop()
+            return await asyncio.wait_for(
+                loop.run_in_executor(_whatsapp_reply_pool, _run_whatsapp_reply_sync, user_message, context),
+                timeout=40.0,
+            )
 
-        return await asyncio.to_thread(_run_whatsapp_reply_sync, user_message, context)
+        loop = asyncio.get_running_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(_whatsapp_reply_pool, _run_whatsapp_reply_sync, user_message, context),
+            timeout=40.0,
+        )
 
     try:
         return await asyncio.wait_for(_generate(), timeout=40.0)

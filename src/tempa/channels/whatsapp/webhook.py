@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 from typing import Any
 
@@ -111,6 +112,10 @@ async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
             remember_message_lid_mapping(msg.raw_item)
             if msg.message_id and has_assistant_reply_for(msg.message_id):
                 continue
+            if msg.timestamp:
+                age = int(time.time()) - int(msg.timestamp)
+                if age > 900:
+                    continue
             key = _dedupe_key(msg)
             if not _mark_seen(key):
                 continue
