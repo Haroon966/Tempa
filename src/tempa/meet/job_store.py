@@ -93,6 +93,7 @@ def enqueue_meet_job(
     title: str = "",
     meeting_id: str | None = None,
     notify_number: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> str:
     _ensure_dir()
     with _lock:
@@ -108,6 +109,8 @@ def enqueue_meet_job(
             "enqueued_at": datetime.now(timezone.utc).isoformat(),
             "status": "queued",
         }
+        if extra:
+            row.update(extra)
         with _queue_path().open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
         statuses = _read_statuses_unlocked()

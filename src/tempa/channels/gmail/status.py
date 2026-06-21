@@ -8,9 +8,13 @@ from tempa.settings import get_settings
 
 
 def gmail_connection_status() -> dict:
+    import json
+
+    from tempa.security.sessions import read_secret_file, secret_file_exists, write_secret_file
+
     settings = get_settings()
     creds_ok = google_credentials_configured()
-    if not settings.gmail_token_path.exists():
+    if not secret_file_exists("gmail/token.json"):
         return {
             "status": "disconnected",
             "connected": False,
@@ -18,10 +22,18 @@ def gmail_connection_status() -> dict:
             "needs_reconnect": False,
         }
     try:
-        creds = Credentials.from_authorized_user_file(str(settings.gmail_token_path))
+        token_json = read_secret_file("gmail/token.json")
+        if not token_json:
+            return {
+                "status": "disconnected",
+                "connected": False,
+                "credentials_configured": creds_ok,
+                "needs_reconnect": False,
+            }
+        creds = Credentials.from_authorized_user_info(json.loads(token_json))
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            settings.gmail_token_path.write_text(creds.to_json(), encoding="utf-8")
+            write_secret_file("gmail/token.json", creds.to_json())
 
         scopes = list(creds.scopes or [])
         has_gmail_scope = any(

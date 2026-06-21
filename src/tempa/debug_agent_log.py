@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 
 _LOG_PATHS = (
-    Path("/app/data/debug-2d4807.log"),
-    Path("/home/olufsen/tempa/.cursor/debug-2d4807.log"),
+    Path("/app/data/debug-9e929f.log"),
+    Path("/home/olufsen/tempa/.cursor/debug-9e929f.log"),
 )
-_SESSION = "2d4807"
+_SESSION = "9e929f"
 
 
 def agent_log(

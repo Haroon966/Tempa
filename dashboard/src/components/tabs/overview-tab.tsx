@@ -11,7 +11,7 @@ import {
 import tempaLogo from "@/assets/tempa.png"
 import tempaVideo from "@/assets/animated_tempa.mp4"
 import type { DashboardPayload } from "@/types/dashboard"
-import type { NavSection } from "@/components/dashboard/nav"
+import { useNavigateSection } from "@/hooks/use-navigate-section"
 import { StatCard } from "@/components/dashboard/stat-card"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { StatusBadge } from "@/components/status-badge"
@@ -19,13 +19,8 @@ import { Progress } from "@/components/ui/progress"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 
-export function OverviewTab({
-  data,
-  onNavigate,
-}: {
-  data: DashboardPayload
-  onNavigate: (section: NavSection) => void
-}) {
+export function OverviewTab({ data }: { data: DashboardPayload }) {
+  const navigateSection = useNavigateSection()
   const { overall, agents, calendar, whatsapp, data: stats } = data
   const readyPct = overall.total_components > 0
     ? Math.round((overall.healthy / overall.total_components) * 100)
@@ -159,21 +154,21 @@ export function OverviewTab({
             hint={`${overall.healthy} healthy · ${overall.degraded} degraded · ${overall.unhealthy} down`}
             icon={ActivityIcon}
             status={overall.status}
-            onClick={() => onNavigate("components")}
+            onClick={() => navigateSection("components")}
           />
           <StatCard
             label="Pending approvals"
             value={data.pending_actions?.length ?? 0}
             hint="actions awaiting your confirmation"
             icon={ShieldCheckIcon}
-            onClick={() => onNavigate("pending")}
+            onClick={() => navigateSection("pending")}
           />
           <StatCard
             label="Active tasks"
             value={data.active_tasks?.length ?? 0}
             hint="coordinator jobs in progress"
             icon={ActivityIcon}
-            onClick={() => onNavigate("activity")}
+            onClick={() => navigateSection("activity")}
           />
         </div>
       </section>
@@ -187,14 +182,14 @@ export function OverviewTab({
             value={stats.rag_chunks}
             hint="chunks indexed in memory"
             icon={DatabaseIcon}
-            onClick={() => onNavigate("data")}
+            onClick={() => navigateSection("data")}
           />
           <StatCard
             label="Upcoming meets"
             value={calendar.upcoming.filter((e) => e.has_meet).length}
             hint="with Google Meet links (7 days)"
             icon={CalendarIcon}
-            onClick={() => onNavigate("data")}
+            onClick={() => navigateSection("data")}
           />
           <StatCard
             label="WhatsApp"
@@ -202,7 +197,7 @@ export function OverviewTab({
             hint="recent messages buffered"
             icon={MessageCircleIcon}
             status={data.connections.whatsapp?.connected ? "connected" : "disconnected"}
-            onClick={() => onNavigate("connections")}
+            onClick={() => navigateSection("connections")}
           />
         </div>
       </section>
@@ -279,7 +274,7 @@ export function OverviewTab({
           action={
             <button
               type="button"
-              onClick={() => onNavigate("components")}
+              onClick={() => navigateSection("components")}
               className="flex cursor-pointer items-center gap-1 text-xs text-primary/70 transition-colors hover:text-primary"
             >
               View all <ArrowRightIcon className="size-3" />

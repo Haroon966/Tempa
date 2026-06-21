@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from tempa.channels.whatsapp.client import EvolutionWhatsAppClient
+from tempa.channels.whatsapp.client import WhatsAppBridgeClient
 from tempa.channels.whatsapp.conversation import record_conversation_turn
 from tempa.channels.whatsapp.session import is_auto_reply_paused
 from tempa.core.events import event_bus
@@ -35,7 +35,7 @@ async def send_whatsapp_message(
     require_user_confirmation: bool | None = None,
     source_channel: str = "coordinator",
 ) -> dict:
-    from tempa.channels.whatsapp.session import sync_connection_from_evolution
+    from tempa.channels.whatsapp.session import sync_connection_from_bridge
 
     if require_user_confirmation is None:
         require_user_confirmation = source_channel not in ("whatsapp_auto_reply", "whatsapp")
@@ -64,7 +64,7 @@ async def send_whatsapp_message(
         }
 
     if is_auto_reply_paused():
-        await sync_connection_from_evolution()
+        await sync_connection_from_bridge()
     if is_auto_reply_paused():
         return {"status": "paused", "reason": "WhatsApp disconnected — scan QR to reconnect"}
     if skip_safety:
@@ -74,7 +74,7 @@ async def send_whatsapp_message(
     if not allowed:
         await event_bus.publish_json("channel", "blocked", reason[:120])
         return {"status": "blocked", "reason": reason}
-    client = EvolutionWhatsAppClient()
+    client = WhatsAppBridgeClient()
     result = await client.send_text(number, text)
     record_conversation_turn(role="assistant", text=text, from_number=number)
     asyncio.create_task(
@@ -118,5 +118,5 @@ async def send_whatsapp_media(
         )
         return {"status": "pending", "pending_action_id": action["id"]}
 
-    client = EvolutionWhatsAppClient()
+    client = WhatsAppBridgeClient()
     return await client.send_media(number, file_path, caption=caption, mediatype=mediatype)

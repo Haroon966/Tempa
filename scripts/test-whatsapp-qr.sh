@@ -35,5 +35,5 @@ for i in $(seq 1 15); do
   fi
 done
 echo "NO QR after 45s"
-docker logs tempa-evolution-api-1 2>&1 | grep -i qrcodeCount | tail -5 || true
+docker logs tempa-whatsapp-bridge-1 2>&1 | grep -i qrcode | tail -5 || true
 exit 1

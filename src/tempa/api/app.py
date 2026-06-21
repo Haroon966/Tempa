@@ -29,23 +29,25 @@ from tempa.channels.gmail.oauth import (
     is_gmail_oauth_state,
 )
 from tempa.channels.gmail.status import gmail_connection_status
-from tempa.channels.calendar.poller import PollerState, poll_once
+from tempa.channels.calendar.poller import PollerState, load_poller_state, poll_once, save_poller_state
 from tempa.channels.calendar.reminders import ReminderState, load_reminder_state, poll_reminders_once
-from tempa.channels.whatsapp.client import EvolutionWhatsAppClient
+from tempa.channels.whatsapp.client import WhatsAppBridgeClient
 from tempa.channels.whatsapp.session import (
     get_connection_snapshot,
     mark_disconnected,
     needs_qr_rescan,
-    parse_evolution_state,
-    sync_connection_from_evolution,
+    parse_bridge_state,
+    sync_connection_from_bridge,
     update_connection_state,
 )
 from tempa.channels.whatsapp.webhook import handle_webhook
 from tempa.api.settings_store import apply_daemon_settings, get_public_settings, save_daemon_settings
 from tempa.core.events import event_bus
-from tempa.meet.archive import delete_meeting, erase_all_user_data, export_user_data, get_meeting, init_db, list_meetings
+from tempa.meet.archive import delete_meeting, erase_all_user_data, export_user_data, get_meeting, init_db, list_meetings, read_live_meeting_state, apply_meet_retention_policy
 from tempa.meet.consent import grant_recording_consent, has_recording_consent, revoke_recording_consent
-from tempa.meet.service import get_meeting_jobs, schedule_meeting_join_async
+from tempa.meet.service import get_active_meeting_ids, get_meeting_jobs, schedule_meeting_join_async
+from tempa.meet.scheduler import meet_readiness
+from tempa.meet.session_registry import list_active_sessions
 from tempa.rag.ingest import ingest_text, search_memory
 from tempa.rag.store import get_store
 from tempa.router.groq_router import get_router
@@ -65,6 +67,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
     context: dict[str, Any] = Field(default_factory=dict)
+    run_id: str | None = None
 
 
 class MemorySearchRequest(BaseModel):
@@ -86,7 +89,13 @@ class PreferenceRequest(BaseModel):
 class DaemonSettingsRequest(BaseModel):
     reminder_minutes_before: int | None = None
     meet_auto_join_on_reminder: bool | None = None
+    meet_auto_join_enabled: bool | None = None
     meet_trigger_before_minutes: int | None = None
+    meet_trigger_after_start_minutes: int | None = None
+    meet_skip_keywords: list[str] | None = None
+    meet_retention_days: int | None = None
+    meet_auto_send_summary_whatsapp: bool | None = None
+    meet_copilot_whatsapp_notify: bool | None = None
 
 
 class MeetingJoinRequest(BaseModel):
@@ -95,16 +104,21 @@ class MeetingJoinRequest(BaseModel):
     notify_number: str | None = None
 
 
+class MeetingChatRequest(BaseModel):
+    text: str
+
+
 class WhatsAppAllowedNumbersRequest(BaseModel):
     additional_numbers: list[str] = Field(default_factory=list)
 
 
-_poller_state = PollerState(triggered_keys=set())
+_poller_state = load_poller_state()
 reminder_state = load_reminder_state()
 _scheduler_task: asyncio.Task | None = None
 _reminder_task: asyncio.Task | None = None
 _gmail_sync_task: asyncio.Task | None = None
 _consolidation_task: asyncio.Task | None = None
+_retention_task: asyncio.Task | None = None
 _shutdown_requested = False
 
 
@@ -142,15 +156,12 @@ async def _gmail_sync_loop() -> None:
 async def _calendar_loop() -> None:
     import logging
 
-    from tempa.agents.specialists import run_meet_agent
+    from tempa.meet.scheduler import schedule_join_for_calendar_event
 
     logger = logging.getLogger(__name__)
 
     async def on_trigger(ev):
-        await run_meet_agent(
-            f"Auto-join {ev.meet_url}",
-            {"meet_url": ev.meet_url, "user_message": ev.summary, "title": ev.summary},
-        )
+        await schedule_join_for_calendar_event(ev)
 
     settings = get_settings()
     while True:
@@ -173,6 +184,19 @@ async def _reminder_loop() -> None:
         await asyncio.sleep(max(30, settings.calendar_poll_seconds))
 
 
+async def _retention_loop() -> None:
+    while True:
+        await asyncio.sleep(24 * 3600)
+        try:
+            removed = await apply_meet_retention_policy()
+            if removed:
+                import logging
+
+                logging.getLogger(__name__).info("Meet retention removed %s archives", removed)
+        except Exception:
+            pass
+
+
 async def _consolidation_loop() -> None:
     while True:
         await asyncio.sleep(24 * 3600)
@@ -186,7 +210,7 @@ async def _consolidation_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _scheduler_task, _reminder_task, _gmail_sync_task, _consolidation_task
+    global _scheduler_task, _reminder_task, _gmail_sync_task, _consolidation_task, _retention_task
     from tempa.channels.contacts.store import init_contacts_db
     from tempa.channels.whatsapp.inbound_queue import stop_inbound_worker
     from tempa.channels.whatsapp.webhook import ensure_webhook_worker
@@ -218,7 +242,7 @@ async def lifespan(app: FastAPI):
         from tempa.channels.whatsapp.qr_tasks import auto_manage_connection
 
         try:
-            client = EvolutionWhatsAppClient()
+            client = WhatsAppBridgeClient()
             webhook_base = settings.tempa_webhook_base_url.strip() or (
                 f"http://127.0.0.1:{settings.tempa_daemon_port}"
             )
@@ -235,12 +259,13 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_whatsapp_startup())
 
     async def _deferred_background() -> None:
-        global _scheduler_task, _reminder_task, _gmail_sync_task, _consolidation_task
+        global _scheduler_task, _reminder_task, _gmail_sync_task, _consolidation_task, _retention_task
         await asyncio.sleep(2)
         _scheduler_task = asyncio.create_task(_calendar_loop())
         _reminder_task = asyncio.create_task(_reminder_loop())
         _gmail_sync_task = asyncio.create_task(_gmail_sync_loop())
         _consolidation_task = asyncio.create_task(_consolidation_loop())
+        _retention_task = asyncio.create_task(_retention_loop())
         try:
             from tempa.channels.contacts.sync import sync_contacts
 
@@ -346,9 +371,9 @@ def create_app() -> FastAPI:
         groq_ok = bool(settings.load_groq_api_key())
         google = await asyncio.to_thread(google_connection_status)
         gmail = await asyncio.to_thread(gmail_connection_status)
-        wa_client = EvolutionWhatsAppClient()
+        wa_client = WhatsAppBridgeClient()
         try:
-            wa_snapshot = await sync_connection_from_evolution()
+            wa_snapshot = await sync_connection_from_bridge()
             wa_connected = bool(wa_snapshot.get("connected"))
         except Exception:
             wa_connected = False
@@ -488,7 +513,7 @@ if (window.opener) {{
 
         log = logging.getLogger(__name__)
         _t0 = _time.monotonic()
-        client = EvolutionWhatsAppClient()
+        client = WhatsAppBridgeClient()
         try:
             state_name, connected = await client.resolved_connection_state()
             # #region agent log
@@ -518,7 +543,7 @@ if (window.opener) {{
                             result["status"] = "connecting"
                             result["auto_action"] = "connecting"
                         else:
-                            result["detail"] = "Pairing in progress — fetching QR from Evolution"
+                            result["detail"] = "Pairing in progress — fetching QR from bridge"
                             result["auto_action"] = "connecting"
                             if not qr_task_running():
                                 await schedule_fetch_qr(refresh=False)
@@ -567,7 +592,7 @@ if (window.opener) {{
                         result["status"] = "error" if "failed" in err.lower() else state_name
                     else:
                         result["detail"] = err or (
-                            "Fetching QR from Evolution…"
+                            "Fetching QR from bridge…"
                             if qr_task_running()
                             else "Click Refresh QR to generate a new code"
                         )
@@ -607,7 +632,7 @@ if (window.opener) {{
         from tempa.channels.whatsapp.qr_tasks import schedule_fetch_qr
         from tempa.channels.whatsapp.session import get_qr_code, update_connection_state as _update
 
-        client = EvolutionWhatsAppClient()
+        client = WhatsAppBridgeClient()
         try:
             state_name, connected = await client.resolved_connection_state()
             if connected:
@@ -632,7 +657,7 @@ if (window.opener) {{
 
     @app.post("/api/connections/whatsapp/restart")
     async def whatsapp_restart():
-        """Reset Evolution instance when stuck on connecting (401 / stale session)."""
+        """Reset WhatsApp bridge instance when stuck on connecting (401 / stale session)."""
         from tempa.channels.whatsapp.qr_tasks import schedule_restart
         from tempa.channels.whatsapp.session import get_qr_code
 
@@ -656,7 +681,7 @@ if (window.opener) {{
 
     @app.delete("/api/connections/whatsapp")
     async def whatsapp_disconnect():
-        client = EvolutionWhatsAppClient()
+        client = WhatsAppBridgeClient()
         try:
             result = await client.logout()
         except Exception as exc:
@@ -666,7 +691,7 @@ if (window.opener) {{
             "status": "disconnected",
             "connected": False,
             "needs_qr_rescan": True,
-            "evolution": result,
+            "bridge": result,
             "connection_state": snapshot,
         }
 
@@ -701,19 +726,36 @@ if (window.opener) {{
             "allowed_numbers": get_allowed_whatsapp_reply_numbers(),
         }
 
+    @app.post("/api/chat/runs/{run_id}/cancel")
+    async def cancel_chat_run(run_id: str):
+        from fastapi import HTTPException
+
+        from tempa.core.chat_runs import cancel_run
+
+        if not await cancel_run(run_id):
+            raise HTTPException(status_code=404, detail="run_not_found")
+        return {"status": "cancelled", "run_id": run_id}
+
     @app.post("/api/chat")
     async def chat(body: ChatRequest):
+        import uuid
+
         from tempa.agents.graph import run_coordinator_streaming
+        from tempa.core.chat_runs import register_run, unregister_run
         from tempa.core.chat_sessions import append_message, ensure_session
         from tempa.core.events import event_bus
+
+        run_id = body.run_id or str(uuid.uuid4())
 
         async def event_generator():
             queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
             done = asyncio.Event()
+            cancel_event = await register_run(run_id)
 
             session = ensure_session(body.session_id)
             session_id = session["id"]
             append_message(session_id, "user", body.message)
+            await queue.put(("run_started", {"run_id": run_id, "session_id": session_id}))
 
             async def on_token(delta: str) -> None:
                 await queue.put(("token", {"delta": delta}))
@@ -724,7 +766,10 @@ if (window.opener) {{
                     while not done.is_set():
                         try:
                             event = await asyncio.wait_for(sub.get(), timeout=0.15)
-                            await queue.put(("activity", event))
+                            if event.get("event_kind") == "step":
+                                await queue.put(("step", event))
+                            else:
+                                await queue.put(("activity", event))
                         except asyncio.TimeoutError:
                             continue
                 finally:
@@ -732,16 +777,29 @@ if (window.opener) {{
 
             async def run_coordinator() -> None:
                 try:
+                    chat_context = dict(body.context)
+                    chat_context["session_id"] = session_id
+                    chat_context.setdefault("channel", "dashboard")
+                    chat_context["cancel_event"] = cancel_event
+                    chat_context["run_id"] = run_id
                     result = await run_coordinator_streaming(
                         body.message,
-                        body.context,
+                        chat_context,
                         on_token=on_token,
                     )
                     content = result.get("response", "")
                     sources = result.get("sources") or []
                     paused = bool(result.get("paused"))
+                    pending_actions = result.get("pending_actions") or []
+                    artifacts = result.get("artifacts") or []
                     if content:
-                        append_message(session_id, "assistant", content, sources=sources)
+                        append_message(
+                            session_id,
+                            "assistant",
+                            content,
+                            sources=sources,
+                            paused=paused,
+                        )
                     await queue.put(
                         (
                             "message",
@@ -750,9 +808,14 @@ if (window.opener) {{
                                 "sources": sources,
                                 "paused": paused,
                                 "session_id": session_id,
+                                "pending_actions": pending_actions,
+                                "artifacts": artifacts,
+                                "run_id": run_id,
                             },
                         )
                     )
+                except asyncio.CancelledError:
+                    await queue.put(("error", {"error": "Run cancelled"}))
                 except Exception as exc:
                     await queue.put(("error", {"error": str(exc)}))
                 finally:
@@ -774,6 +837,7 @@ if (window.opener) {{
                 done.set()
                 forwarder.cancel()
                 runner.cancel()
+                await unregister_run(run_id)
                 for task in (forwarder, runner):
                     try:
                         await task
@@ -852,8 +916,86 @@ if (window.opener) {{
     async def meet_consent_revoke():
         return revoke_recording_consent()
 
+    @app.get("/api/meetings/readiness")
+    async def meetings_readiness():
+        r = meet_readiness()
+        return {
+            "ready": r.ready,
+            "consent": r.consent,
+            "meet_auth": r.meet_auth,
+            "google_connected": r.google_connected,
+            "detail": r.detail,
+        }
+
+    @app.get("/api/meetings/active")
+    async def meetings_active():
+        jobs = get_meeting_jobs()
+        active_ids = get_active_meeting_ids()
+        sessions = list_active_sessions()
+        live: list[dict[str, Any]] = []
+        for mid in active_ids:
+            row = jobs.get(mid, {})
+            live.append(
+                {
+                    "meeting_id": mid,
+                    "title": row.get("title", ""),
+                    "meet_url": row.get("meet_url", ""),
+                    "status": row.get("status", "unknown"),
+                    **read_live_meeting_state(mid),
+                }
+            )
+        return {"active": live, "sessions": sessions}
+
+    @app.get("/api/meetings/{meeting_id}/live")
+    async def meeting_live(meeting_id: str):
+        jobs = get_meeting_jobs()
+        if meeting_id not in jobs and not list_active_sessions():
+            meeting = await get_meeting(meeting_id)
+            if not meeting:
+                return {"error": "not_found"}
+        return read_live_meeting_state(meeting_id)
+
+    @app.post("/api/meetings/{meeting_id}/chat")
+    async def meeting_chat(meeting_id: str, body: MeetingChatRequest):
+        from tempa.meet.copilot import send_meeting_chat
+
+        text = body.text.strip()
+        if not text:
+            return {"status": "error", "detail": "empty message"}
+        ok = await send_meeting_chat(meeting_id, text)
+        if not ok:
+            return {"status": "error", "detail": "no active session or send failed"}
+        return {"status": "sent", "meeting_id": meeting_id}
+
+    @app.websocket("/api/meetings/{meeting_id}/stream")
+    async def meeting_stream(websocket: WebSocket, meeting_id: str):
+        await websocket.accept()
+        last_suggestions = 0
+        try:
+            while True:
+                state = read_live_meeting_state(meeting_id)
+                suggestions = state.get("suggestions") or []
+                if len(suggestions) != last_suggestions:
+                    await websocket.send_json({"type": "live", **state})
+                    last_suggestions = len(suggestions)
+                else:
+                    await websocket.send_json(
+                        {
+                            "type": "heartbeat",
+                            "transcript_tail": state.get("transcript_tail", ""),
+                            "live_notes": state.get("live_notes", ""),
+                        }
+                    )
+                await asyncio.sleep(3)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
     @app.get("/api/meetings/{meeting_id}")
     async def meeting_detail(meeting_id: str):
+        from tempa.core.pending_actions import list_pending_actions
+
         meeting = await get_meeting(meeting_id)
         if not meeting:
             return {"error": "not_found"}
@@ -865,7 +1007,12 @@ if (window.opener) {{
             p = Path(path)
             if p.exists():
                 transcript = p.read_text(encoding="utf-8")
-        return {"meeting": meeting, "transcript_raw": transcript}
+        pending = [
+            a
+            for a in list_pending_actions(status="pending")
+            if (a.get("source_channel") or "").startswith(f"meeting:{meeting_id}")
+        ]
+        return {"meeting": meeting, "transcript_raw": transcript, "pending_followups": pending}
 
     @app.get("/api/meetings/{meeting_id}/audio")
     async def meeting_audio(meeting_id: str):
@@ -975,20 +1122,20 @@ if (window.opener) {{
 
     dashboard_dist = settings.project_root / "dashboard" / "dist"
     if dashboard_dist.exists():
+        index = dashboard_dist / "index.html"
         assets_dir = dashboard_dist / "assets"
         if assets_dir.exists():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="dashboard-assets")
 
         @app.get("/")
         async def serve_dashboard():
-            index = dashboard_dist / "index.html"
             return FileResponse(index)
 
-        @app.get("/dashboard")
-        async def serve_dashboard_alias():
-            return FileResponse(dashboard_dist / "index.html")
-
-        # Serve any remaining static files from dist root (images, videos, etc.)
-        app.mount("/", StaticFiles(directory=str(dashboard_dist), html=True), name="dashboard-root")
+        @app.get("/{full_path:path}")
+        async def serve_dashboard_spa(full_path: str):
+            static_file = dashboard_dist / full_path
+            if static_file.is_file():
+                return FileResponse(static_file)
+            return FileResponse(index)
 
     return app

@@ -176,103 +176,56 @@ def _format_action_reply(successes: list[str], failures: list[str]) -> str:
 
 
 def _run_actions(user_message: str, context: dict[str, Any]) -> tuple[list[str], list[str]]:
-    successes: list[str] = []
-    failures: list[str] = []
-    from tempa.channels.calendar.events import (
-        _attendee_names_from_text,
-        try_create_event_from_message,
-        try_delete_event_from_message,
-        try_invite_guests_from_message,
-    )
+    from tempa.channels.calendar.events import apply_calendar_actions_from_message
     from tempa.channels.whatsapp.action_state import record_action
     from tempa.channels.whatsapp.conversation import get_recent_messages
 
     recent_texts = [m.get("text", "") for m in get_recent_messages(8)]
+    cal = apply_calendar_actions_from_message(user_message, recent_texts=recent_texts)
+    successes = list(cal.get("successes") or [])
+    failures = list(cal.get("failures") or [])
 
-    delete_result = try_delete_event_from_message(user_message, recent_texts=recent_texts)
-    if delete_result.error != "not a delete request":
-        if delete_result.ok and delete_result.deleted:
-            names = ", ".join(f"'{name}'" for name in delete_result.deleted)
-            successes.append(f"Deleted from calendar: {names}.")
-            record_action("calendar", {"status": "deleted", "summary": delete_result.deleted[0]})
+    action = cal.get("action", "none")
+    if action == "deleted":
+        if cal.get("ok"):
+            record_action("calendar", {"status": "deleted", "summary": (cal.get("deleted") or ["event"])[0]})
         else:
-            failures.append(f"Could not delete calendar event: {delete_result.error}")
-            record_action("calendar", {"status": "error", "error": delete_result.error})
-
-    create_result = try_create_event_from_message(user_message, recent_texts=recent_texts)
-    created_with_invites = False
-    if create_result.error != "not a create request":
-        if create_result.ok:
-            line = f"Created calendar event '{create_result.summary}' at {create_result.when}."
-            invited = create_result.invited_attendees or []
-            if invited:
-                line += f" Calendar invite sent to {', '.join(invited)}."
-                created_with_invites = True
-            else:
-                guest_names = _attendee_names_from_text(user_message)
-                if not guest_names:
-                    for msg in recent_texts:
-                        guest_names.extend(_attendee_names_from_text(msg))
-                if guest_names:
-                    failures.append(
-                        f"Could not send calendar invite: No guest email found for {guest_names[0]}. "
-                        f"What's {guest_names[0]}'s email?"
-                    )
-            if create_result.meet_url:
-                line += f" Meet link: {create_result.meet_url}"
-                from tempa.channels.calendar.events import schedule_meet_join_for_event
-
-                try:
-                    job_id = schedule_meet_join_for_event(
-                        create_result.meet_url,
-                        summary=create_result.summary,
-                        start=create_result.start_at,
-                    )
-                    if job_id:
-                        line += f" Tempa is joining the Meet now (job {job_id[:8]}…)."
-                        record_action(
-                            "meet",
-                            {
-                                "status": "queued",
-                                "meeting_id": job_id,
-                                "meet_url": create_result.meet_url,
-                            },
-                        )
-                except RuntimeError as exc:
-                    failures.append(f"Could not auto-join Meet: {exc}")
-            successes.append(line)
+            record_action("calendar", {"status": "error", "error": cal.get("error", "")})
+    elif action == "created":
+        if cal.get("ok"):
             record_action(
                 "calendar",
                 {
                     "status": "created",
-                    "summary": create_result.summary,
-                    "when": create_result.when,
-                    "meet_url": create_result.meet_url,
-                    "attendees": invited,
+                    "summary": cal.get("summary", ""),
+                    "when": cal.get("when", ""),
+                    "meet_url": cal.get("meet_url"),
+                    "attendees": cal.get("invited_attendees") or [],
                 },
             )
+            if cal.get("meet_job_id") and cal.get("meet_url"):
+                record_action(
+                    "meet",
+                    {
+                        "status": "queued",
+                        "meeting_id": cal["meet_job_id"],
+                        "meet_url": cal["meet_url"],
+                    },
+                )
         else:
-            failures.append(f"Could not create calendar event: {create_result.error}")
-            record_action("calendar", {"status": "error", "error": create_result.error})
-
-    invite_result = try_invite_guests_from_message(user_message, recent_texts=recent_texts)
-    if invite_result.error != "not an invite request":
-        if invite_result.ok:
-            guests = ", ".join(invite_result.attendees or [])
-            successes.append(
-                f"Sent calendar invite for '{invite_result.summary}' to {guests}."
-            )
+            record_action("calendar", {"status": "error", "error": cal.get("error", "")})
+    elif action == "invited":
+        if cal.get("ok"):
             record_action(
                 "calendar",
                 {
                     "status": "invited",
-                    "summary": invite_result.summary,
-                    "attendees": invite_result.attendees,
+                    "summary": cal.get("summary", ""),
+                    "attendees": cal.get("invited_attendees") or [],
                 },
             )
-        elif not (create_result.ok and created_with_invites):
-            failures.append(f"Could not send calendar invite: {invite_result.error}")
-            record_action("calendar", {"status": "error", "error": invite_result.error})
+        elif cal.get("error"):
+            record_action("calendar", {"status": "error", "error": cal.get("error", "")})
 
     meet_url = context.get("meet_url") or _MEET_URL_RE.search(user_message)
     if meet_url:
@@ -389,12 +342,59 @@ async def _run_gmail_whatsapp_reply(user_message: str, context: dict[str, Any]) 
         return f"Couldn't fetch your inbox right now: {exc}"
 
 
+async def _try_live_meeting_command(user_message: str) -> str | None:
+    """Handle mid-meeting WhatsApp commands against the active Meet session."""
+    from tempa.meet.archive import read_live_meeting_state
+    from tempa.meet.copilot import send_meeting_chat
+    from tempa.meet.service import get_active_meeting_ids
+
+    active = get_active_meeting_ids()
+    if not active:
+        return None
+
+    lower = user_message.lower().strip()
+    meeting_id = active[0]
+
+    if any(
+        phrase in lower
+        for phrase in (
+            "what's happening in my meeting",
+            "whats happening in my meeting",
+            "what is happening in my meeting",
+            "my meeting now",
+            "live meeting",
+            "in my meeting",
+        )
+    ):
+        state = read_live_meeting_state(meeting_id)
+        notes = (state.get("live_notes") or "").strip()
+        tail = (state.get("transcript_tail") or "").strip()
+        body = notes or tail or "No live notes yet — still listening."
+        return f"*Live meeting:*\n{body[:2500]}"
+
+    tell_prefixes = ("tell them ", "say to them ", "message them ", "send to meet ")
+    for prefix in tell_prefixes:
+        if lower.startswith(prefix):
+            text = user_message[len(prefix) :].strip()
+            if not text:
+                return "What should I say in the Meet chat?"
+            ok = await send_meeting_chat(meeting_id, text)
+            if ok:
+                return f"Sent to Meet chat: {text[:500]}"
+            return "Couldn't send — no active Meet session or chat panel unavailable."
+    return None
+
+
 async def run_whatsapp_reply(user_message: str, context: dict[str, Any] | None = None) -> str:
     """Fast Groq reply with memory + calendar; coordinator for PC tasks; direct path for Gmail."""
     from tempa.channels.whatsapp.action_state import explain_last_action
     from tempa.channels.whatsapp.intent import WhatsAppIntent, route_whatsapp_intent
 
     context = context or {}
+    live = await _try_live_meeting_command(user_message)
+    if live:
+        return live
+
     intent = route_whatsapp_intent(user_message, context)
 
     if intent == WhatsAppIntent.ACTION_STATUS_FOLLOWUP:

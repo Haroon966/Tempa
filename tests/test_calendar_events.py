@@ -8,6 +8,7 @@ from tempa.channels.calendar.events import (
     parse_delete_title,
     parse_event_duration,
     parse_event_start,
+    parse_event_time_range,
     parse_event_title,
     try_create_event_from_message,
     try_delete_event_from_message,
@@ -22,7 +23,30 @@ def test_wants_create_event():
     assert wants_create_event(
         "send an invite of meeting name haroon x tempa to haroon.ali@taleemabad at 6:40pm today"
     )
+    assert wants_create_event("set a meeting me and haroon ali at 11:30pm to 11:45pm today")
     assert not wants_create_event("what is on my calendar tomorrow")
+
+
+def test_parse_event_time_range():
+    text = "set a meeting me and haroon ali at 11:30pm to 11:45pm today"
+    now = datetime(2026, 6, 20, 10, 0, tzinfo=ZoneInfo("Asia/Karachi"))
+    parsed = parse_event_time_range(text, now=now)
+    assert parsed is not None
+    start, duration = parsed
+    assert start.hour == 23
+    assert start.minute == 30
+    assert duration == 15
+
+
+def test_parse_event_title_me_and_guest():
+    text = "set a meeting me and haroon ali at 11:30pm to 11:45pm today"
+    assert parse_event_title(text) == "Meeting with Haroon Ali"
+
+
+def test_parse_attendee_emails_me_and_guest():
+    text = "set a meeting me and haroon ali at 11:30pm to 11:45pm today"
+    with patch("tempa.channels.calendar.events._resolve_name_to_email", return_value="haroon.ali@taleemabad.com"):
+        assert parse_attendee_emails(text) == ["haroon.ali@taleemabad.com"]
 
 
 def test_parse_event_title_strips_email():
@@ -35,10 +59,50 @@ def test_parse_attendee_emails():
     assert parse_attendee_emails(text) == ["haroon.ali@taleemabad.com"]
 
 
+def test_parse_attendee_names_with_guest():
+    text = "set a meeting at 11:30pm today with Haroon Ali for 15 minutes for tempa testing"
+    from tempa.channels.calendar.events import _attendee_names_from_text
+
+    assert _attendee_names_from_text(text) == ["Haroon Ali"]
+
+
 def test_parse_attendee_emails_from_contact_name():
     text = "send a invite to haroon ali for tempa testing meeting of 15mins at 7:42"
     with patch("tempa.channels.calendar.events._resolve_name_to_email", return_value="haroon.ali@taleemabad.com"):
         assert parse_attendee_emails(text) == ["haroon.ali@taleemabad.com"]
+
+
+def test_resolve_guest_excludes_calendar_owner():
+    from tempa.channels.gmail.recipients import is_excluded_guest_email, resolve_guest_email_by_name
+
+    owner = "haroon.orenda@gmail.com"
+    assert is_excluded_guest_email(owner, owner=owner) is True
+    assert is_excluded_guest_email("notifications@github.com", owner=owner) is True
+
+    with (
+        patch("tempa.channels.contacts.store.search_contacts") as search_contacts,
+        patch("tempa.channels.gmail.recipients.lookup_email_by_name_in_gmail") as gmail_lookup,
+        patch("tempa.channels.contacts.sync.sync_contacts_blocking"),
+    ):
+        search_contacts.return_value = [
+            {"name": "Haroon Ali", "email": "haroon.orenda@gmail.com"},
+            {"name": "Haroon Ali", "email": "haroon.ali@taleemabad.com"},
+        ]
+        gmail_lookup.return_value = {}
+        assert resolve_guest_email_by_name("Haroon Ali", owner=owner) == "haroon.ali@taleemabad.com"
+
+
+def test_external_attendees_from_event_raw():
+    from tempa.channels.calendar.events import external_attendees_from_event_raw
+
+    with patch("tempa.channels.calendar.events.get_calendar_owner_email", return_value="haroon.orenda@gmail.com"):
+        raw = {
+            "attendees": [
+                {"email": "haroon.orenda@gmail.com", "organizer": True, "self": True},
+                {"email": "haroon.ali@taleemabad.com", "responseStatus": "needsAction"},
+            ]
+        }
+        assert external_attendees_from_event_raw(raw) == ["haroon.ali@taleemabad.com"]
 
 
 def test_parse_event_title_for_meeting_pattern():

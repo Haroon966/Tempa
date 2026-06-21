@@ -1,3 +1,4 @@
+import { NavLink } from "react-router-dom"
 import type { DashboardPayload } from "@/types/dashboard"
 import tempaLogo from "@/assets/tempa.png"
 import { StatusBadge, statusDot } from "@/components/status-badge"
@@ -20,11 +21,10 @@ import { NAV_GROUPS, NAV_ITEMS, type NavSection } from "@/components/dashboard/n
 
 type AppSidebarProps = {
   active: NavSection
-  onNavigate: (section: NavSection) => void
   data: DashboardPayload | null
 }
 
-export function AppSidebar({ active, onNavigate, data }: AppSidebarProps) {
+export function AppSidebar({ active, data }: AppSidebarProps) {
   const pendingCount  = data?.pending_actions?.length ?? 0
   const overallStatus = data?.overall.status ?? "disconnected"
 
@@ -68,16 +68,16 @@ export function AppSidebar({ active, onNavigate, data }: AppSidebarProps) {
             <SidebarGroupContent>
               <SidebarMenu>
                 {NAV_ITEMS.filter((item) => item.group === group.id).map(
-                  ({ value, label, icon: Icon }) => {
+                  ({ value, path, label, icon: Icon }) => {
                     const isActive   = active === value
                     const showBadge  = value === "pending" && pendingCount > 0
 
                     return (
                       <SidebarMenuItem key={value}>
                         <SidebarMenuButton
+                          render={<NavLink to={path} />}
                           isActive={isActive}
                           tooltip={label}
-                          onClick={() => onNavigate(value)}
                           className={cn(
                             "cursor-pointer transition-all duration-200",
                             isActive

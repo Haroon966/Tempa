@@ -69,14 +69,12 @@ async def _maybe_auto_join(ev, state: ReminderState) -> None:
     join_key = f"join|{ev.id}|{ev.start.isoformat()}"
     if join_key in state.joined_keys:
         return
-    from tempa.meet.service import schedule_meeting_join
+    from tempa.meet.scheduler import schedule_join_for_calendar_event
 
-    try:
-        schedule_meeting_join(ev.meet_url, title=ev.summary)
+    meeting_id = await schedule_join_for_calendar_event(ev)
+    if meeting_id:
         state.joined_keys.add(join_key)
         await event_bus.publish_json("calendar", "meet_join_on_reminder", ev.summary)
-    except Exception as exc:
-        logger.warning("Auto-join on reminder failed: %s", exc)
 
 
 async def poll_reminders_once(state: ReminderState) -> int:

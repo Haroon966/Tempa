@@ -50,13 +50,18 @@ def parse_messages_upsert(payload: dict[str, Any]) -> list[WhatsAppMessage]:
         key = item.get("key", {})
         if key.get("fromMe"):
             continue
-        remote_jid = key.get("remoteJid", "") or key.get("remoteJidAlt", "")
-        is_group = remote_jid.endswith("@g.us")
+        remote_jid = key.get("remoteJid", "") or ""
+        alt_jid = key.get("remoteJidAlt", "") or key.get("participantAlt", "") or ""
+        if remote_jid.endswith("@lid") and alt_jid:
+            effective_jid = alt_jid
+        else:
+            effective_jid = remote_jid or alt_jid
+        is_group = effective_jid.endswith("@g.us")
         participant = key.get("participant", "") or key.get("participantAlt", "")
         from_number = (
-            participant.split("@")[0]
+            participant.split("@")[0].split(":")[0]
             if participant
-            else remote_jid.split("@")[0] if remote_jid else ""
+            else effective_jid.split("@")[0].split(":")[0] if effective_jid else ""
         )
         message = item.get("message", item)
         text = _extract_text(message if isinstance(message, dict) else {})
@@ -66,11 +71,11 @@ def parse_messages_upsert(payload: dict[str, Any]) -> list[WhatsAppMessage]:
         messages.append(
             WhatsAppMessage(
                 **{
-                    "from": from_number or remote_jid.split("@")[0],
+                    "from": from_number or effective_jid.split("@")[0].split(":")[0],
                     "text": text or "[voice note]",
                     "message_id": key.get("id", ""),
                     "timestamp": item.get("messageTimestamp"),
-                    "chat_id": remote_jid,
+                    "chat_id": effective_jid or remote_jid,
                     "is_group": is_group,
                     "raw_item": item,
                 }

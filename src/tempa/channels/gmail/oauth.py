@@ -97,30 +97,39 @@ def handle_oauth_callback(code: str, state: str) -> dict[str, str]:
         else:
             os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = prev_relax
     creds = flow.credentials
-    settings.gmail_token_path.parent.mkdir(parents=True, exist_ok=True)
-    settings.gmail_token_path.write_text(creds.to_json(), encoding="utf-8")
+    from tempa.security.sessions import write_secret_file
+
+    write_secret_file("gmail/token.json", creds.to_json())
     _clear_pending_oauth()
     return {"status": "connected"}
 
 
 def load_gmail_client() -> GmailClient | None:
+    import json
+
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
-    settings = get_settings()
-    if not settings.gmail_token_path.exists():
+    from tempa.security.sessions import read_secret_file, secret_file_exists, write_secret_file
+
+    if not secret_file_exists("gmail/token.json"):
         return None
-    creds = Credentials.from_authorized_user_file(str(settings.gmail_token_path))
+
+    token_json = read_secret_file("gmail/token.json")
+    if not token_json:
+        return None
+
+    creds = Credentials.from_authorized_user_info(json.loads(token_json))
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        settings.gmail_token_path.write_text(creds.to_json(), encoding="utf-8")
+        write_secret_file("gmail/token.json", creds.to_json())
     return GmailClient(creds)
 
 
 def disconnect_gmail() -> None:
-    settings = get_settings()
-    if settings.gmail_token_path.exists():
-        settings.gmail_token_path.unlink()
+    from tempa.security.sessions import delete_secret_file
+
+    delete_secret_file("gmail/token.json")
     _clear_pending_oauth()
 
 

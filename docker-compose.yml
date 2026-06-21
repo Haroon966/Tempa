@@ -10,7 +10,7 @@ services:
       - .env
     environment:
       TEMPA_BIND_HOST: "0.0.0.0"
-      EVOLUTION_API_URL: http://evolution-api:8080
+      EVOLUTION_API_URL: http://whatsapp-bridge:8080
       TEMPA_WEBHOOK_BASE_URL: http://tempa-daemon:8787
       TEMPA_MEET_DELEGATE_TO_WORKER: "true"
     volumes:
@@ -19,7 +19,7 @@ services:
       - ./src:/app/src
       - ./dashboard/dist:/app/dashboard/dist
     depends_on:
-      evolution-api:
+      whatsapp-bridge:
         condition: service_started
       meet-worker:
         condition: service_started
@@ -42,8 +42,10 @@ services:
       - ./src:/app/src
       - ./scripts/meet-worker-entrypoint.sh:/usr/local/bin/meet-worker-entrypoint.sh:ro
 
-  evolution-api:
-    image: evoapicloud/evolution-api:latest
+  whatsapp-bridge:
+    build:
+      context: ./services/whatsapp-bridge
+      dockerfile: Dockerfile
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -52,15 +54,14 @@ services:
     environment:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:-tempa-evolution-key}
       SERVER_URL: http://localhost:8080
-      DATABASE_ENABLED: "true"
-      DATABASE_PROVIDER: postgresql
+      SERVER_PORT: "8080"
       DATABASE_CONNECTION_URI: postgresql://evolution:evolution@postgres:5432/evolution?schema=public
-      CACHE_REDIS_ENABLED: "false"
-      CACHE_LOCAL_ENABLED: "true"
+      DATABASE_CONNECTION_CLIENT_NAME: tempa
+      INSTANCE_DIR: /app/instances
       WEBHOOK_EVENTS_QRCODE_UPDATED: "true"
       WEBHOOK_EVENTS_CONNECTION_UPDATE: "true"
     volumes:
-      - evolution_instances:/evolution/instances
+      - whatsapp_instances:/app/instances
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,5 +82,5 @@ services:
       retries: 10
 
 volumes:
-  evolution_instances:
+  whatsapp_instances:
   postgres_data:

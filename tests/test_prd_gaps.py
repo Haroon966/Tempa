@@ -66,7 +66,7 @@ def test_whatsapp_status_no_auto_qr(client, monkeypatch):
         return "close", False
 
     monkeypatch.setattr(
-        "tempa.channels.whatsapp.client.EvolutionWhatsAppClient.resolved_connection_state",
+        "tempa.channels.whatsapp.client.WhatsAppBridgeClient.resolved_connection_state",
         fake_resolved,
     )
 
@@ -80,19 +80,24 @@ def test_whatsapp_status_no_auto_qr(client, monkeypatch):
 def test_whatsapp_connect_and_disconnect(client, monkeypatch):
     calls = {"logout": 0}
 
-    async def fake_fetch_qr(self):
-        return {"qr_code": "data:image/png;base64,abc", "status": "connecting"}
+    async def fake_schedule_fetch_qr(*_args, **_kwargs):
+        from tempa.channels.whatsapp.session import store_qr_code
 
-    async def fake_state(self):
-        return {"state": "connecting"}
+        store_qr_code("data:image/png;base64,abc")
+
+    async def fake_resolved(self):
+        return "connecting", False
 
     async def fake_logout(self):
         calls["logout"] += 1
         return {"status": "disconnected"}
 
-    monkeypatch.setattr("tempa.api.app.EvolutionWhatsAppClient.fetch_qr", fake_fetch_qr)
-    monkeypatch.setattr("tempa.api.app.EvolutionWhatsAppClient.connection_state", fake_state)
-    monkeypatch.setattr("tempa.api.app.EvolutionWhatsAppClient.logout", fake_logout)
+    monkeypatch.setattr("tempa.channels.whatsapp.qr_tasks.schedule_fetch_qr", fake_schedule_fetch_qr)
+    monkeypatch.setattr(
+        "tempa.channels.whatsapp.client.WhatsAppBridgeClient.resolved_connection_state",
+        fake_resolved,
+    )
+    monkeypatch.setattr("tempa.api.app.WhatsAppBridgeClient.logout", fake_logout)
 
     connect = client.post("/api/connections/whatsapp/connect")
     assert connect.status_code == 200

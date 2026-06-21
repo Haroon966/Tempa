@@ -6,6 +6,7 @@ import {
   MessageCircleIcon,
   ServerIcon,
 } from "lucide-react"
+import { Link } from "react-router-dom"
 import type { DashboardPayload } from "@/types/dashboard"
 import { cn } from "@/lib/utils"
 import { statusDot } from "@/components/status-badge"
@@ -22,11 +23,9 @@ const ITEMS = [
 export function ConnectionStrip({
   connections,
   className,
-  onNavigateToConnections,
 }: {
   connections: DashboardPayload["connections"]
   className?: string
-  onNavigateToConnections?: () => void
 }) {
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5", className)}>
@@ -39,10 +38,9 @@ export function ConnectionStrip({
         const isGood = status === "connected" || status === "healthy"
 
         return (
-          <button
+          <Link
             key={key}
-            type="button"
-            onClick={onNavigateToConnections}
+            to="/connections"
             className={cn(
               "group flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               isGood
@@ -58,7 +56,7 @@ export function ConnectionStrip({
             <span className="font-medium tracking-wide text-foreground/80 group-hover:text-foreground">
               {label}
             </span>
-          </button>
+          </Link>
         )
       })}
     </div>

@@ -9,6 +9,11 @@ from tempa.channels.whatsapp import session as wa_session
 from tempa.channels.whatsapp.session import clear_qr_code, get_qr_code
 from tempa.channels.whatsapp.webhook import handle_webhook
 
+_VALID_QR = "data:image/png;base64," + ("A" * 500)
+_STALE_QR = "data:image/png;base64," + ("S" * 500)
+_FRESH_QR = "data:image/png;base64," + ("F" * 500)
+_CACHED_QR = "data:image/png;base64," + ("C" * 500)
+
 
 @pytest.fixture(autouse=True)
 def _reset_whatsapp_session_state(monkeypatch):
@@ -32,13 +37,13 @@ async def test_qrcode_webhook_stores_cached_image(tmp_path, monkeypatch):
             "instance": "tempa",
             "data": {
                 "qrcode": {
-                    "base64": "data:image/png;base64,abc123",
+                    "base64": _VALID_QR,
                     "code": "pairing-data",
                 }
             },
         }
     )
-    assert get_qr_code() == "data:image/png;base64,abc123"
+    assert get_qr_code() == _VALID_QR
 
 
 def test_whatsapp_status_refresh_bypasses_cache(monkeypatch, tmp_path):
@@ -55,7 +60,7 @@ def test_whatsapp_status_refresh_bypasses_cache(monkeypatch, tmp_path):
                 "state": "close",
                 "pause_auto_reply": True,
                 "needs_qr_rescan": True,
-                "qr_code": "data:image/png;base64,stale",
+                "qr_code": _STALE_QR,
             }
         ),
         encoding="utf-8",
@@ -70,31 +75,31 @@ def test_whatsapp_status_refresh_bypasses_cache(monkeypatch, tmp_path):
             "state": "close",
             "pause_auto_reply": True,
             "needs_qr_rescan": True,
-            "qr_code": "data:image/png;base64,stale",
+            "qr_code": _STALE_QR,
         }
 
     async def fake_fetch_qr(refresh=False):
         assert refresh is True
-        return {"status": "connecting", "qr_code": "data:image/png;base64,fresh", "pairing_code": None}
+        return {"status": "connecting", "qr_code": _FRESH_QR, "pairing_code": None}
 
     async def fake_schedule_fetch_qr(*, refresh=False):
         assert refresh is True
         from tempa.channels.whatsapp.session import store_qr_code
 
-        store_qr_code("data:image/png;base64,fresh")
+        store_qr_code(_FRESH_QR)
 
     monkeypatch.setattr(
-        "tempa.channels.whatsapp.client.EvolutionWhatsAppClient.resolved_connection_state",
+        "tempa.channels.whatsapp.client.WhatsAppBridgeClient.resolved_connection_state",
         fake_resolved,
     )
-    monkeypatch.setattr("tempa.api.app.sync_connection_from_evolution", fake_sync)
+    monkeypatch.setattr("tempa.api.app.sync_connection_from_bridge", fake_sync)
     monkeypatch.setattr("tempa.channels.whatsapp.qr_tasks.schedule_fetch_qr", fake_schedule_fetch_qr)
 
     app = create_app()
     client = TestClient(app)
     res = client.get("/api/connections/whatsapp?qr=1&refresh=1")
     assert res.status_code == 200
-    assert res.json()["qr_code"] == "data:image/png;base64,fresh"
+    assert res.json()["qr_code"] == _FRESH_QR
 
 
 def test_whatsapp_status_returns_cached_qr_without_evolution(monkeypatch, tmp_path):
@@ -111,7 +116,7 @@ def test_whatsapp_status_returns_cached_qr_without_evolution(monkeypatch, tmp_pa
                 "state": "close",
                 "pause_auto_reply": True,
                 "needs_qr_rescan": True,
-                "qr_code": "data:image/png;base64,cached",
+                "qr_code": _CACHED_QR,
             }
         ),
         encoding="utf-8",
@@ -126,17 +131,17 @@ def test_whatsapp_status_returns_cached_qr_without_evolution(monkeypatch, tmp_pa
             "state": "close",
             "pause_auto_reply": True,
             "needs_qr_rescan": True,
-            "qr_code": "data:image/png;base64,cached",
+            "qr_code": _CACHED_QR,
         }
 
     monkeypatch.setattr(
-        "tempa.channels.whatsapp.client.EvolutionWhatsAppClient.resolved_connection_state",
+        "tempa.channels.whatsapp.client.WhatsAppBridgeClient.resolved_connection_state",
         fake_resolved,
     )
-    monkeypatch.setattr("tempa.api.app.sync_connection_from_evolution", fake_sync)
+    monkeypatch.setattr("tempa.api.app.sync_connection_from_bridge", fake_sync)
 
     app = create_app()
     client = TestClient(app)
     res = client.get("/api/connections/whatsapp?qr=1")
     assert res.status_code == 200
-    assert res.json()["qr_code"] == "data:image/png;base64,cached"
+    assert res.json()["qr_code"] == _CACHED_QR

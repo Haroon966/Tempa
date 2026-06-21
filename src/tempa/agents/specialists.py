@@ -11,9 +11,10 @@ from tempa.agents.config import model_category_for_agent
 from tempa.channels.calendar.ingest import ingest_calendar_event
 from tempa.channels.calendar.oauth import load_calendar_client
 from tempa.channels.gmail.compose import (
-    _default_html_template,
-    extract_recipient,
-    wants_html_email,
+    extract_all_recipients,
+    finalize_beautiful_email,
+    resolve_email_recipient,
+    validate_recipient_email,
 )
 from tempa.channels.gmail.ingest import ingest_gmail_message, message_to_text
 from tempa.channels.gmail.oauth import load_gmail_client
@@ -68,28 +69,58 @@ def _is_send_email_task(text: str) -> bool:
 
 
 async def _compose_email_draft(task: str, context: dict[str, Any]) -> dict[str, str]:
+    import asyncio
+
     router = get_router()
     rag = context.get("rag_context", "")
     contacts_hint = ""
-    try:
-        from tempa.channels.contacts.sync import resolve_recipient
+    contact_hint: dict[str, str] = {}
+    gmail_hint: dict[str, str] = {}
+    user_message = str(context.get("user_message", "")).strip()
 
-        hint = resolve_recipient(task.split()[-1] if task else "")
-        if hint.get("email"):
-            contacts_hint = f"\nSuggested recipient from contacts: {hint['email']} ({hint.get('name', '')})"
-    except Exception:
-        pass
-    use_html = wants_html_email(task) or wants_html_email(context.get("user_message", ""))
-    format_hint = (
-        ' Include "body_html" with a polished, responsive HTML email (inline CSS, professional layout).'
-        if use_html
-        else ""
+    from tempa.channels.gmail.recipients import extract_recipient_name, lookup_email_by_name_in_gmail
+
+    recipient_name = extract_recipient_name(user_message) or extract_recipient_name(task)
+    has_explicit_email = bool(
+        extract_all_recipients(user_message) or extract_all_recipients(task)
     )
+    if recipient_name and not has_explicit_email:
+        gmail_hint = await asyncio.to_thread(lookup_email_by_name_in_gmail, recipient_name)
+        if gmail_hint.get("email"):
+            contacts_hint = (
+                f"\nUse this real recipient found in Gmail history: {gmail_hint['email']}"
+                f" ({gmail_hint.get('name', recipient_name)}). "
+                "Never use example.com or placeholder emails."
+            )
+
+    if not gmail_hint.get("email"):
+        try:
+            from tempa.channels.contacts.sync import resolve_recipient
+
+            for query in (recipient_name, user_message, task):
+                if not query.strip():
+                    continue
+                hint = resolve_recipient(query)
+                if hint.get("email"):
+                    contact_hint = hint
+                    contacts_hint = (
+                        f"\nUse this real recipient from contacts: {hint['email']}"
+                        f" ({hint.get('name', '')}). Never use example.com or placeholder emails."
+                    )
+                    break
+        except Exception:
+            pass
     prompt = (
         "Extract email fields from the user request. Return JSON only: "
-        '{"to": "recipient@example.com", "subject": "...", "body": "plain text version..."'
-        + (', "body_html": "<html>...</html>"}' if use_html else "}")
-        + format_hint
+        '{"to": "real recipient email from the request or contacts", "subject": "...", '
+        '"body": "main message paragraphs (plain text, no sign-off)", '
+        '"eyebrow_label": "short tag e.g. UPDATE or MESSAGE", '
+        '"closing_text": "optional warm closing line", '
+        '"signature": "e.g. Warm regards, Name"}. '
+        "Never use example.com, test.com, or placeholder addresses. "
+        "If the recipient is unclear, leave \"to\" empty. "
+        "Do NOT return body_html — HTML layout is added automatically. "
+        "Write polished, professional copy."
         + contacts_hint
         + "\n"
         f"User request: {task}\n"
@@ -99,24 +130,41 @@ async def _compose_email_draft(task: str, context: dict[str, Any]) -> dict[str, 
         category="text",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
-        max_tokens=2048 if use_html else 1024,
+        max_tokens=1536,
         temperature=0.3,
     )
     content = response.choices[0].message.content or "{}"
     payload = json.loads(content)
-    to = str(payload.get("to", "")).strip() or extract_recipient(task)
-    subject = str(payload.get("subject", "")).strip() or "Hello from Tempa"
-    body = str(payload.get("body", "")).strip()
-    body_html = str(payload.get("body_html", "")).strip()
-    if use_html and not body_html:
-        body_html = _default_html_template(subject=subject, body_plain=body, recipient=to)
-    if use_html and not body:
-        body = "Please view this email in HTML mode for the full message."
+    to = resolve_email_recipient(
+        task=task,
+        user_message=user_message,
+        llm_to=str(payload.get("to", "")).strip(),
+        contact_hint=contact_hint,
+        gmail_hint=gmail_hint,
+    )
+    draft = finalize_beautiful_email(
+        {
+            "to": to,
+            "subject": str(payload.get("subject", "")).strip() or "Hello from Tempa",
+            "body": str(payload.get("body", "")).strip(),
+            "eyebrow_label": str(payload.get("eyebrow_label", "")).strip(),
+            "closing_text": str(payload.get("closing_text", "")).strip(),
+            "signature": str(payload.get("signature", "")).strip(),
+        }
+    )
+    valid, recipient_error = validate_recipient_email(draft.get("to", ""))
+    if not valid:
+        if recipient_name and not has_explicit_email:
+            recipient_error = (
+                f"Could not find a real email for '{recipient_name}' in your Gmail history or contacts. "
+                "Try including their email address directly."
+            )
+        return {"to": "", "subject": draft["subject"], "body": "", "body_html": "", "error": recipient_error}
     return {
-        "to": to,
-        "subject": subject,
-        "body": body,
-        "body_html": body_html,
+        "to": draft["to"],
+        "subject": draft["subject"],
+        "body": draft["body"],
+        "body_html": draft["body_html"],
     }
 
 
@@ -158,10 +206,18 @@ async def run_gmail_agent(task: str, context: dict[str, Any]) -> str:
 
     if _is_send_email_task(task) or _is_send_email_task(user_message):
         draft = await _compose_email_draft(task, context)
+        if draft.get("error"):
+            err = {
+                "status": "error",
+                "error": draft["error"],
+                "to": draft.get("to", ""),
+            }
+            record_gmail_action(err)
+            return json.dumps(err, ensure_ascii=False)
         if not draft.get("to") or not (draft.get("body") or draft.get("body_html")):
             err = {
                 "status": "error",
-                "error": "Could not determine recipient or body for email",
+                "error": "Could not determine a real recipient email or message body",
                 "to": draft.get("to", ""),
             }
             record_gmail_action(err)
@@ -260,30 +316,41 @@ async def run_gmail_agent(task: str, context: dict[str, Any]) -> str:
 
 async def run_calendar_agent(task: str, context: dict[str, Any]) -> str:
     await event_bus.publish_json("calendar", "start", task[:120])
-    client = load_calendar_client()
-    if client is None:
-        return "Google Calendar not connected."
     from datetime import datetime, timedelta, timezone
 
-    now = datetime.now(timezone.utc)
-    events = client.list_upcoming_events(
-        calendar_id="primary",
-        time_min=now,
-        time_max=now + timedelta(days=7),
-    )
-    meet_events = [e for e in events if e.meet_url]
-    for e in meet_events[:10]:
-        ingest_calendar_event(e)
-    payload = [
-        {
-            "summary": e.summary,
-            "start": e.start.isoformat(),
-            "meet_url": e.meet_url,
-        }
-        for e in meet_events[:10]
-    ]
-    ingest_text(json.dumps(payload), tool="calendar", source="upcoming", tags=["poll"])
-    return json.dumps(payload, ensure_ascii=False)
+    from tempa.channels.calendar.events import apply_calendar_actions_from_message
+
+    user_message = str(context.get("user_message") or task)
+    recent = context.get("recent_user_messages") or []
+    actions = apply_calendar_actions_from_message(user_message, recent_texts=recent)
+
+    client = load_calendar_client()
+    if client is None and actions.get("action") == "none":
+        return "Google Calendar not connected."
+
+    upcoming: list[dict[str, str | None]] = []
+    if client is not None:
+        now = datetime.now(timezone.utc)
+        events = client.list_upcoming_events(
+            calendar_id="primary",
+            time_min=now,
+            time_max=now + timedelta(days=7),
+        )
+        meet_events = [e for e in events if e.meet_url]
+        for e in meet_events[:10]:
+            ingest_calendar_event(e)
+        upcoming = [
+            {
+                "summary": e.summary,
+                "start": e.start.isoformat(),
+                "meet_url": e.meet_url,
+            }
+            for e in meet_events[:10]
+        ]
+        if upcoming:
+            ingest_text(json.dumps(upcoming), tool="calendar", source="upcoming", tags=["poll"])
+
+    return json.dumps({"actions": actions, "upcoming": upcoming}, ensure_ascii=False)
 
 
 async def run_rag_agent_task(task: str, context: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -742,6 +809,27 @@ def plan_subtasks(user_message: str, context: dict[str, Any] | None = None) -> l
     return heuristic
 
 
+def _calendar_action_reply(calendar_result: str) -> str | None:
+    """Short-circuit when calendar create/delete/invite actually ran."""
+    try:
+        payload = json.loads(calendar_result)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    actions = payload.get("actions")
+    if not isinstance(actions, dict):
+        return None
+    if actions.get("action") == "none":
+        return None
+    parts = list(actions.get("successes") or []) + list(actions.get("failures") or [])
+    if parts:
+        return "\n\n".join(parts)
+    if not actions.get("ok"):
+        return f"Calendar action failed: {actions.get('error', 'unknown error')}"
+    return None
+
+
 def _whatsapp_gmail_reply(gmail_result: str) -> str | None:
     """Short-circuit WhatsApp replies for clear Gmail outcomes."""
     lower = gmail_result.lower()
@@ -840,6 +928,13 @@ async def merge_results_stream(
 
     if channel == "whatsapp" and "gmail" in results:
         short = _whatsapp_gmail_reply(results["gmail"])
+        if short:
+            if on_token:
+                await on_token(short)
+            return short, sources
+
+    if "calendar" in results:
+        short = _calendar_action_reply(results["calendar"])
         if short:
             if on_token:
                 await on_token(short)

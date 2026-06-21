@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 from tempa.channels.calendar.client import CalendarEvent
@@ -16,9 +18,34 @@ logger = logging.getLogger(__name__)
 TriggerCallback = Callable[[CalendarEvent], Awaitable[None]]
 
 
+def _state_path() -> Path:
+    return get_settings().sessions_dir / "calendar" / "poller_state.json"
+
+
 @dataclass
 class PollerState:
-    triggered_keys: set[str]
+    triggered_keys: set[str] = field(default_factory=set)
+
+
+def load_poller_state() -> PollerState:
+    path = _state_path()
+    if not path.exists():
+        return PollerState()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        keys = data.get("triggered_keys") or []
+        return PollerState(triggered_keys=set(keys))
+    except Exception:
+        return PollerState()
+
+
+def save_poller_state(state: PollerState) -> None:
+    path = _state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"triggered_keys": sorted(state.triggered_keys)}, indent=2),
+        encoding="utf-8",
+    )
 
 
 def _event_key(ev: CalendarEvent) -> str:
@@ -89,11 +116,14 @@ async def poll_once(state: PollerState, on_trigger: TriggerCallback) -> list[Cal
         trigger_after_start_minutes=settings.meet_trigger_after_start_minutes,
     )
     for ev in events:
+        key = _event_key(ev)
+        if key in state.triggered_keys:
+            continue
         if ev.meet_url and has_active_job_for_url(ev.meet_url):
             continue
-        key = _event_key(ev)
         triggered.append(ev)
         state.triggered_keys.add(key)
+        save_poller_state(state)
         try:
             ingest_calendar_event(ev)
         except Exception:

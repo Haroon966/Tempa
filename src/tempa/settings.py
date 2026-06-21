@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     meet_alone_grace_seconds: int = 300
     reminder_minutes_before: int = 10
     meet_auto_join_on_reminder: bool = True
+    meet_auto_join_enabled: bool = True
+    meet_skip_keywords: list[str] = ["focus time", "ooo", "out of office"]
+    meet_retention_days: int = 0
+    meet_auto_send_summary_whatsapp: bool = True
+    meet_copilot_whatsapp_notify: bool = False
+    meet_chat_prefix: str = "[via Tempa]"
 
     @property
     def project_root(self) -> Path:

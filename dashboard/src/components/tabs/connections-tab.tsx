@@ -24,6 +24,7 @@ import {
   disconnectGoogle,
   fetchGroqModels,
   fetchMeetConsent,
+  fetchMeetReadiness,
   fetchWhatsAppStatus,
   grantMeetConsent,
   revokeMeetConsent,
@@ -66,6 +67,20 @@ function applyWhatsAppStatus(
   }
 }
 
+function resolveWhatsAppStatusMessage(w: WhatsAppStatus): string | null {
+  const autoAction = (w as WhatsAppStatus & { auto_action?: string }).auto_action
+  const connecting = autoAction === "connecting" || w.status === "connecting"
+
+  if (isWhatsAppConnected(w)) return null
+  if (w.status === "error") return w.detail ?? "WhatsApp connection error"
+  if (connecting) {
+    return w.detail ?? "Pairing in progress — keep WhatsApp open on your phone"
+  }
+  if (w.qr_code) return "QR code ready — scan with WhatsApp → Linked Devices"
+  if (w.detail) return w.detail
+  return null
+}
+
 export function ConnectionsTab({
   data,
   onRefresh,
@@ -77,7 +92,8 @@ export function ConnectionsTab({
   const google   = data.connections.google
   const gmail    = data.connections.gmail
   const whatsapp = data.connections.whatsapp
-  const evolution = data.connections.evolution_api
+  const bridge = data.connections.whatsapp_bridge ?? data.connections.evolution_api
+  const meetAutoJoin = data.connections.meet_auto_join
 
   const [groqKey, setGroqKey] = useState("")
   const [groqBusy, setGroqBusy] = useState(false)
@@ -94,10 +110,14 @@ export function ConnectionsTab({
   const [waPairing, setWaPairing] = useState(false)
   const [waFailed, setWaFailed] = useState(false)
   const [waRefreshBusy, setWaRefreshBusy] = useState(false)
+  const [waStatusMessage, setWaStatusMessage] = useState<string | null>(null)
   const [waLastLog, setWaLastLog] = useState("")
 
   const [consent, setConsent] = useState<boolean | null>(null)
   const [consentBusy, setConsentBusy] = useState(false)
+  const [meetReadiness, setMeetReadiness] = useState<Awaited<
+    ReturnType<typeof fetchMeetReadiness>
+  > | null>(null)
 
   const googleCredsConfigured =
     "credentials_configured" in google && google.credentials_configured === true
@@ -105,9 +125,6 @@ export function ConnectionsTab({
   const loadWhatsApp = useCallback(async () => {
     try {
       const w = await fetchWhatsAppStatus(true)
-      // #region agent log
-      fetch('http://127.0.0.1:7433/ingest/23608c7e-7cbc-4fe1-b447-b2d77577e948',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2d4807'},body:JSON.stringify({sessionId:'2d4807',location:'connections-tab.tsx:loadWhatsApp',message:'poll result',data:{status:w.status,connected:isWhatsAppConnected(w),hasQr:Boolean(w.qr_code),detail:w.detail},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-      // #endregion
       applyWhatsAppStatus(w, setWaQr, setWaConnected)
 
       const payload = {
@@ -119,27 +136,27 @@ export function ConnectionsTab({
       }
 
       const autoAction = (w as WhatsAppStatus & { auto_action?: string }).auto_action
+      const connecting = autoAction === "connecting" || w.status === "connecting"
       const isFetching = Boolean(
         w.detail?.includes("Fetching QR") ||
           w.detail?.includes("Waiting for QR") ||
-          (w.status === "connecting" && !w.qr_code),
+          (connecting && !w.qr_code),
       )
-      setWaPairing((autoAction === "connecting" || w.status === "connecting") && isFetching)
+      setWaPairing(!isWhatsAppConnected(w) && connecting)
+      setWaStatusMessage(resolveWhatsAppStatusMessage(w))
       setWaFailed(
         !w.qr_code &&
           !isWhatsAppConnected(w) &&
+          !connecting &&
           (w.status === "error" ||
             (w.status === "close" && Boolean(w.detail) && !isFetching)),
       )
-      // #region agent log
-      fetch('http://127.0.0.1:7433/ingest/23608c7e-7cbc-4fe1-b447-b2d77577e948',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'2d4807'},body:JSON.stringify({sessionId:'2d4807',location:'connections-tab.tsx:ui-state',message:'ui branch',data:{status:w.status,hasQr:Boolean(w.qr_code),waPairing:autoAction==='connecting'||w.status==='connecting',autoAction,detail:w.detail},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-      // #endregion
 
       const logKey = `${w.status}|${Boolean(w.qr_code)}|${w.detail ?? ""}|${autoAction ?? ""}`
       if (w.status === "error") {
         logWhatsApp("error", w.detail ?? "WhatsApp connection error", payload)
       } else if (w.detail && w.detail !== "Generating QR — auto-refresh in progress") {
-        logWhatsApp("warn", w.detail, payload)
+        logWhatsApp("info", w.detail, payload)
       } else if (w.qr_code && waLastLog !== logKey) {
         logWhatsApp("info", "QR code ready — scan with WhatsApp → Linked Devices")
       } else if (autoAction === "connecting") {
@@ -168,11 +185,13 @@ export function ConnectionsTab({
     setWaRefreshBusy(true)
     setWaQr(null)
     setWaPairing(false)
+    setWaStatusMessage("Refreshing QR code…")
     logWhatsApp("info", "Refreshing QR code…")
     try {
       const w = await fetchWhatsAppStatus(true, true)
       applyWhatsAppStatus(w, setWaQr, setWaConnected)
       setWaPairing(w.status === "connecting" && !isWhatsAppConnected(w))
+      setWaStatusMessage(resolveWhatsAppStatusMessage(w))
       if (w.qr_code) {
         toast.success("QR code refreshed — scan with WhatsApp")
         logWhatsApp("info", "QR code refreshed")
@@ -193,11 +212,23 @@ export function ConnectionsTab({
 
   useEffect(() => { setWaConnected(!!whatsapp?.connected) }, [whatsapp?.connected])
 
-  useEffect(() => {
-    void fetchMeetConsent()
-      .then((c) => setConsent(c.consented))
-      .catch(() => setConsent(null))
+  const loadMeetStatus = useCallback(async () => {
+    try {
+      const [consentRes, readiness] = await Promise.all([
+        fetchMeetConsent(),
+        fetchMeetReadiness(),
+      ])
+      setConsent(consentRes.consented)
+      setMeetReadiness(readiness)
+    } catch {
+      setConsent(null)
+      setMeetReadiness(null)
+    }
   }, [])
+
+  useEffect(() => {
+    void loadMeetStatus()
+  }, [loadMeetStatus])
 
   useEffect(() => {
     if (groq?.connected) {
@@ -314,17 +345,37 @@ export function ConnectionsTab({
 
   async function handleConsentGrant() {
     setConsentBusy(true)
-    try { const r = await grantMeetConsent(); setConsent(r.consented); toast.success("Recording consent granted") }
-    catch (e) { toast.error(e instanceof Error ? e.message : "Failed to grant consent") }
-    finally { setConsentBusy(false) }
+    try {
+      const r = await grantMeetConsent()
+      setConsent(r.consented)
+      await loadMeetStatus()
+      onRefresh()
+      toast.success("Recording consent granted")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to grant consent")
+    } finally {
+      setConsentBusy(false)
+    }
   }
 
   async function handleConsentRevoke() {
     setConsentBusy(true)
-    try { const r = await revokeMeetConsent(); setConsent(r.consented); toast.message("Recording consent revoked") }
-    catch (e) { toast.error(e instanceof Error ? e.message : "Failed to revoke consent") }
-    finally { setConsentBusy(false) }
+    try {
+      const r = await revokeMeetConsent()
+      setConsent(r.consented)
+      await loadMeetStatus()
+      onRefresh()
+      toast.message("Recording consent revoked")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to revoke consent")
+    } finally {
+      setConsentBusy(false)
+    }
   }
+
+  const meetReady = meetReadiness?.ready ?? meetAutoJoin?.ready ?? false
+  const meetAuth = meetReadiness?.meet_auth ?? meetAutoJoin?.meet_auth ?? false
+  const meetDetail = meetReadiness?.detail ?? meetAutoJoin?.detail
 
   return (
     <div className="flex flex-col gap-8">
@@ -343,7 +394,7 @@ export function ConnectionsTab({
       <section className="grid gap-3 sm:grid-cols-3">
         <InfraCard title="Tempa Daemon" conn={data.connections.daemon} icon={ServerIcon} />
         <InfraCard title="Unified RAG"  conn={data.connections.rag}    icon={DatabaseIcon} />
-        <InfraCard title="Evolution API" conn={evolution}              icon={MessageCircleIcon} />
+        <InfraCard title="WhatsApp Bridge" conn={bridge}              icon={MessageCircleIcon} />
       </section>
 
       {/* Service cards */}
@@ -468,6 +519,19 @@ export function ConnectionsTab({
           action={<StatusBadge status={waConnected ? "connected" : (whatsapp?.status ?? "disconnected")} />}
           contentClassName="flex flex-col items-center justify-center gap-4 py-2"
         >
+          {!waConnected && waStatusMessage && (
+            <Alert
+              className={cn(
+                "w-full border-green-200 bg-green-50 text-green-900",
+                waFailed && "border-amber-200 bg-amber-50 text-amber-900",
+                whatsapp?.status === "error" && "border-destructive/30 bg-destructive/5 text-destructive",
+              )}
+            >
+              <AlertDescription className="text-center text-sm font-medium">
+                {waStatusMessage}
+              </AlertDescription>
+            </Alert>
+          )}
           {waQr ? (
             <img
               src={waQr}
@@ -503,7 +567,6 @@ export function ConnectionsTab({
                 <>
                   <div className="size-8 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
                   <span className="text-sm text-muted-foreground">Generating QR…</span>
-                  <span className="text-xs text-muted-foreground">Check browser console for status</span>
                 </>
               )}
             </div>
@@ -527,19 +590,46 @@ export function ConnectionsTab({
           title="Google Meet bot"
           description="Recording consent required before auto-join"
           icon={VideoIcon}
-          action={<StatusBadge status={consent ? "connected" : "disconnected"} />}
+          action={
+            <StatusBadge
+              status={
+                meetReady
+                  ? "connected"
+                  : consent
+                    ? "degraded"
+                    : "disconnected"
+              }
+            />
+          }
           contentClassName="flex flex-col gap-3"
         >
+          <p className="text-sm text-muted-foreground">
+            Auto-join ready:{" "}
+            <span className="font-semibold text-foreground">
+              {meetReady ? "yes" : "no"}
+            </span>
+            {meetDetail && !meetReady && (
+              <span className="mt-1 block text-xs">{meetDetail}</span>
+            )}
+          </p>
           <p className="text-sm text-muted-foreground">
             Consent:{" "}
             <span className="font-semibold text-foreground">
               {consent === null ? "unknown" : consent ? "granted" : "not granted"}
             </span>
           </p>
-          <p className="text-xs text-muted-foreground">
-            After connecting Google, run <code>tempa meet-auth</code> once to enable Meet browser
-            login (Playwright).
+          <p className="text-sm text-muted-foreground">
+            Browser auth:{" "}
+            <span className="font-semibold text-foreground">
+              {meetAuth ? "configured" : "missing"}
+            </span>
           </p>
+          {!meetAuth && (
+            <p className="text-xs text-muted-foreground">
+              After connecting Google, run <code>tempa meet-auth</code> once to enable Meet browser
+              login (Playwright).
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             <Button className="cursor-pointer" onClick={() => void handleConsentGrant()} disabled={consentBusy || consent === true}>
               Grant consent

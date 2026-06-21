@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_CONNECTION_URI")
+}
+
+enum InstanceConnectionStatus {
+  open
+  close
+  connecting
+}
+
+model Instance {
+  id                      String                   @id @default(cuid())
+  name                    String                   @unique @db.VarChar(255)
+  connectionStatus        InstanceConnectionStatus @default(close)
+  ownerJid                String?                  @db.VarChar(100)
+  profileName             String?                  @db.VarChar(100)
+  profilePicUrl           String?                  @db.VarChar(500)
+  integration             String?                  @db.VarChar(100)
+  number                  String?                  @db.VarChar(100)
+  token                   String?                  @db.VarChar(255)
+  clientName              String?                  @db.VarChar(100)
+  disconnectionReasonCode Int?                     @db.Integer
+  disconnectionObject     Json?                    @db.JsonB
+  disconnectionAt         DateTime?                @db.Timestamp
+  createdAt               DateTime?                @default(now()) @db.Timestamp
+  updatedAt               DateTime?                @updatedAt @db.Timestamp
+  Webhook                 Webhook?
+  Setting                 Setting?
+  Session                 Session?
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  sessionId String   @unique
+  creds     String?  @db.Text
+  createdAt DateTime @default(now()) @db.Timestamp
+  Instance  Instance @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+model Webhook {
+  id              String    @id @default(cuid())
+  url             String    @db.VarChar(500)
+  headers         Json?     @db.JsonB
+  enabled         Boolean?  @default(true) @db.Boolean
+  events          Json?     @db.JsonB
+  webhookByEvents Boolean?  @default(false) @db.Boolean
+  webhookBase64   Boolean?  @default(false) @db.Boolean
+  createdAt       DateTime? @default(now()) @db.Timestamp
+  updatedAt       DateTime  @updatedAt @db.Timestamp
+  Instance        Instance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  instanceId      String    @unique
+
+  @@index([instanceId])
+}
+
+model Setting {
+  id              String    @id @default(cuid())
+  rejectCall      Boolean   @default(false) @db.Boolean
+  msgCall         String?   @db.VarChar(100)
+  groupsIgnore    Boolean   @default(false) @db.Boolean
+  alwaysOnline    Boolean   @default(false) @db.Boolean
+  readMessages    Boolean   @default(false) @db.Boolean
+  readStatus      Boolean   @default(false) @db.Boolean
+  syncFullHistory Boolean   @default(false) @db.Boolean
+  wavoipToken     String?   @db.VarChar(100)
+  createdAt       DateTime? @default(now()) @db.Timestamp
+  updatedAt       DateTime  @updatedAt @db.Timestamp
+  Instance        Instance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  instanceId      String    @unique
+
+  @@index([instanceId])
+}

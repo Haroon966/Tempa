@@ -50,6 +50,8 @@ def update_connection_state(state: str) -> dict:
 
 
 def store_qr_code(qr: str | None) -> None:
+    if qr and len(qr) < 500:
+        return
     data = _load()
     if qr:
         data["qr_code"] = qr
@@ -91,8 +93,8 @@ def get_connection_snapshot() -> dict:
     return data
 
 
-def parse_evolution_state(data: dict) -> tuple[str, bool]:
-    """Normalize Evolution API connectionState payload."""
+def parse_bridge_state(data: dict) -> tuple[str, bool]:
+    """Normalize WhatsApp bridge connectionState payload."""
     state = data.get("state")
     if state is None:
         instance = data.get("instance")
@@ -108,12 +110,12 @@ def mark_disconnected() -> dict:
     return update_connection_state("close")
 
 
-async def sync_connection_from_evolution() -> dict:
-    """Refresh local session state from Evolution API (source of truth)."""
-    from tempa.channels.whatsapp.client import EvolutionWhatsAppClient
+async def sync_connection_from_bridge() -> dict:
+    """Refresh local session state from WhatsApp bridge (source of truth)."""
+    from tempa.channels.whatsapp.client import WhatsAppBridgeClient
 
     try:
-        client = EvolutionWhatsAppClient()
+        client = WhatsAppBridgeClient()
         state_name, _connected = await client.resolved_connection_state()
         return update_connection_state(state_name)
     except Exception:

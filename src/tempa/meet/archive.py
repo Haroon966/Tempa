@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,39 +15,69 @@ from tempa.rag.ingest import ingest_text
 from tempa.rag.purge import purge_all_vectors, purge_meeting_vectors
 from tempa.settings import get_settings
 
+logger = logging.getLogger(__name__)
+
+_MEETINGS_COLUMNS = (
+    "id TEXT PRIMARY KEY",
+    "title TEXT",
+    "meet_link TEXT",
+    "started_at TEXT",
+    "ended_at TEXT",
+    "participants TEXT",
+    "attendee_emails TEXT",
+    "calendar_event_id TEXT",
+    "calendar_event_start TEXT",
+    "audio_path TEXT",
+    "transcript_path TEXT",
+    "minutes_json TEXT",
+    "minutes_status TEXT",
+    "followups_json TEXT",
+    "created_at TEXT",
+)
+
+
+async def _ensure_schema(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS meetings (
+            {", ".join(_MEETINGS_COLUMNS)}
+        )
+        """
+    )
+    cursor = await db.execute("PRAGMA table_info(meetings)")
+    rows = await cursor.fetchall()
+    existing = {row[1] for row in rows}
+    migrations = {
+        "attendee_emails": "TEXT",
+        "calendar_event_id": "TEXT",
+        "calendar_event_start": "TEXT",
+        "minutes_status": "TEXT",
+        "followups_json": "TEXT",
+    }
+    for col, col_type in migrations.items():
+        if col not in existing:
+            await db.execute(f"ALTER TABLE meetings ADD COLUMN {col} {col_type}")
+
 
 async def init_db() -> None:
     settings = get_settings()
     async with aiosqlite.connect(settings.db_path) as db:
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS meetings (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                meet_link TEXT,
-                started_at TEXT,
-                ended_at TEXT,
-                participants TEXT,
-                audio_path TEXT,
-                transcript_path TEXT,
-                minutes_json TEXT,
-                created_at TEXT
-            )
-            """
-        )
+        await _ensure_schema(db)
         await db.commit()
 
 
 async def save_meeting_archive(record: dict[str, Any]) -> str:
     settings = get_settings()
-    meeting_id = record.get("id") or str(uuid.uuid4())
-    record["id"] = meeting_id
+    meeting_id = record.get("id") or ""
     async with aiosqlite.connect(settings.db_path) as db:
+        await _ensure_schema(db)
         await db.execute(
             """
             INSERT OR REPLACE INTO meetings
-            (id, title, meet_link, started_at, ended_at, participants, audio_path, transcript_path, minutes_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, title, meet_link, started_at, ended_at, participants, attendee_emails,
+             calendar_event_id, calendar_event_start, audio_path, transcript_path,
+             minutes_json, minutes_status, followups_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 meeting_id,
@@ -56,9 +86,14 @@ async def save_meeting_archive(record: dict[str, Any]) -> str:
                 record.get("started_at", ""),
                 record.get("ended_at", ""),
                 json.dumps(record.get("participants", [])),
+                json.dumps(record.get("attendee_emails", [])),
+                record.get("calendar_event_id", ""),
+                record.get("calendar_event_start", ""),
                 record.get("audio_path", ""),
                 record.get("transcript_path", ""),
                 json.dumps(record.get("minutes", {})),
+                record.get("minutes_status", ""),
+                json.dumps(record.get("followups", [])),
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -66,9 +101,72 @@ async def save_meeting_archive(record: dict[str, Any]) -> str:
     return meeting_id
 
 
+def write_meeting_artifacts(
+    meeting_dir: Path,
+    record: dict[str, Any],
+    followups: list[dict[str, Any]],
+) -> None:
+    meeting_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "id": record.get("id"),
+        "title": record.get("title"),
+        "meet_link": record.get("meet_link"),
+        "started_at": record.get("started_at"),
+        "ended_at": record.get("ended_at"),
+        "participants": record.get("participants", []),
+        "attendee_emails": record.get("attendee_emails", []),
+        "calendar_event_id": record.get("calendar_event_id"),
+        "calendar_event_start": record.get("calendar_event_start"),
+        "minutes_status": record.get("minutes_status"),
+    }
+    (meeting_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    minutes = record.get("minutes") or {}
+    if minutes:
+        (meeting_dir / "minutes.json").write_text(json.dumps(minutes, indent=2), encoding="utf-8")
+    if followups:
+        (meeting_dir / "followups.json").write_text(json.dumps(followups, indent=2), encoding="utf-8")
+
+
+def meeting_artifact_status(meeting_id: str) -> dict[str, bool]:
+    settings = get_settings()
+    safe_id = meeting_id.replace("/", "_").replace("\\", "_")
+    meeting_dir = settings.meetings_dir / safe_id
+    return {
+        "audio": any((meeting_dir / "audio").glob("*")) if (meeting_dir / "audio").exists() else False,
+        "transcript": any((meeting_dir / "transcripts").glob("*.jsonl"))
+        if (meeting_dir / "transcripts").exists()
+        else False,
+        "minutes": (meeting_dir / "minutes.json").exists(),
+        "manifest": (meeting_dir / "manifest.json").exists(),
+        "followups": (meeting_dir / "followups.json").exists(),
+    }
+
+
+async def apply_meet_retention_policy() -> int:
+    settings = get_settings()
+    days = int(getattr(settings, "meet_retention_days", 0) or 0)
+    if days <= 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    removed = 0
+    for meeting in await list_meetings():
+        ended = meeting.get("ended_at") or meeting.get("started_at") or ""
+        try:
+            dt = datetime.fromisoformat(ended.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt < cutoff:
+                if await delete_meeting(meeting["id"]):
+                    removed += 1
+        except Exception:
+            continue
+    return removed
+
+
 async def list_meetings() -> list[dict[str, Any]]:
     settings = get_settings()
     async with aiosqlite.connect(settings.db_path) as db:
+        await _ensure_schema(db)
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM meetings ORDER BY started_at DESC")
         rows = await cursor.fetchall()
@@ -76,8 +174,12 @@ async def list_meetings() -> list[dict[str, Any]]:
     for row in rows:
         item = dict(row)
         item["participants"] = json.loads(item.get("participants") or "[]")
+        item["attendee_emails"] = json.loads(item.get("attendee_emails") or "[]")
         item["minutes"] = json.loads(item.get("minutes_json") or "{}")
-        del item["minutes_json"]
+        item["followups"] = json.loads(item.get("followups_json") or "[]")
+        for key in ("minutes_json", "followups_json"):
+            item.pop(key, None)
+        item["artifacts"] = meeting_artifact_status(item["id"])
         results.append(item)
     return results
 
@@ -208,3 +310,41 @@ async def index_meeting_to_rag(record: dict[str, Any], transcript_text: str) -> 
             title=record.get("title", ""),
             tags=["minutes"],
         )
+
+
+def read_live_meeting_state(meeting_id: str) -> dict[str, Any]:
+    settings = get_settings()
+    safe_id = meeting_id.replace("/", "_").replace("\\", "_")
+    meeting_dir = settings.meetings_dir / safe_id
+    transcript_path = meeting_dir / "transcripts" / f"{safe_id}.jsonl"
+    notes_path = meeting_dir / "live_notes.md"
+    suggestions_path = meeting_dir / "suggestions.jsonl"
+
+    transcript_tail = ""
+    if transcript_path.exists():
+        lines: list[str] = []
+        for raw in transcript_path.read_text(encoding="utf-8").splitlines()[-40:]:
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if row.get("type") == "segment" and row.get("text"):
+                speaker = row.get("speaker") or "Unknown"
+                lines.append(f"{speaker}: {row['text']}")
+        transcript_tail = "\n".join(lines)
+
+    notes = notes_path.read_text(encoding="utf-8") if notes_path.exists() else ""
+    suggestions: list[dict[str, Any]] = []
+    if suggestions_path.exists():
+        for raw in suggestions_path.read_text(encoding="utf-8").splitlines()[-10:]:
+            try:
+                suggestions.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
+
+    return {
+        "meeting_id": meeting_id,
+        "transcript_tail": transcript_tail,
+        "live_notes": notes,
+        "suggestions": suggestions,
+    }

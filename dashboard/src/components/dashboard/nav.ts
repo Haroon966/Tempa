@@ -6,23 +6,27 @@ import {
   MailIcon,
   MessageSquareIcon,
   NetworkIcon,
+  RadioIcon,
   RouteIcon,
   ShieldCheckIcon,
 } from "lucide-react"
 
 export const NAV_ITEMS = [
-  { value: "agent", label: "Agent", icon: MessageSquareIcon, group: "monitor" },
-  { value: "overview", label: "Overview", icon: LayoutDashboardIcon, group: "monitor" },
-  { value: "activity", label: "Activity", icon: ActivityIcon, group: "monitor" },
-  { value: "pending", label: "Approvals", icon: ShieldCheckIcon, group: "monitor" },
-  { value: "mail", label: "Mail", icon: MailIcon, group: "monitor" },
-  { value: "connections", label: "Connections", icon: NetworkIcon, group: "system" },
-  { value: "components", label: "Components", icon: BotIcon, group: "system" },
-  { value: "flows", label: "E2E Flows", icon: RouteIcon, group: "system" },
-  { value: "data", label: "Data", icon: DatabaseIcon, group: "system" },
+  { value: "agent", path: "/agent", label: "Agent", icon: MessageSquareIcon, group: "monitor" },
+  { value: "overview", path: "/overview", label: "Overview", icon: LayoutDashboardIcon, group: "monitor" },
+  { value: "live-meeting", path: "/live-meeting", label: "Live Meeting", icon: RadioIcon, group: "monitor" },
+  { value: "activity", path: "/activity", label: "Activity", icon: ActivityIcon, group: "monitor" },
+  { value: "pending", path: "/pending", label: "Approvals", icon: ShieldCheckIcon, group: "monitor" },
+  { value: "mail", path: "/mail", label: "Mail", icon: MailIcon, group: "monitor" },
+  { value: "connections", path: "/connections", label: "Connections", icon: NetworkIcon, group: "system" },
+  { value: "components", path: "/components", label: "Components", icon: BotIcon, group: "system" },
+  { value: "flows", path: "/flows", label: "E2E Flows", icon: RouteIcon, group: "system" },
+  { value: "data", path: "/data", label: "Data", icon: DatabaseIcon, group: "system" },
 ] as const
 
 export type NavSection = (typeof NAV_ITEMS)[number]["value"]
+
+export const DEFAULT_SECTION: NavSection = "overview"
 
 export const NAV_GROUPS = [
   { id: "monitor", label: "Monitor" },
@@ -37,6 +41,10 @@ export const PAGE_META: Record<NavSection, { title: string; description: string 
   overview: {
     title: "Overview",
     description: "System health, stats, and quick status at a glance",
+  },
+  "live-meeting": {
+    title: "Live Meeting",
+    description: "Active Meet sessions — transcript, notes, and chat copilot",
   },
   connections: {
     title: "Connections",
@@ -70,4 +78,13 @@ export const PAGE_META: Record<NavSection, { title: string; description: string 
 
 export function getNavItem(value: NavSection) {
   return NAV_ITEMS.find((item) => item.value === value)!
+}
+
+export function sectionPath(section: NavSection): string {
+  return getNavItem(section).path
+}
+
+export function sectionFromPath(pathname: string): NavSection | null {
+  const item = NAV_ITEMS.find((entry) => entry.path === pathname)
+  return item?.value ?? null
 }

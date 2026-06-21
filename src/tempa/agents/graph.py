@@ -34,6 +34,53 @@ MAX_SPECIALIST_RETRIES = 2
 DESTRUCTIVE_AGENTS = frozenset({"pc", "gmail", "channel"})
 
 
+def _check_cancelled(context: dict[str, Any]) -> None:
+    from tempa.core.chat_runs import is_cancelled
+
+    cancel_event = context.get("cancel_event")
+    if is_cancelled(cancel_event):
+        raise asyncio.CancelledError("Chat run cancelled")
+
+
+def _pending_preview(action_id: str, action_type: str, preview: str) -> dict[str, Any]:
+    return {"id": action_id, "type": action_type, "preview": preview[:500]}
+
+
+def _collect_pending_actions(state: CoordinatorState) -> list[dict[str, Any]]:
+    collected = list(state.get("pending_actions") or [])
+    seen = {item["id"] for item in collected if item.get("id")}
+    for result in (state.get("results") or {}).values():
+        try:
+            payload = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        action_id = payload.get("pending_action_id")
+        if payload.get("status") == "pending" and action_id and action_id not in seen:
+            preview = str(payload.get("preview") or payload.get("body") or payload.get("message") or "")
+            action_type = "email_send" if "subject" in payload or "to" in payload else "whatsapp_send"
+            collected.append(_pending_preview(str(action_id), action_type, preview))
+            seen.add(str(action_id))
+    return collected
+
+
+def _extract_artifacts(results: dict[str, str]) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    for agent, result in results.items():
+        try:
+            payload = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if agent == "gmail" and "messages" in payload:
+            artifacts.append({"type": "gmail_search", **payload})
+        elif agent == "calendar" and ("upcoming" in payload or "actions" in payload):
+            artifacts.append({"type": "calendar_events", **payload})
+    return artifacts
+
+
 def merge_dicts(left: dict[str, str] | None, right: dict[str, str] | None) -> dict[str, str]:
     merged = dict(left or {})
     merged.update(right or {})
@@ -50,6 +97,8 @@ class CoordinatorState(TypedDict, total=False):
     task_id: str
     sources: list[dict[str, Any]]
     paused: bool
+    pending_actions: list[dict[str, Any]]
+    artifacts: list[dict[str, Any]]
 
 
 def compute_execution_waves(subtasks: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -103,6 +152,8 @@ def _task_needs_destructive_preview(subtasks: list[dict[str, Any]], user_message
 
 
 async def plan_node(state: CoordinatorState) -> dict[str, Any]:
+    context = dict(state.get("context") or {})
+    _check_cancelled(context)
     await event_bus.publish_json("coordinator", "plan", state["user_message"][:120])
     from tempa.core.task_store import create_task, format_active_tasks_summary
     from tempa.rag.procedural import format_preferences_for_prompt, maybe_capture_from_message
@@ -125,6 +176,21 @@ async def plan_node(state: CoordinatorState) -> dict[str, Any]:
             context["recent_user_messages"] = [
                 m.get("text", "") for m in get_recent_messages(8) if m.get("role") == "user"
             ]
+        except Exception:
+            pass
+
+    session_id = context.get("session_id")
+    if session_id and "recent_user_messages" not in context:
+        try:
+            from tempa.core.chat_sessions import get_session
+
+            session = get_session(str(session_id))
+            if session:
+                context["recent_user_messages"] = [
+                    m.get("content", "")
+                    for m in (session.get("messages") or [])[-8:]
+                    if m.get("role") == "user"
+                ]
         except Exception:
             pass
 
@@ -171,10 +237,14 @@ async def plan_preview_node(state: CoordinatorState) -> dict[str, Any]:
     )
     response = (
         "I've prepared an execution plan that includes actions requiring your approval. "
-        f"Open Tempa Approvals to review (id: {action['id'][:8]}…).\n\n"
+        f"Review the plan below or open Approvals (id: {action['id'][:8]}…).\n\n"
         f"Plan:\n{plan_summary}"
     )
-    return {"response": response, "paused": True}
+    return {
+        "response": response,
+        "paused": True,
+        "pending_actions": [_pending_preview(action["id"], "plan_preview", plan_summary)],
+    }
 
 
 def route_after_preview(state: CoordinatorState) -> str:
@@ -185,6 +255,8 @@ def route_after_preview(state: CoordinatorState) -> str:
 
 async def rag_gate_node(state: CoordinatorState) -> dict[str, Any]:
     """FR-CORE-04: Agentic RAG runs before specialist actions."""
+    context = dict(state.get("context") or {})
+    _check_cancelled(context)
     await event_bus.publish_json("coordinator", "rag_gate", "retrieving context before specialists")
     rag_task = state.get("rag_task") or {"agent": "rag", "task": state["user_message"]}
     context = dict(state.get("context") or {})
@@ -203,12 +275,18 @@ async def _run_specialist_with_retry(
     context: dict[str, Any],
     user_message: str,
     task_id: str,
+    subtask_id: str = "",
 ) -> str:
+    import time
+
     runner = AGENT_RUNNERS.get(agent)
     if not runner:
         return f"Unknown agent: {agent}"
     ctx = dict(context)
     ctx["user_message"] = user_message
+    step_id = subtask_id or agent
+    started = time.monotonic()
+    await event_bus.publish_step(step_id, agent, "start", task[:120])
     if task_id:
         from tempa.core.task_store import update_subtask
 
@@ -224,11 +302,14 @@ async def _run_specialist_with_retry(
             await event_bus.publish_json("coordinator", "retry", f"{agent}:{attempt}")
             if attempt == MAX_SPECIALIST_RETRIES:
                 result = f"Agent {agent} failed after retries: {last_error}"
+    duration_ms = int((time.monotonic() - started) * 1000)
+    status = "error" if "failed after retries" in result else "done"
+    await event_bus.publish_step(step_id, agent, status, result[:120], duration_ms=duration_ms)
     if task_id:
         from tempa.core.task_store import update_subtask
 
-        status = "failed" if "failed after retries" in result else "completed"
-        update_subtask(task_id, agent, status)
+        subtask_status = "failed" if status == "error" else "completed"
+        update_subtask(task_id, agent, subtask_status)
     return result
 
 
@@ -237,13 +318,15 @@ async def execute_waves_node(state: CoordinatorState) -> dict[str, Any]:
     if not subtasks:
         return {}
 
+    context = dict(state.get("context") or {})
+    _check_cancelled(context)
     waves = compute_execution_waves(subtasks)
     results = dict(state.get("results") or {})
-    context = dict(state.get("context") or {})
     user_message = state.get("user_message", "")
     task_id = state.get("task_id", "")
 
     for wave_index, wave in enumerate(waves):
+        _check_cancelled(context)
         await event_bus.publish_json("coordinator", "wave", f"wave {wave_index + 1}/{len(waves)}")
         context["specialist_results"] = results
         coros = [
@@ -253,6 +336,7 @@ async def execute_waves_node(state: CoordinatorState) -> dict[str, Any]:
                 context,
                 user_message,
                 task_id,
+                str(task.get("_id") or task.get("agent")),
             )
             for task in wave
         ]
@@ -362,12 +446,20 @@ async def run_coordinator_full(user_message: str, context: dict[str, Any] | None
             "subtasks": [],
             "results": {},
             "sources": [],
+            "pending_actions": [],
+            "artifacts": [],
         }
     )
+    artifacts = list(state.get("artifacts") or [])
+    for artifact in _extract_artifacts(state.get("results") or {}):
+        if artifact not in artifacts:
+            artifacts.append(artifact)
     return {
         "response": state.get("response", ""),
         "sources": state.get("sources") or [],
         "paused": bool(state.get("paused")),
+        "pending_actions": _collect_pending_actions(state),
+        "artifacts": artifacts,
     }
 
 

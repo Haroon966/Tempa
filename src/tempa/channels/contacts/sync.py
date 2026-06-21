@@ -17,22 +17,27 @@ def _has_contacts_scope(creds) -> bool:
 
 
 def _load_google_creds(*, require_contacts: bool = False):
+    import json
+
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
-    settings = get_settings()
-    paths = [settings.gmail_token_path, settings.google_token_path]
+    from tempa.security.sessions import read_secret_file, secret_file_exists, write_secret_file
+
+    paths = ("gmail/token.json", "google/token.json")
     seen: set[str] = set()
     fallback = None
-    for path in paths:
-        key = str(path)
-        if key in seen or not path.exists():
+    for rel in paths:
+        if rel in seen or not secret_file_exists(rel):
             continue
-        seen.add(key)
-        creds = Credentials.from_authorized_user_file(str(path))
+        seen.add(rel)
+        token_json = read_secret_file(rel)
+        if not token_json:
+            continue
+        creds = Credentials.from_authorized_user_info(json.loads(token_json))
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            path.write_text(creds.to_json(), encoding="utf-8")
+            write_secret_file(rel, creds.to_json())
         if require_contacts and not _has_contacts_scope(creds):
             fallback = fallback or creds
             continue

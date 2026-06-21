@@ -88,6 +88,22 @@ def read_secret_file(rel_path: str) -> str:
     return ""
 
 
+def secret_file_exists(rel_path: str) -> bool:
+    settings = get_settings()
+    plain = settings.sessions_dir / rel_path
+    enc = plain.with_suffix(plain.suffix + ".enc")
+    return plain.exists() or enc.exists()
+
+
+def delete_secret_file(rel_path: str) -> None:
+    settings = get_settings()
+    plain = settings.sessions_dir / rel_path
+    enc = plain.with_suffix(plain.suffix + ".enc")
+    for path in (plain, enc):
+        if path.exists():
+            path.unlink()
+
+
 def write_secret_file(rel_path: str, content: str, *, encrypt: bool = True) -> None:
     settings = get_settings()
     path = settings.sessions_dir / rel_path

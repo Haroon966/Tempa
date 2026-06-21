@@ -7,7 +7,7 @@ from typing import Any
 from tempa.channels.whatsapp.conversation import record_conversation_turn
 from tempa.channels.whatsapp.inbound_queue import enqueue_inbound, start_inbound_worker
 from tempa.channels.whatsapp.schemas import EvolutionWebhookPayload, WhatsAppMessage, parse_messages_upsert
-from tempa.channels.whatsapp.client import EvolutionWhatsAppClient
+from tempa.channels.whatsapp.client import WhatsAppBridgeClient
 from tempa.channels.whatsapp.session import store_qr_code, update_connection_state
 from tempa.core.events import event_bus
 from tempa.debug_agent_log import agent_log
@@ -25,7 +25,7 @@ async def _enable_webhook_after_connect() -> None:
     )
     webhook_url = f"{base.rstrip('/')}/webhooks/whatsapp"
     try:
-        await EvolutionWhatsAppClient().set_webhook(webhook_url)
+        await WhatsAppBridgeClient().set_webhook(webhook_url)
     except Exception:
         pass
 
@@ -78,9 +78,12 @@ async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
     event = model.event.upper().replace(".", "_")
 
     if event in {"MESSAGES_UPSERT", "MESSAGES.UPSERT"}:
+        from tempa.channels.whatsapp.numbers import remember_message_lid_mapping
+
         messages = parse_messages_upsert(payload)
         queued = 0
         for msg in messages:
+            remember_message_lid_mapping(msg.raw_item)
             key = _dedupe_key(msg)
             if not _mark_seen(key):
                 continue
@@ -103,14 +106,16 @@ async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
         agent_log(
             location="webhook.py:connection_update",
             message="connection state updated",
-            data={"state": state, "connected": snapshot.get("connected")},
-            hypothesis_id="H1",
+            data={"state": state, "connected": snapshot.get("connected"), "instance": model.instance},
+            hypothesis_id="H2",
         )
         # #endregion
         if str(state).lower() in {"open", "connected"}:
             from tempa.channels.whatsapp.session import clear_qr_code
+            from tempa.channels.whatsapp.numbers import sync_linked_owner_from_bridge
 
             await asyncio.to_thread(clear_qr_code)
+            asyncio.create_task(sync_linked_owner_from_bridge())
             asyncio.create_task(_enable_webhook_after_connect())
         await event_bus.publish_json("channel", "whatsapp_connection", state)
         if snapshot.get("needs_qr_rescan"):
@@ -124,15 +129,36 @@ async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(qrcode, dict):
                 return
             base64_qr = qrcode.get("base64")
+            code = qrcode.get("code")
+            # Bridge/Evolution sometimes put the raw WA pairing string in `base64`, not PNG data.
+            if isinstance(base64_qr, str) and base64_qr and ("@" in base64_qr or len(base64_qr) < 500):
+                # #region agent log
+                agent_log(
+                    location="webhook.py:qrcode_updated:reject_base64",
+                    message="ignored invalid base64 field — will render from code",
+                    data={"base64_len": len(base64_qr), "has_code": bool(code)},
+                    hypothesis_id="H8",
+                )
+                # #endregion
+                base64_qr = None
             if not (isinstance(base64_qr, str) and base64_qr):
-                code = qrcode.get("code")
                 if isinstance(code, str) and code:
                     base64_qr = await asyncio.to_thread(
-                        EvolutionWhatsAppClient._qr_image_from_code, code
+                        WhatsAppBridgeClient._qr_image_from_code, code
                     )
             if isinstance(base64_qr, str) and base64_qr:
                 if not base64_qr.startswith("data:"):
                     base64_qr = f"data:image/png;base64,{base64_qr}"
+                if len(base64_qr) < 500:
+                    # #region agent log
+                    agent_log(
+                        location="webhook.py:qrcode_updated:reject_short",
+                        message="ignored QR — too short to be a scannable image",
+                        data={"qr_len": len(base64_qr)},
+                        hypothesis_id="H8",
+                    )
+                    # #endregion
+                    return
                 await asyncio.to_thread(store_qr_code, base64_qr)
                 # #region agent log
                 agent_log(

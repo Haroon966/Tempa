@@ -132,19 +132,23 @@ def append_message(
     role: MessageRole,
     content: str,
     sources: list[dict[str, Any]] | None = None,
+    *,
+    paused: bool = False,
 ) -> dict[str, Any] | None:
     with _lock:
         session = _read_session_unlocked(session_id)
         if not session:
             return None
         now = _now_iso()
-        message = {
+        message: dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "role": role,
             "content": content,
             "sources": sources or [],
             "created_at": now,
         }
+        if paused:
+            message["paused"] = True
         session["messages"].append(message)
         session["updated_at"] = now
         if role == "user" and (session.get("title") in ("", "New chat") or not session.get("title")):

@@ -40,6 +40,17 @@ class ActionItem(BaseModel):
     due: str | None = Field(default=None, description="Due date or time if mentioned.")
 
 
+class FollowUpDraft(BaseModel):
+    """Draft follow-up message after a meeting."""
+
+    channel: str = Field(description="email or whatsapp")
+    recipient: str
+    recipient_name: str | None = None
+    subject: str | None = None
+    body: str
+    rationale: str = ""
+
+
 class Decision(BaseModel):
     """A decision reached during the meeting."""
 
@@ -66,3 +77,4 @@ class MeetingSummary(BaseModel):
     open_questions: list[OpenQuestion] = Field(default_factory=list)
     sentiment: Sentiment
     sentiment_notes: str
+    follow_up_drafts: list[FollowUpDraft] = Field(default_factory=list)

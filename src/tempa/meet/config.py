@@ -43,3 +43,8 @@ class WorkerConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     stt: SttConfig = field(default_factory=SttConfig)
     join: JoinConfig = field(default_factory=JoinConfig)
+    calendar_event_id: str | None = None
+    calendar_event_start: str | None = None
+    calendar_event_end: str | None = None
+    attendee_emails: list[str] = field(default_factory=list)
+    started_at: str | None = None

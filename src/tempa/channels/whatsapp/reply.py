@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tempa.channels.whatsapp.chat import run_whatsapp_reply
 from tempa.channels.whatsapp.media import transcribe_whatsapp_audio
-from tempa.channels.whatsapp.numbers import is_owner_whatsapp_number
+from tempa.channels.whatsapp.numbers import is_owner_whatsapp_number, remember_message_lid_mapping
 from tempa.channels.whatsapp.outbound import send_whatsapp_message
 from tempa.channels.whatsapp.session import is_auto_reply_paused, needs_qr_rescan
 from tempa.core.events import event_bus
@@ -80,14 +80,15 @@ async def handle_inbound_whatsapp(
         return {"handled": 0}
 
     if is_auto_reply_paused():
-        from tempa.channels.whatsapp.session import sync_connection_from_evolution
+        from tempa.channels.whatsapp.session import sync_connection_from_bridge
 
-        await sync_connection_from_evolution()
+        await sync_connection_from_bridge()
     if is_auto_reply_paused():
         await event_bus.publish_json("channel", "whatsapp_paused", "disconnected")
         return {"handled": 0, "paused": True, "needs_qr_rescan": needs_qr_rescan()}
 
     raw_item = raw_item or {}
+    remember_message_lid_mapping(raw_item)
     text = await _resolve_message_text(text, raw_item)
 
     from tempa.channels.whatsapp.conversation import record_conversation_turn
@@ -103,7 +104,21 @@ async def handle_inbound_whatsapp(
     participant = chat_id if is_group else from_number
     participants = [participant, from_number] if is_group else [from_number]
 
-    if not is_owner_whatsapp_number(from_number):
+    if not is_owner_whatsapp_number(from_number, chat_id=chat_id, raw_item=raw_item):
+        # #region agent log
+        from tempa.debug_agent_log import agent_log
+
+        agent_log(
+            location="reply.py:handle_inbound_whatsapp:skip",
+            message="skipped auto-reply — sender not owner",
+            data={
+                "from_number": from_number,
+                "chat_id": chat_id,
+                "owner": load_default_whatsapp_number(),
+            },
+            hypothesis_id="H6",
+        )
+        # #endregion
         asyncio.create_task(
             asyncio.to_thread(
                 _ingest_inbound,
@@ -136,7 +151,8 @@ async def handle_inbound_whatsapp(
         logger.exception("WhatsApp reply failed")
         reply = f"Tempa encountered an error: {exc}"
 
-    send_result = await send_whatsapp_message(from_number, reply, source_channel="whatsapp_auto_reply")
+    reply_target = chat_id if chat_id and "@" in chat_id else from_number
+    send_result = await send_whatsapp_message(reply_target, reply, source_channel="whatsapp_auto_reply")
 
     record_conversation_turn(
         role="assistant",

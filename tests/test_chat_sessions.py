@@ -39,6 +39,21 @@ def test_append_message_and_auto_title(chat_store):
     assert updated["messages"][1]["sources"][0]["label"] == "calendar"
 
 
+def test_append_message_persist_paused(chat_store):
+    session = cs.create_session()
+    msg = cs.append_message(
+        session["id"],
+        "assistant",
+        "Plan ready for review.",
+        paused=True,
+    )
+    assert msg is not None
+    assert msg.get("paused") is True
+    updated = cs.get_session(session["id"])
+    assert updated is not None
+    assert updated["messages"][0]["paused"] is True
+
+
 def test_delete_session(chat_store):
     session = cs.create_session()
     assert cs.delete_session(session["id"]) is True

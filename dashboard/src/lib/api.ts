@@ -116,6 +116,47 @@ export async function revokeMeetConsent() {
   return request<{ consented: boolean }>("/api/meetings/consent", { method: "DELETE" })
 }
 
+export interface ActiveMeetingLive {
+  meeting_id: string
+  title?: string
+  meet_url?: string
+  status?: string
+  transcript_tail?: string
+  live_notes?: string
+  suggestions?: Array<{ id: string; text: string; rationale?: string }>
+}
+
+export async function fetchActiveMeetings() {
+  return request<{ active: ActiveMeetingLive[]; sessions: unknown[] }>("/api/meetings/active")
+}
+
+export async function fetchMeetingDetail(meetingId: string) {
+  return request<{
+    meeting: import("@/types/dashboard").MeetingRecord
+    transcript_raw?: string
+    pending_followups?: PendingAction[]
+    error?: string
+  }>(`/api/meetings/${meetingId}`)
+}
+
+export async function sendMeetingChat(meetingId: string, text: string) {
+  return request<{ status: string }>(`/api/meetings/${meetingId}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  })
+}
+
+export async function fetchMeetReadiness() {
+  return request<{
+    ready: boolean
+    consent: boolean
+    meet_auth: boolean
+    google_connected: boolean
+    detail: string
+  }>("/api/meetings/readiness")
+}
+
 export async function fetchGroqModels() {
   return request<{ chains: Record<string, string[]>; categories: string[] }>(
     "/api/connections/groq/models",
@@ -145,6 +186,20 @@ export async function approvePendingAction(id: string) {
 
 export async function rejectPendingAction(id: string) {
   return request<PendingAction>(`/api/pending-actions/${id}/reject`, { method: "POST" })
+}
+
+export async function updatePendingAction(id: string, payload: Record<string, unknown>) {
+  return request<PendingAction>(`/api/pending-actions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ payload }),
+  })
+}
+
+export async function cancelChatRun(runId: string) {
+  return request<{ status: string; run_id: string }>(`/api/chat/runs/${runId}/cancel`, {
+    method: "POST",
+  })
 }
 
 export async function fetchTasks() {
@@ -206,6 +261,29 @@ export interface ChatMessageRecord {
   content: string
   sources: ChatSource[]
   created_at: string
+  paused?: boolean
+  pending_actions?: PendingActionPreview[]
+  artifacts?: ChatArtifact[]
+}
+
+export interface PendingActionPreview {
+  id: string
+  type: string
+  preview?: string
+}
+
+export interface ChatArtifact {
+  type: string
+  [key: string]: unknown
+}
+
+export interface StepEvent {
+  subtask_id: string
+  agent: string
+  status: "start" | "done" | "error"
+  detail?: string
+  duration_ms?: number
+  timestamp: string
 }
 
 export interface ChatSessionSummary {
@@ -245,12 +323,27 @@ export interface ChatStreamRequest {
   message: string
   session_id?: string | null
   context?: Record<string, unknown>
+  run_id?: string | null
 }
 
 export type ChatStreamEvent =
+  | { type: "run_started"; run_id: string; session_id: string }
   | { type: "token"; delta: string }
   | { type: "activity"; event: { agent: string; action: string; detail: string; timestamp: string } }
-  | { type: "message"; content: string; sources: ChatSource[]; paused: boolean; session_id: string | null }
+  | {
+      type: "step"
+      step: StepEvent
+    }
+  | {
+      type: "message"
+      content: string
+      sources: ChatSource[]
+      paused: boolean
+      session_id: string | null
+      pending_actions: PendingActionPreview[]
+      artifacts: ChatArtifact[]
+      run_id: string | null
+    }
   | { type: "error"; error: string }
   | { type: "done" }
 
@@ -275,52 +368,121 @@ export async function* streamChat(
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
+  let sawDone = false
+
+  const classifyEvent = (
+    eventType: string,
+    data: Record<string, unknown>,
+  ): ChatStreamEvent | null => {
+    let kind = eventType
+    if (!kind) {
+      if ("delta" in data) kind = "token"
+      else if ("agent" in data && "action" in data) kind = "activity"
+      else if ("error" in data) kind = "error"
+      else if ("content" in data || "session_id" in data || "sources" in data || "paused" in data) {
+        kind = "message"
+      } else if ("run_id" in data && "session_id" in data) {
+        kind = "run_started"
+      } else if ("subtask_id" in data && "status" in data) {
+        kind = "step"
+      } else if (Object.keys(data).length === 0) kind = "done"
+    }
+
+    if (kind === "token") {
+      return { type: "token", delta: String(data.delta ?? "") }
+    }
+    if (kind === "run_started") {
+      return {
+        type: "run_started",
+        run_id: String(data.run_id ?? ""),
+        session_id: String(data.session_id ?? ""),
+      }
+    }
+    if (kind === "step") {
+      return {
+        type: "step",
+        step: data as unknown as StepEvent,
+      }
+    }
+    if (kind === "activity") {
+      return {
+        type: "activity",
+        event: data as { agent: string; action: string; detail: string; timestamp: string },
+      }
+    }
+    if (kind === "message") {
+      return {
+        type: "message",
+        content: String(data.content ?? ""),
+        sources: (data.sources as ChatSource[]) ?? [],
+        paused: Boolean(data.paused),
+        session_id: (data.session_id as string) ?? null,
+        pending_actions: (data.pending_actions as PendingActionPreview[]) ?? [],
+        artifacts: (data.artifacts as ChatArtifact[]) ?? [],
+        run_id: (data.run_id as string) ?? null,
+      }
+    }
+    if (kind === "error") {
+      return { type: "error", error: String(data.error ?? "Unknown error") }
+    }
+    if (kind === "done") {
+      return { type: "done" }
+    }
+    return null
+  }
+
+  const parsePart = (part: string): ChatStreamEvent | null => {
+    const normalized = part.replace(/\r\n/g, "\n").trim()
+    if (!normalized) return null
+
+    let eventType = ""
+    const dataLines: string[] = []
+    for (const line of normalized.split("\n")) {
+      if (line.startsWith("event:")) {
+        eventType = line.slice(6).trim()
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart())
+      }
+    }
+    const dataStr = dataLines.join("\n")
+    if (!dataStr) return null
+
+    try {
+      const data = JSON.parse(dataStr) as Record<string, unknown>
+      return classifyEvent(eventType, data)
+    } catch {
+      return null
+    }
+  }
+
+  const flush = function* (final = false) {
+    buffer = buffer.replace(/\r\n/g, "\n")
+    const parts = buffer.split("\n\n")
+    buffer = final ? "" : (parts.pop() ?? "")
+    for (const part of parts) {
+      const event = parsePart(part)
+      if (!event) continue
+      if (event.type === "done") sawDone = true
+      yield event
+    }
+    if (final && buffer.trim()) {
+      const event = parsePart(buffer)
+      if (event) {
+        if (event.type === "done") sawDone = true
+        yield event
+      }
+    }
+  }
 
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
-    const parts = buffer.split("\n\n")
-    buffer = parts.pop() ?? ""
-
-    for (const part of parts) {
-      if (!part.trim()) continue
-      let eventType = "message"
-      let dataStr = ""
-      for (const line of part.split("\n")) {
-        if (line.startsWith("event:")) {
-          eventType = line.slice(6).trim()
-        } else if (line.startsWith("data:")) {
-          dataStr = line.slice(5).trim()
-        }
-      }
-      if (!dataStr) continue
-      try {
-        const data = JSON.parse(dataStr) as Record<string, unknown>
-        if (eventType === "token") {
-          yield { type: "token", delta: String(data.delta ?? "") }
-        } else if (eventType === "activity") {
-          yield {
-            type: "activity",
-            event: data as { agent: string; action: string; detail: string; timestamp: string },
-          }
-        } else if (eventType === "message") {
-          yield {
-            type: "message",
-            content: String(data.content ?? ""),
-            sources: (data.sources as ChatSource[]) ?? [],
-            paused: Boolean(data.paused),
-            session_id: (data.session_id as string) ?? null,
-          }
-        } else if (eventType === "error") {
-          yield { type: "error", error: String(data.error ?? "Unknown error") }
-        } else if (eventType === "done") {
-          yield { type: "done" }
-        }
-      } catch {
-        /* ignore malformed chunks */
-      }
-    }
+    yield* flush()
   }
-  yield { type: "done" }
+  buffer += decoder.decode()
+  yield* flush(true)
+  if (!sawDone) {
+    yield { type: "done" }
+  }
 }

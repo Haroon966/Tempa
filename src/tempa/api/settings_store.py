@@ -8,9 +8,14 @@ from tempa.settings import get_settings
 _KEYS = (
     "reminder_minutes_before",
     "meet_auto_join_on_reminder",
+    "meet_auto_join_enabled",
     "meet_trigger_before_minutes",
     "meet_trigger_after_start_minutes",
     "meet_alone_grace_seconds",
+    "meet_skip_keywords",
+    "meet_retention_days",
+    "meet_auto_send_summary_whatsapp",
+    "meet_copilot_whatsapp_notify",
 )
 
 
@@ -51,8 +56,13 @@ def get_public_settings() -> dict:
     return {
         "reminder_minutes_before": settings.reminder_minutes_before,
         "meet_auto_join_on_reminder": settings.meet_auto_join_on_reminder,
+        "meet_auto_join_enabled": settings.meet_auto_join_enabled,
         "meet_trigger_before_minutes": settings.meet_trigger_before_minutes,
         "meet_trigger_after_start_minutes": settings.meet_trigger_after_start_minutes,
         "meet_alone_grace_seconds": settings.meet_alone_grace_seconds,
+        "meet_skip_keywords": settings.meet_skip_keywords,
+        "meet_retention_days": settings.meet_retention_days,
+        "meet_auto_send_summary_whatsapp": settings.meet_auto_send_summary_whatsapp,
+        "meet_copilot_whatsapp_notify": settings.meet_copilot_whatsapp_notify,
         "tempa_daemon_port": settings.tempa_daemon_port,
     }

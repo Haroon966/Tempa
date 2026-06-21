@@ -28,6 +28,7 @@ export interface DashboardPayload {
   active_tasks?: TaskSummary[]
   environment: {
     data_dir: string
+    whatsapp_bridge_url: string
     evolution_api_url: string
     tempa_version: string
   }
@@ -36,6 +37,9 @@ export interface DashboardPayload {
 export interface ConnectionInfo {
   status?: string
   connected?: boolean
+  ready?: boolean
+  consent?: boolean
+  meet_auth?: boolean
   credentials_configured?: boolean
   email_address?: string
   detail?: string
@@ -102,6 +106,13 @@ export interface MeetingRecord {
   started_at?: string
   ended_at?: string
   participants?: string[]
+  attendee_emails?: string[]
+  calendar_event_id?: string
+  calendar_event_start?: string
+  minutes?: Record<string, unknown>
+  minutes_status?: string
+  followups?: Record<string, unknown>[]
+  artifacts?: Record<string, boolean>
 }
 
 export interface ActivityEvent {

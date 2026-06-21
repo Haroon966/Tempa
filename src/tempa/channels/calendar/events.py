@@ -4,6 +4,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from tempa.channels.calendar.client import CalendarEvent, GoogleCalendar
@@ -11,7 +12,7 @@ from tempa.channels.calendar.ingest import ingest_calendar_event
 from tempa.channels.calendar.oauth import load_calendar_client
 
 _CREATE_HINTS = re.compile(
-    r"\b(?:make|create|schedule|add|set up|book)\b.*\b(?:meeting|event|appointment)\b",
+    r"\b(?:make|create|schedule|add|set(?:\s+up)?|book)\b.*\b(?:meeting|event|appointment)\b",
     re.I,
 )
 _INVITE_CREATE_HINTS = re.compile(
@@ -41,6 +42,10 @@ _TIME_RE = re.compile(
     re.I,
 )
 _TIME_FALLBACK_RE = re.compile(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", re.I)
+_TIME_RANGE_RE = re.compile(
+    r"(?:around|at|from|@)?\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+to\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
+    re.I,
+)
 _DURATION_RE = re.compile(r"\b(\d+)\s*(?:min|mins|minutes?)\b", re.I)
 _TITLE_NAME_RE = re.compile(r"\bname\s+(.+?)(?:\s*$)", re.I)
 _GUEST_NAME_PATTERNS = (
@@ -49,6 +54,10 @@ _GUEST_NAME_PATTERNS = (
     re.compile(r"\b(?:add|invite)\s+(.+?)\s+as\s+(?:a\s+)?guest\b", re.I),
     re.compile(r"\b(?:send|email)\s+(?:an?\s+)?invite\s+to\s+(.+?)(?:\s+at|\s*$|,|\.)", re.I),
     re.compile(r"\binvite\s+(.+?)\s+at\s+", re.I),
+    re.compile(
+        r"\b(?:meeting\s+)?(?:me\s+and|with)\s+([A-Za-z][\w\s\-']+?)(?:\s+for\s+\d|\s+at|\s+from|\s+\d|\s+to\s+\d|\s*$|,|\.)",
+        re.I,
+    ),
 )
 
 
@@ -190,28 +199,87 @@ def parse_event_title(text: str) -> str:
         match = re.search(pattern, text, re.I)
         if match and match.group(1).strip():
             return match.group(1).strip()[:120]
+    named_for = re.search(r"\bfor\s+(?:\d+\s+minutes?\s+)?for\s+(.+?)\s*$", text, re.I)
+    if named_for and named_for.group(1).strip():
+        return named_for.group(1).strip()[:120]
+    with_match = re.search(
+        r"\b(?:me\s+and|with)\s+([A-Za-z][\w\s\-']+?)(?:\s+for\s+\d|\s+at|\s+from|\s+\d|\s+to\s+|\s*$|,|\.)",
+        text,
+        re.I,
+    )
+    if with_match and with_match.group(1).strip():
+        guest = _clean_guest_name(with_match.group(1))
+        if guest.lower() not in {"me", "them", "a", "an", "the"}:
+            return f"Meeting with {guest.title()}"[:120]
+    trailing_for = re.search(r"\bfor\s+(.+?)\s*$", text, re.I)
+    if trailing_for:
+        label = trailing_for.group(1).strip().rstrip(".")
+        if label and not re.match(r"^\d+\s+minutes?$", label, re.I):
+            return label[:120]
     return "Meeting"
 
 
 def _clean_guest_name(name: str) -> str:
     cleaned = name.strip().rstrip(".,;")
-    cleaned = re.sub(r"\s+for\s+.*$", "", cleaned, flags=re.I).strip()
+    cleaned = re.sub(r"\s+for(?:\s+.*)?$", "", cleaned, flags=re.I).strip()
     return cleaned
+
+
+_calendar_owner_cache: str | None = None
+
+
+def get_calendar_owner_email() -> str:
+    global _calendar_owner_cache
+    if _calendar_owner_cache:
+        return _calendar_owner_cache
+    client = load_calendar_client()
+    if client is None:
+        return ""
+    try:
+        cal = client._service.calendars().get(calendarId="primary").execute()
+        _calendar_owner_cache = str(cal.get("id") or "")
+    except Exception:
+        _calendar_owner_cache = ""
+    return _calendar_owner_cache
+
+
+def external_attendees_from_event_raw(raw: dict[str, Any]) -> list[str]:
+    owner = get_calendar_owner_email().lower()
+    from tempa.channels.gmail.recipients import is_excluded_guest_email
+
+    guests: list[str] = []
+    for att in raw.get("attendees") or []:
+        email = str(att.get("email") or "").strip()
+        if not email or att.get("organizer") or att.get("self"):
+            continue
+        if is_excluded_guest_email(email, owner=owner):
+            continue
+        if email.lower() not in {g.lower() for g in guests}:
+            guests.append(email)
+    return guests
 
 
 def _resolve_name_to_email(name: str) -> str | None:
     if "@" in name:
-        return name.strip()
-    from tempa.channels.contacts.sync import resolve_recipient, sync_contacts_blocking
+        email = name.strip()
+        from tempa.channels.gmail.recipients import is_excluded_guest_email
 
-    hit = resolve_recipient(name)
-    email = str(hit.get("email", "")).strip()
-    if email:
+        owner = get_calendar_owner_email()
+        if is_excluded_guest_email(email, owner=owner):
+            return None
         return email
-    sync_contacts_blocking()
-    hit = resolve_recipient(name)
-    email = str(hit.get("email", "")).strip()
-    return email or None
+
+    cleaned = _clean_guest_name(name)
+    from tempa.channels.gmail.recipients import resolve_guest_email_by_name
+
+    owner = get_calendar_owner_email()
+    for candidate in (cleaned, name.strip()):
+        if not candidate:
+            continue
+        email = resolve_guest_email_by_name(candidate, owner=owner)
+        if email:
+            return email
+    return None
 
 
 def _attendee_names_from_text(text: str) -> list[str]:
@@ -232,6 +300,9 @@ def _attendee_names_from_text(text: str) -> list[str]:
 
 
 def parse_event_duration(text: str, *, default: int = 60) -> int:
+    time_range = parse_event_time_range(text)
+    if time_range is not None:
+        return time_range[1]
     match = _DURATION_RE.search(text)
     if not match:
         return default
@@ -243,7 +314,14 @@ def parse_event_duration(text: str, *, default: int = 60) -> int:
 
 
 def parse_attendee_emails(text: str, *, recent_texts: list[str] | None = None) -> list[str]:
-    emails = list(dict.fromkeys(_EMAIL_RE.findall(text)))
+    from tempa.channels.gmail.recipients import is_excluded_guest_email
+
+    owner = get_calendar_owner_email()
+    emails = [
+        email
+        for email in dict.fromkeys(_EMAIL_RE.findall(text))
+        if not is_excluded_guest_email(email, owner=owner)
+    ]
     if emails:
         return emails
 
@@ -256,7 +334,7 @@ def parse_attendee_emails(text: str, *, recent_texts: list[str] | None = None) -
         needle = partial.group(1).lower()
         for msg in reversed((recent_texts or []) + [text]):
             for email in _EMAIL_RE.findall(msg):
-                if needle in email.lower():
+                if needle in email.lower() and not is_excluded_guest_email(email, owner=owner):
                     return [email]
 
     resolved: list[str] = []
@@ -274,15 +352,20 @@ def parse_attendee_emails(text: str, *, recent_texts: list[str] | None = None) -
     return resolved
 
 
-def _parse_time_match(match: re.Match[str], *, now: datetime) -> datetime:
-    hour = int(match.group(1))
-    minute = int(match.group(2) or 0)
-    meridiem = (match.group(3) or "").lower()
-    if meridiem == "pm" and hour < 12:
+def _parse_time_components(
+    hour: int,
+    minute: int,
+    meridiem: str,
+    *,
+    now: datetime,
+    inherit_meridiem: str = "",
+) -> datetime:
+    mer = (meridiem or inherit_meridiem or "").lower()
+    if mer == "pm" and hour < 12:
         hour += 12
-    if meridiem == "am" and hour == 12:
+    if mer == "am" and hour == 12:
         hour = 0
-    if not meridiem and hour < 8:
+    if not mer and hour < 8:
         hour += 12
 
     start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -291,10 +374,54 @@ def _parse_time_match(match: re.Match[str], *, now: datetime) -> datetime:
     return start
 
 
+def _parse_time_match(match: re.Match[str], *, now: datetime) -> datetime:
+    return _parse_time_components(
+        int(match.group(1)),
+        int(match.group(2) or 0),
+        (match.group(3) or "").lower(),
+        now=now,
+    )
+
+
+def parse_event_time_range(text: str, *, now: datetime | None = None) -> tuple[datetime, int] | None:
+    """Parse '11:30pm to 11:45pm' into (start, duration_minutes)."""
+    match = _TIME_RANGE_RE.search(text)
+    if not match:
+        return None
+
+    now = now or datetime.now(_local_tz())
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_local_tz())
+
+    start_mer = (match.group(3) or "").lower()
+    end_mer = (match.group(6) or start_mer or "").lower()
+    start = _parse_time_components(
+        int(match.group(1)),
+        int(match.group(2) or 0),
+        start_mer,
+        now=now,
+    )
+    end = _parse_time_components(
+        int(match.group(4)),
+        int(match.group(5) or 0),
+        end_mer,
+        now=now,
+        inherit_meridiem=start_mer,
+    )
+    duration = int((end - start).total_seconds() / 60)
+    if duration <= 0:
+        duration += 24 * 60
+    return start, max(5, min(duration, 480))
+
+
 def parse_event_start(text: str, *, now: datetime | None = None) -> datetime | None:
     now = now or datetime.now(_local_tz())
     if now.tzinfo is None:
         now = now.replace(tzinfo=_local_tz())
+
+    time_range = parse_event_time_range(text, now=now)
+    if time_range is not None:
+        return time_range[0]
 
     matches = list(_TIME_RE.finditer(text))
     if not matches:
@@ -368,6 +495,15 @@ def create_calendar_event(
         start = start.replace(tzinfo=_local_tz())
     end = start + timedelta(minutes=duration_minutes)
 
+    from tempa.channels.gmail.recipients import is_excluded_guest_email
+
+    owner = get_calendar_owner_email()
+    guest_emails = [
+        email
+        for email in (attendee_emails or [])
+        if email and not is_excluded_guest_email(email, owner=owner)
+    ]
+
     try:
         event = client.create_event(
             summary=summary,
@@ -375,8 +511,9 @@ def create_calendar_event(
             end=end,
             with_meet=with_meet,
             timezone=_tz_name(),
-            attendee_emails=attendee_emails,
+            attendee_emails=guest_emails or None,
         )
+        invited = external_attendees_from_event_raw(event.raw or {})
         ingest_calendar_event(event)
         when = start.astimezone(_local_tz()).strftime("%a %H:%M")
         from tempa.channels.calendar.session_state import record_calendar_event
@@ -387,7 +524,7 @@ def create_calendar_event(
                 "summary": summary,
                 "when": when,
                 "meet_url": event.meet_url,
-                "attendees": attendee_emails or [],
+                "attendees": invited,
             }
         )
         return CreateEventResult(
@@ -396,7 +533,7 @@ def create_calendar_event(
             when=when,
             start_at=start,
             meet_url=event.meet_url,
-            invited_attendees=attendee_emails or [],
+            invited_attendees=invited,
             event=event,
         )
     except Exception as exc:
@@ -412,20 +549,116 @@ def try_create_event_from_message(
         return CreateEventResult(ok=False, error="not a create request")
 
     title = parse_event_title(text)
-    start = parse_event_start(text)
+    time_range = parse_event_time_range(text)
+    if time_range is not None:
+        start, duration = time_range
+    else:
+        start = parse_event_start(text)
+        duration = parse_event_duration(text)
     if start is None:
         return CreateEventResult(
             ok=False,
             error="Could not parse meeting time — try e.g. 'create meeting at 5:10pm name Tempa Testing'.",
         )
     attendees = parse_attendee_emails(text, recent_texts=recent_texts)
-    duration = parse_event_duration(text)
     return create_calendar_event(
         summary=title,
         start=start,
         duration_minutes=duration,
         attendee_emails=attendees or None,
     )
+
+
+def apply_calendar_actions_from_message(
+    text: str,
+    *,
+    recent_texts: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create, delete, or invite on Google Calendar. Shared by WhatsApp and dashboard agent."""
+    successes: list[str] = []
+    failures: list[str] = []
+    action = "none"
+    ok = False
+    details: dict[str, Any] = {}
+
+    delete_result = try_delete_event_from_message(text, recent_texts=recent_texts)
+    if delete_result.error != "not a delete request":
+        action = "deleted"
+        if delete_result.ok and delete_result.deleted:
+            names = ", ".join(f"'{name}'" for name in delete_result.deleted)
+            successes.append(f"Deleted from calendar: {names}.")
+            ok = True
+            details["deleted"] = delete_result.deleted
+        else:
+            failures.append(f"Could not delete calendar event: {delete_result.error}")
+            details["error"] = delete_result.error
+
+    create_result = try_create_event_from_message(text, recent_texts=recent_texts)
+    created_with_invites = False
+    if create_result.error != "not a create request":
+        action = "created"
+        if create_result.ok:
+            line = f"Created calendar event '{create_result.summary}' at {create_result.when}."
+            invited = create_result.invited_attendees or []
+            if invited:
+                line += f" Calendar invite sent to {', '.join(invited)}."
+                created_with_invites = True
+            else:
+                guest_names = _attendee_names_from_text(text)
+                if not guest_names:
+                    for msg in recent_texts or []:
+                        guest_names.extend(_attendee_names_from_text(msg))
+                if guest_names:
+                    failures.append(
+                        f"Could not send calendar invite: No guest email found for {guest_names[0]}. "
+                        f"What's {guest_names[0]}'s email?"
+                    )
+                    details["unresolved_guests"] = guest_names
+            if create_result.meet_url:
+                line += f" Meet link: {create_result.meet_url}"
+                job_id = schedule_meet_join_for_event(
+                    create_result.meet_url,
+                    summary=create_result.summary,
+                    start=create_result.start_at,
+                )
+                if job_id:
+                    line += f" Tempa is joining the Meet now (job {job_id[:8]}…)."
+                    details["meet_job_id"] = job_id
+            successes.append(line)
+            ok = True
+            details.update(
+                {
+                    "summary": create_result.summary,
+                    "when": create_result.when,
+                    "meet_url": create_result.meet_url,
+                    "invited_attendees": invited,
+                    "start_at": create_result.start_at.isoformat() if create_result.start_at else None,
+                }
+            )
+        else:
+            failures.append(f"Could not create calendar event: {create_result.error}")
+            details["error"] = create_result.error
+
+    invite_result = try_invite_guests_from_message(text, recent_texts=recent_texts)
+    if invite_result.error != "not an invite request":
+        action = "invited"
+        if invite_result.ok:
+            guests = ", ".join(invite_result.attendees or [])
+            successes.append(f"Sent calendar invite for '{invite_result.summary}' to {guests}.")
+            ok = True
+            details["invited_attendees"] = invite_result.attendees
+            details["summary"] = invite_result.summary
+        elif not (create_result.ok and created_with_invites):
+            failures.append(f"Could not send calendar invite: {invite_result.error}")
+            details["error"] = invite_result.error
+
+    return {
+        "action": action,
+        "ok": ok,
+        "successes": successes,
+        "failures": failures,
+        **details,
+    }
 
 
 def should_auto_join_meet(start: datetime, *, within_minutes: int = 20) -> bool:

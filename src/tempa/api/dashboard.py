@@ -12,7 +12,7 @@ import yaml
 
 from tempa.channels.calendar.oauth import load_calendar_client
 from tempa.channels.calendar.poller import find_triggerable_meet_events
-from tempa.channels.whatsapp.client import EvolutionWhatsAppClient
+from tempa.channels.whatsapp.client import WhatsAppBridgeClient
 from tempa.channels.whatsapp.webhook import get_recent_messages
 from tempa.core.chat_sessions import session_count
 from tempa.core.events import event_bus
@@ -25,7 +25,7 @@ def _status_from_connected(connected: bool, detail: str = "") -> str:
     return "healthy" if connected else "unhealthy"
 
 
-async def _check_evolution_api() -> dict[str, Any]:
+async def _check_whatsapp_bridge() -> dict[str, Any]:
     settings = get_settings()
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -137,10 +137,10 @@ def _component_checks() -> list[dict[str, Any]]:
         },
         {
             "id": "whatsapp_channel",
-            "name": "WhatsApp (Evolution API)",
+            "name": "WhatsApp Bridge",
             "category": "channels",
             "status": "degraded",
-            "message": "Webhook + client ready; requires Evolution sidecar",
+            "message": "Webhook + client ready; requires WhatsApp bridge sidecar",
         },
         {
             "id": "whatsapp_autoreply",
@@ -289,7 +289,7 @@ async def build_dashboard_payload() -> dict[str, Any]:
     settings = get_settings()
     store = get_store()
     groq = await _check_groq()
-    evolution = await _check_evolution_api()
+    bridge = await _check_whatsapp_bridge()
 
     from tempa.channels.calendar.status import google_connection_status
     from tempa.channels.gmail.status import gmail_connection_status
@@ -299,11 +299,11 @@ async def build_dashboard_payload() -> dict[str, Any]:
     google = await asyncio.to_thread(google_connection_status)
     gmail = await asyncio.to_thread(gmail_connection_status)
 
-    from tempa.channels.whatsapp.session import sync_connection_from_evolution
+    from tempa.channels.whatsapp.session import sync_connection_from_bridge
 
     wa_detail: dict[str, Any] = {"connected": False, "status": "disconnected"}
     try:
-        snapshot = await sync_connection_from_evolution()
+        snapshot = await sync_connection_from_bridge()
         wa_connected = bool(snapshot.get("connected"))
         wa_detail = {
             "connected": wa_connected,
@@ -391,13 +391,25 @@ async def build_dashboard_payload() -> dict[str, Any]:
             except Exception as retry_exc:
                 rag_error = str(retry_exc)[:200]
 
+    from tempa.meet.scheduler import meet_readiness
+
+    meet_ready = meet_readiness()
     connections = {
         "daemon": {"status": "connected", "connected": True, "port": settings.tempa_daemon_port},
         "groq": groq,
         "google": google,
         "gmail": gmail,
         "whatsapp": wa_detail,
-        "evolution_api": evolution,
+        "whatsapp_bridge": bridge,
+        "evolution_api": bridge,
+        "meet_auto_join": {
+            "ready": meet_ready.ready,
+            "connected": meet_ready.ready,
+            "status": "connected" if meet_ready.ready else "degraded",
+            "consent": meet_ready.consent,
+            "meet_auth": meet_ready.meet_auth,
+            "detail": meet_ready.detail,
+        },
         "rag": {
             "status": rag_status,
             "connected": rag_connected,
@@ -460,6 +472,7 @@ async def build_dashboard_payload() -> dict[str, Any]:
         "active_tasks": list_active_tasks()[:10],
         "environment": {
             "data_dir": str(settings.tempa_data_dir),
+            "whatsapp_bridge_url": settings.evolution_api_url,
             "evolution_api_url": settings.evolution_api_url,
             "tempa_version": "0.1.0",
         },

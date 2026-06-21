@@ -58,11 +58,11 @@ def _cancel_task() -> None:
 
 async def _run_fetch(*, refresh: bool) -> None:
     global _last_success_at
-    from tempa.channels.whatsapp.client import EvolutionWhatsAppClient
+    from tempa.channels.whatsapp.client import WhatsAppBridgeClient
     from tempa.channels.whatsapp.session import get_qr_code
     from tempa.debug_agent_log import agent_log
 
-    client = EvolutionWhatsAppClient()
+    client = WhatsAppBridgeClient()
     webhook_url = _webhook_url()
     try:
         state_name, connected = await client.resolved_connection_state()
@@ -106,7 +106,7 @@ async def _run_fetch(*, refresh: bool) -> None:
             else:
                 _set_error(
                     result.get("detail")
-                    or "QR not ready yet — Evolution is still generating the code"
+                    or "QR not ready yet — WhatsApp bridge is still generating the code"
                 )
             # #region agent log
             agent_log(
@@ -124,8 +124,8 @@ async def _run_fetch(*, refresh: bool) -> None:
         await client.ensure_instance(webhook_url=webhook_url)
     except Exception as exc:
         msg = str(exc).strip() or repr(exc)
-        _set_error(f"Evolution setup failed: {msg}")
-        logger.error("WhatsApp Evolution setup failed: %s", msg)
+        _set_error(f"WhatsApp bridge setup failed: {msg}")
+        logger.error("WhatsApp bridge setup failed: %s", msg)
         return
 
     try:
@@ -139,7 +139,7 @@ async def _run_fetch(*, refresh: bool) -> None:
         else:
             _set_error(
                 result.get("detail")
-                or "QR not ready yet — Evolution is still generating the code"
+                or "QR not ready yet — WhatsApp bridge is still generating the code"
             )
         # #region agent log
         agent_log(
@@ -158,10 +158,10 @@ async def _run_fetch(*, refresh: bool) -> None:
 async def _run_restart() -> None:
     """Vendor-aligned recovery: restart websocket or reconnect — never delete instance."""
     global _stuck_restart_count, _last_success_at
-    from tempa.channels.whatsapp.client import EvolutionWhatsAppClient
+    from tempa.channels.whatsapp.client import WhatsAppBridgeClient
     from tempa.channels.whatsapp.session import get_qr_code, update_connection_state
 
-    client = EvolutionWhatsAppClient()
+    client = WhatsAppBridgeClient()
     webhook_url = _webhook_url()
     try:
         logger.info("WhatsApp session recovery (vendor restart/connect)")
@@ -175,7 +175,7 @@ async def _run_restart() -> None:
             _last_success_at = time.monotonic()
             logger.info("WhatsApp session recovery — %s", "connected" if connected else "QR available")
         else:
-            _set_error("Session recovery — waiting for QR from Evolution")
+            _set_error("Session recovery — waiting for QR from WhatsApp bridge")
         _stuck_restart_count += 1
     except Exception as exc:
         _set_error(f"Session recovery failed: {exc}")
@@ -255,14 +255,14 @@ async def auto_manage_connection(*, await_fetch: bool = False) -> dict[str, Any]
     Vendor-aligned flow: ensure instance + webhook, GET /instance/connect for QR.
     """
     global _first_fetch_at, _connecting_since
-    from tempa.channels.whatsapp.client import EvolutionWhatsAppClient
+    from tempa.channels.whatsapp.client import WhatsAppBridgeClient
     from tempa.channels.whatsapp.session import get_qr_code
 
-    client = EvolutionWhatsAppClient()
+    client = WhatsAppBridgeClient()
     try:
         state_name, connected = await client.resolved_connection_state()
     except Exception as exc:
-        _set_error(f"Evolution API unreachable: {exc}")
+        _set_error(f"WhatsApp bridge unreachable: {exc}")
         return {
             "action": "error",
             "status": "error",
@@ -281,14 +281,6 @@ async def auto_manage_connection(*, await_fetch: bool = False) -> dict[str, Any]
     now = time.monotonic()
 
     if state_name == "connecting":
-        if cached:
-            _connecting_since = 0.0
-            return {
-                "action": "connecting",
-                "status": state_name,
-                "qr_code": cached,
-                "detail": "Scan the QR with WhatsApp → Settings → Linked devices",
-            }
         synced = await client.read_cached_qr()
         if synced:
             _connecting_since = 0.0
@@ -307,7 +299,7 @@ async def auto_manage_connection(*, await_fetch: bool = False) -> dict[str, Any]
             "action": "connecting",
             "status": state_name,
             "qr_code": None,
-            "detail": _last_error or "Waiting for QR from Evolution",
+            "detail": _last_error or "Waiting for QR from WhatsApp bridge",
         }
 
     _connecting_since = 0.0

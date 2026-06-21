@@ -8,14 +8,14 @@ import httpx
 
 from tempa.settings import get_settings
 
-from tempa.channels.whatsapp.session import parse_evolution_state
+from tempa.channels.whatsapp.session import parse_bridge_state
 
 logger = logging.getLogger(__name__)
 
 # Evolution manager UI uses 30s; create waits up to 5s after connect internally.
-_CONNECT_TIMEOUT = 30.0
-_CONNECT_TRIGGER_TIMEOUT = 8.0
-_CONNECT_QR_TIMEOUT = 35.0
+_CONNECT_TIMEOUT = 55.0
+_CONNECT_TRIGGER_TIMEOUT = 55.0
+_CONNECT_QR_TIMEOUT = 55.0
 _CREATE_TIMEOUT = 90.0
 _CONNECT_COOLDOWN_SECONDS = 90.0
 _last_connect_trigger: float = 0.0
@@ -24,8 +24,8 @@ _WEBHOOK_QR_WAIT_SECONDS = 45
 _WEBHOOK_EVENTS = ["MESSAGES_UPSERT", "CONNECTION_UPDATE", "QRCODE_UPDATED"]
 
 
-class EvolutionWhatsAppClient:
-    """REST client for Evolution API WhatsApp sidecar."""
+class WhatsAppBridgeClient:
+    """REST client for the in-repo WhatsApp bridge sidecar."""
 
     def __init__(self) -> None:
         settings = get_settings()
@@ -63,12 +63,32 @@ class EvolutionWhatsAppClient:
         inst = await self._instance_row()
         return bool(inst and inst.get("ownerJid"))
 
+    async def ensure_webhook(self, webhook_url: str | None = None, *, enabled: bool = True) -> None:
+        """Register daemon webhook on the bridge (required for CONNECTION_UPDATE / QRCODE_UPDATED)."""
+        from tempa.debug_agent_log import agent_log
+
+        url = webhook_url or self._default_webhook_url()
+        try:
+            await self.set_webhook(url, enabled=enabled)
+            # #region agent log
+            agent_log(
+                location="client.py:ensure_webhook",
+                message="webhook registered",
+                data={"url": url, "enabled": enabled},
+                hypothesis_id="H2",
+            )
+            # #endregion
+        except Exception as exc:
+            logger.warning("Webhook registration failed: %s", exc)
+
     async def ensure_instance(self, webhook_url: str | None = None) -> None:
-        """Create Evolution instance if missing (vendor: create + connect + wait for QR)."""
+        """Create bridge instance if missing; always ensure webhook is registered."""
         if await self._instance_row() is not None:
+            if webhook_url:
+                await self.ensure_webhook(webhook_url, enabled=True)
             return
         try:
-            state_name, _ = parse_evolution_state(await self.connection_state())
+            state_name, _ = parse_bridge_state(await self.connection_state())
             if state_name not in {"", "unknown", "disconnected"}:
                 return
         except Exception:
@@ -228,8 +248,8 @@ class EvolutionWhatsAppClient:
                 raise RuntimeError(str(data.get("message") or data.get("error")))
             return data
 
-    async def vendor_restart(self) -> dict[str, Any]:
-        """Vendor restartInstance: reconnect websocket (no delete/recreate)."""
+    async def bridge_restart(self) -> dict[str, Any]:
+        """Restart bridge instance: reconnect websocket (no delete/recreate)."""
         async with httpx.AsyncClient(timeout=_CONNECT_TIMEOUT) as client:
             resp = await client.post(
                 f"{self.base_url}/instance/restart/{self.instance}",
@@ -279,7 +299,7 @@ class EvolutionWhatsAppClient:
             return "open", True
 
         live_raw = await self.connection_state()
-        live_name, live_connected = parse_evolution_state(live_raw)
+        live_name, live_connected = parse_bridge_state(live_raw)
         db_status = ""
         if inst:
             db_status = str(inst.get("connectionStatus") or inst.get("state") or "").lower()
@@ -353,7 +373,7 @@ class EvolutionWhatsAppClient:
 
         # Never restart while pairing — vendor returns cached QR for connecting.
         if state_name == "open":
-            await self.vendor_restart()
+            await self.bridge_restart()
 
         qr_data = await self.fetch_qr(refresh=True)
         if not qr_data.get("qr_code"):
@@ -387,23 +407,23 @@ class EvolutionWhatsAppClient:
 
         base64_qr = data.get("base64")
         if isinstance(base64_qr, str) and base64_qr:
-            return EvolutionWhatsAppClient._normalize_qr_base64(base64_qr)
+            return WhatsAppBridgeClient._normalize_qr_base64(base64_qr)
 
         for key in ("qrcode", "qrCode"):
             qrcode = data.get(key)
             if isinstance(qrcode, dict):
                 nested = qrcode.get("base64")
                 if isinstance(nested, str) and nested:
-                    return EvolutionWhatsAppClient._normalize_qr_base64(nested)
+                    return WhatsAppBridgeClient._normalize_qr_base64(nested)
                 code = qrcode.get("code")
                 if isinstance(code, str) and code:
-                    return EvolutionWhatsAppClient._qr_image_from_code(code)
+                    return WhatsAppBridgeClient._qr_image_from_code(code)
             elif isinstance(qrcode, str) and qrcode:
-                return EvolutionWhatsAppClient._qr_image_from_code(qrcode)
+                return WhatsAppBridgeClient._qr_image_from_code(qrcode)
 
         code = data.get("code")
         if isinstance(code, str) and code:
-            return EvolutionWhatsAppClient._qr_image_from_code(code)
+            return WhatsAppBridgeClient._qr_image_from_code(code)
         return None
 
     @staticmethod
@@ -446,10 +466,7 @@ class EvolutionWhatsAppClient:
             return {"status": "connecting", "qr_code": synced, "pairing_code": None}
 
         webhook_url = self._default_webhook_url()
-        try:
-            await self.set_webhook(webhook_url, enabled=False)
-        except Exception as exc:
-            logger.warning("Webhook disable before pairing failed: %s", exc)
+        await self.ensure_webhook(webhook_url, enabled=True)
 
         if refresh and state_name in {"close", "disconnected", "refused"}:
             logger.info("WhatsApp refresh — recreating Evolution instance")
@@ -556,17 +573,79 @@ class EvolutionWhatsAppClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def _read_qr_endpoint(self) -> dict[str, Any] | None:
+        """Read-only QR poll — does not start a new pairing session."""
+        url = f"{self.base_url}/instance/qr/{self.instance}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=self._headers())
+                if resp.status_code == 404 or not resp.content:
+                    return None
+                return resp.json()
+        except httpx.HTTPError:
+            return None
+
     async def read_cached_qr(self) -> str | None:
-        """Read QR Evolution already generated — never triggers a new connect."""
+        """Prefer live bridge QR over local cache — avoids serving expired codes after Baileys rotation."""
         from tempa.channels.whatsapp.session import get_qr_code, store_qr_code
         from tempa.debug_agent_log import agent_log
 
-        cached = get_qr_code()
-        if cached:
-            return cached
         state_name, connected = await self.resolved_connection_state()
-        if connected or state_name != "connecting":
+        if connected:
             return None
+
+        local_cached = get_qr_code()
+        data = await self._read_qr_endpoint()
+        if data:
+            base64_qr = await asyncio.to_thread(self._extract_qr_from_connect, data)
+            bridge_count = data.get("count")
+            if base64_qr:
+                store_qr_code(base64_qr)
+                # #region agent log
+                agent_log(
+                    location="client.py:read_cached_qr:ok",
+                    message="synced QR from bridge cache",
+                    data={
+                        "qr_len": len(base64_qr),
+                        "count": bridge_count,
+                        "had_local": bool(local_cached),
+                        "state_name": state_name,
+                    },
+                    hypothesis_id="H1",
+                )
+                # #endregion
+                return base64_qr
+            if bridge_count and local_cached:
+                from tempa.channels.whatsapp.session import clear_qr_code
+
+                clear_qr_code()
+                # #region agent log
+                agent_log(
+                    location="client.py:read_cached_qr:stale",
+                    message="cleared stale local QR — bridge has no active code",
+                    data={"count": bridge_count, "state_name": state_name},
+                    hypothesis_id="H1",
+                )
+                # #endregion
+            elif not data.get("base64") and not data.get("code") and local_cached:
+                from tempa.channels.whatsapp.session import clear_qr_code
+
+                clear_qr_code()
+                local_cached = None
+                # #region agent log
+                agent_log(
+                    location="client.py:read_cached_qr:dead_socket",
+                    message="cleared local QR — bridge socket not pairing",
+                    data={"state_name": state_name},
+                    hypothesis_id="H3",
+                )
+                # #endregion
+
+        if local_cached and state_name == "connecting":
+            return local_cached
+
+        if state_name != "connecting":
+            return local_cached
         url = f"{self.base_url}/instance/connect/{self.instance}"
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
@@ -577,18 +656,9 @@ class EvolutionWhatsAppClient:
                 base64_qr = await asyncio.to_thread(self._extract_qr_from_connect, data)
                 if base64_qr:
                     store_qr_code(base64_qr)
-                    # #region agent log
-                    agent_log(
-                        location="client.py:read_cached_qr:ok",
-                        message="synced QR from Evolution cache",
-                        data={"qr_len": len(base64_qr), "count": data.get("count")},
-                        hypothesis_id="H17",
-                        run_id="post-fix",
-                    )
-                    # #endregion
                     return base64_qr
         except httpx.HTTPError as exc:
-            logger.debug("Evolution read_cached_qr failed: %s", exc)
+            logger.debug("Bridge read_cached_qr failed: %s", exc)
         return None
 
     async def poll_connect_qr(
@@ -637,6 +707,17 @@ class EvolutionWhatsAppClient:
                 continue
 
             if pairing_started:
+                data = await self._read_qr_endpoint()
+                if data:
+                    last_data = data
+                    base64_qr = await asyncio.to_thread(self._extract_qr_from_connect, data)
+                    if base64_qr:
+                        store_qr_code(base64_qr)
+                        return {
+                            "status": "connecting",
+                            "qr_code": base64_qr,
+                            "pairing_code": self._extract_pairing_code(data),
+                        }
                 try:
                     async with httpx.AsyncClient(timeout=20.0) as client:
                         resp = await client.get(url, headers=self._headers())
@@ -708,12 +789,12 @@ class EvolutionWhatsAppClient:
                 await self.set_webhook(webhook_url)
             except Exception:
                 pass
+            from tempa.channels.whatsapp.numbers import sync_linked_owner_from_bridge
+
+            await sync_linked_owner_from_bridge()
             update_connection_state("open")
             return
-        try:
-            await self.set_webhook(webhook_url, enabled=False)
-        except Exception:
-            pass
+        await self.ensure_webhook(webhook_url, enabled=True)
         if state_name == "close" and await self._has_linked_device():
             try:
                 await self.connect(for_qr=False)

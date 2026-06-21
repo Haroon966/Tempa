@@ -185,7 +185,7 @@ Busy professionals, executives, developers, and freelancers who manage high comm
 | FR-WA-08 | Index all messages into unified Agentic RAG DB with metadata: `tool=whatsapp`, `participant`, `timestamp` | P0 |
 | FR-WA-09 | Run outbound messages through Safety GPT OSS 20B before send | P1 |
 
-**Technical stack:** Evolution API or Baileys/Neonize via WhatsApp Web protocol.
+**Technical stack:** In-repo Baileys bridge (`services/whatsapp-bridge/`) via WhatsApp Web protocol.
 
 ### 5.3 Calendar & Reminders (FR-CAL)
 
@@ -254,7 +254,7 @@ Busy professionals, executives, developers, and freelancers who manage high comm
 |-------|----------------|-------|
 | **Coordinator** | Plan, decompose, assign, merge | Groq reasoning, Agentic RAG |
 | **Meet Agent** | Join, record, transcribe, minutes | Playwright, Groq Whisper, Groq GPT OSS |
-| **Channel Agent** | WhatsApp messaging, reminders | Evolution API / Baileys |
+| **Channel Agent** | WhatsApp messaging, reminders | In-repo WhatsApp bridge (Baileys) |
 | **Calendar Agent** | Poll events, Meet links, reminders | Google Calendar API |
 | **RAG Agent** | Retrieve, grade, rewrite, synthesize | Unified vector DB |
 | **PC Agent** | Files, apps, shell, browser | OS tools, Playwright |
@@ -624,7 +624,7 @@ flowchart TB
 | **Embeddings** | nomic-embed-text (local) | Via sentence-transformers or Ollama embed |
 | **Vector DB** | Chroma (default), Qdrant, or LanceDB | Single instance only |
 | **Metadata DB** | SQLite (dev), PostgreSQL (prod) | Meeting records, sessions, config |
-| **WhatsApp** | Evolution API / Baileys / Neonize | QR code pairing |
+| **WhatsApp** | In-repo bridge (`services/whatsapp-bridge/`) | QR code pairing |
 | **Google Meet** | Playwright + WebRTC audio hooks | `meet.google.com` only |
 | **Google Calendar** | Google Calendar API v3 | OAuth2 |
 | **Audio storage** | Local FS + optional MinIO/S3 | Meet recordings |
@@ -968,7 +968,7 @@ Use these repos as **copy/adapt sources**, not drop-in dependencies. Verify lice
 4. **Google Meet bot:** [ResearchifyLabs/meeto](https://github.com/ResearchifyLabs/meeto)
 5. **Unified Agentic RAG:** LangGraph agentic RAG + [chroma-core/chroma](https://github.com/chroma-core/chroma)
 6. **Multi-agent patterns:** [crewAIInc/crewAI](https://github.com/crewAIInc/crewAI) + [bytedance/deer-flow](https://github.com/bytedance/deer-flow)
-7. **WhatsApp QR:** [evolution-foundation/evolution-api](https://github.com/evolution-foundation/evolution-api)
+7. **WhatsApp QR:** In-repo bridge at `services/whatsapp-bridge/` (Baileys, Evolution-compatible API)
 8. **Calendar polling:** [glorynino/SmartMeetOS](https://github.com/glorynino/SmartMeetOS)
 9. **PC control:** [lsdefine/GenericAgent](https://github.com/lsdefine/GenericAgent)
 10. **Meeting minutes:** [isonka/meeting-lens](https://github.com/isonka/meeting-lens) + Groq GPT OSS 120B
@@ -1000,7 +1000,7 @@ Use these repos as **copy/adapt sources**, not drop-in dependencies. Verify lice
 
 | Repo | Copy from it |
 |------|--------------|
-| [evolution-foundation/evolution-api](https://github.com/evolution-foundation/evolution-api) | **Primary** — QR pairing, session persistence, REST API |
+| `services/whatsapp-bridge/` | **Primary** — QR pairing, session persistence, REST API (in-repo) |
 | [fluxiia/whatsapp-ai-agent-fluxi](https://github.com/fluxiia/whatsapp-ai-agent-fluxi) | QR display in dashboard |
 | [WhiskeySockets/Baileys](https://github.com/WhiskeySockets/Baileys) | Low-level QR auth + `useMultiFileAuthState` |
 | [openclaw/openclaw](https://github.com/openclaw/openclaw) | WhatsApp channel via QR |
@@ -1086,7 +1086,7 @@ Use these repos as **copy/adapt sources**, not drop-in dependencies. Verify lice
 | Repo | Copy from it |
 |------|--------------|
 | [openclaw/openclaw](https://github.com/openclaw/openclaw) | Docker Compose gateway |
-| [evolution-foundation/evolution-api](https://github.com/evolution-foundation/evolution-api) | Containerized WhatsApp bridge |
+| `services/whatsapp-bridge/` | In-repo WhatsApp bridge (Baileys) |
 
 ---
 

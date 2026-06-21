@@ -10,6 +10,9 @@ export function PanelCard({
   children,
   className,
   contentClassName,
+  headerClassName,
+  descriptionClassName,
+  titleClassName,
 }: {
   title: string
   description?: string
@@ -18,23 +21,36 @@ export function PanelCard({
   children: React.ReactNode
   className?: string
   contentClassName?: string
+  headerClassName?: string
+  descriptionClassName?: string
+  titleClassName?: string
 }) {
   return (
-    <Card className={cn("panel-card overflow-hidden", className)}>
-      <CardHeader className="pb-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
+    <Card className={cn("panel-card min-h-0 overflow-hidden", className)}>
+      <CardHeader className={cn("pb-4", headerClassName)}>
+        <div className="flex items-start justify-between gap-2 sm:gap-3">
+          <div className="flex min-w-0 items-start gap-2 sm:gap-3">
             {Icon && (
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary sm:size-9">
                 <Icon className="size-4" aria-hidden />
               </div>
             )}
             <div className="min-w-0">
-              <CardTitle className="text-sm font-semibold tracking-wide text-foreground">
+              <CardTitle
+                className={cn(
+                  "text-sm font-semibold tracking-wide text-foreground",
+                  titleClassName,
+                )}
+              >
                 {title}
               </CardTitle>
               {description && (
-                <CardDescription className="mt-0.5 text-xs text-muted-foreground">
+                <CardDescription
+                  className={cn(
+                    "mt-0.5 text-xs text-muted-foreground",
+                    descriptionClassName,
+                  )}
+                >
                   {description}
                 </CardDescription>
               )}

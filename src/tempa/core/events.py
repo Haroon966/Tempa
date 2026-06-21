@@ -56,5 +56,25 @@ class EventBus:
     async def publish_json(self, agent: str, action: str, detail: str = "") -> None:
         await self.publish(AgentActivityEvent(agent=agent, action=action, detail=detail))
 
+    async def publish_step(
+        self,
+        subtask_id: str,
+        agent: str,
+        status: str,
+        detail: str = "",
+        duration_ms: int | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "event_kind": "step",
+            "subtask_id": subtask_id,
+            "agent": agent,
+            "status": status,
+            "detail": detail,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        await self.publish(payload)
+
 
 event_bus = EventBus()

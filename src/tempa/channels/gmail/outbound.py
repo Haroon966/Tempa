@@ -21,7 +21,24 @@ async def send_gmail_message(
     bcc: str = "",
     skip_safety: bool = False,
 ) -> dict:
+    from tempa.channels.gmail.compose import finalize_beautiful_email, validate_recipient_email
     from tempa.channels.gmail.session_state import record_gmail_action
+
+    valid, recipient_error = validate_recipient_email(to)
+    if not valid:
+        result = {"status": "error", "reason": recipient_error, "to": to}
+        record_gmail_action(result)
+        return result
+
+    finalized = finalize_beautiful_email(
+        {
+            "subject": subject,
+            "body": body,
+            "body_html": html_body or "",
+        }
+    )
+    body = finalized["body"]
+    html_body = finalized["body_html"]
 
     client = load_gmail_client()
     if client is None:

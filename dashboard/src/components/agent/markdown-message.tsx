@@ -1,5 +1,5 @@
 import { CheckIcon, CopyIcon } from "lucide-react"
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeHighlight from "rehype-highlight"
@@ -53,6 +53,24 @@ function CodeBlock({
   )
 }
 
+function StreamingCursor() {
+  return (
+    <span
+      className="ml-0.5 inline-block h-[1.1em] w-0.5 animate-pulse bg-primary align-text-bottom"
+      aria-hidden
+    />
+  )
+}
+
+function splitStreamingBlocks(content: string): { complete: string; tail: string } {
+  const parts = content.split(/\n\n/)
+  if (parts.length <= 1) {
+    return { complete: "", tail: content }
+  }
+  const tail = parts.pop() ?? ""
+  return { complete: parts.join("\n\n"), tail }
+}
+
 export function MarkdownMessage({
   content,
   isStreaming = false,
@@ -62,45 +80,85 @@ export function MarkdownMessage({
   isStreaming?: boolean
   className?: string
 }) {
+  const markdownComponents = useMemo(
+    () => ({
+      a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+        <a href={href} target="_blank" rel="noopener noreferrer">
+          {children}
+        </a>
+      ),
+      code: ({
+        className: codeClass,
+        children,
+        ...props
+      }: {
+        className?: string
+        children?: React.ReactNode
+      }) => {
+        const isBlock = String(children).includes("\n") || (codeClass ?? "").startsWith("language-")
+        if (isBlock) {
+          return (
+            <CodeBlock className={codeClass} isStreaming={isStreaming}>
+              {children}
+            </CodeBlock>
+          )
+        }
+        return (
+          <code className={codeClass} {...props}>
+            {children}
+          </code>
+        )
+      },
+      pre: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+      img: () => null,
+    }),
+    [isStreaming],
+  )
+
+  const proseClass = cn(
+    "prose prose-sm max-w-none overflow-x-auto text-foreground prose-headings:text-foreground prose-p:text-foreground/90 prose-strong:text-foreground prose-a:text-primary prose-code:before:content-none prose-code:after:content-none prose-pre:bg-transparent prose-pre:p-0 prose-img:hidden",
+    className,
+  )
+
+  if (isStreaming) {
+    if (!content) {
+      return (
+        <div className={cn("text-sm leading-relaxed text-foreground/90", className)}>
+          <p className="text-muted-foreground">Thinking…</p>
+          <StreamingCursor />
+        </div>
+      )
+    }
+
+    const { complete, tail } = splitStreamingBlocks(content)
+    return (
+      <div className={cn("text-sm leading-relaxed text-foreground/90", className)}>
+        {complete ? (
+          <div className={proseClass}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {complete}
+            </ReactMarkdown>
+          </div>
+        ) : null}
+        {tail ? <p className="whitespace-pre-wrap break-words">{tail}</p> : null}
+        <StreamingCursor />
+      </div>
+    )
+  }
+
+  if (!content.trim()) {
+    return <p className="text-sm text-muted-foreground">No response.</p>
+  }
+
   return (
-    <div
-      className={cn(
-        "prose prose-sm max-w-none text-foreground prose-headings:text-foreground prose-p:text-foreground/90 prose-strong:text-foreground prose-a:text-primary prose-code:before:content-none prose-code:after:content-none prose-pre:bg-transparent prose-pre:p-0",
-        className,
-      )}
-    >
+    <div className={proseClass}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
-        components={{
-          a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          ),
-          code: ({ className: codeClass, children, ...props }) => {
-            const isBlock = String(children).includes("\n") || (codeClass ?? "").startsWith("language-")
-            if (isBlock) {
-              return (
-                <CodeBlock className={codeClass} isStreaming={isStreaming}>
-                  {children}
-                </CodeBlock>
-              )
-            }
-            return (
-              <code className={codeClass} {...props}>
-                {children}
-              </code>
-            )
-          },
-          pre: ({ children }) => <>{children}</>,
-        }}
+        components={markdownComponents}
       >
         {content}
       </ReactMarkdown>
-      {isStreaming && (
-        <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-primary align-middle" />
-      )}
     </div>
   )
 }

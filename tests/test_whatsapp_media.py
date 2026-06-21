@@ -22,7 +22,7 @@ async def test_transcribe_whatsapp_audio_uses_groq():
     with (
         patch("tempa.channels.whatsapp.media.httpx.AsyncClient") as client_cls,
         patch("tempa.channels.whatsapp.media.get_router") as get_router,
-        patch("tempa.channels.whatsapp.media.EvolutionWhatsAppClient") as client_ctor,
+        patch("tempa.channels.whatsapp.media.WhatsAppBridgeClient") as client_ctor,
     ):
         evo = MagicMock()
         evo.base_url = "http://evolution"
