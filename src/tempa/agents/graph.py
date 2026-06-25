@@ -16,6 +16,7 @@ from tempa.agents.specialists import (
     run_meet_agent,
     run_pc_agent,
     run_plugin_agent,
+    run_qa_agent,
     run_rag_agent_task,
 )
 from tempa.core.events import event_bus
@@ -27,6 +28,7 @@ AGENT_RUNNERS = {
     "gmail": run_gmail_agent,
     "pc": run_pc_agent,
     "plugin": run_plugin_agent,
+    "qa": run_qa_agent,
 }
 
 MAX_SPECIALIST_RETRIES = 2
@@ -59,7 +61,14 @@ def _collect_pending_actions(state: CoordinatorState) -> list[dict[str, Any]]:
         action_id = payload.get("pending_action_id")
         if payload.get("status") == "pending" and action_id and action_id not in seen:
             preview = str(payload.get("preview") or payload.get("body") or payload.get("message") or "")
-            action_type = "email_send" if "subject" in payload or "to" in payload else "whatsapp_send"
+            if "subject" in payload or ("to" in payload and "@" in str(payload.get("to", ""))):
+                action_type = "email_send"
+            elif payload.get("number"):
+                action_type = "whatsapp_send"
+            elif payload.get("channel") and "text" in payload:
+                action_type = "slack_send"
+            else:
+                action_type = "whatsapp_send"
             collected.append(_pending_preview(str(action_id), action_type, preview))
             seen.add(str(action_id))
     return collected
@@ -169,13 +178,43 @@ async def plan_node(state: CoordinatorState) -> dict[str, Any]:
 
     maybe_capture_from_message(state["user_message"])
 
-    if context.get("channel") == "whatsapp" and "recent_user_messages" not in context:
+    channel = str(context.get("channel") or "")
+    inbound_slack = bool(context.get("inbound_slack"))
+    mentions_whatsapp = "whatsapp" in state["user_message"].lower()
+    if channel != "slack" and not inbound_slack and (channel == "whatsapp" or mentions_whatsapp):
         try:
-            from tempa.channels.whatsapp.conversation import get_recent_messages
+            from tempa.channels.whatsapp.context import build_whatsapp_context_pack
 
-            context["recent_user_messages"] = [
-                m.get("text", "") for m in get_recent_messages(8) if m.get("role") == "user"
-            ]
+            wa_pack = build_whatsapp_context_pack(state["user_message"])
+            context["recent_conversation"] = wa_pack.get("recent_thread") or []
+            if "recent_user_messages" not in context:
+                context["recent_user_messages"] = wa_pack.get("recent_user_only") or []
+        except Exception:
+            if context.get("channel") == "whatsapp" and "recent_user_messages" not in context:
+                try:
+                    from tempa.channels.whatsapp.conversation import get_conversation_thread
+
+                    thread = get_conversation_thread(8, include_assistant=True)
+                    context["recent_conversation"] = thread
+                    context["recent_user_messages"] = [
+                        m.get("text", "") for m in thread if m.get("role") == "user"
+                    ]
+                except Exception:
+                    pass
+    elif inbound_slack or channel == "slack":
+        try:
+            from tempa.channels.slack.conversation import get_recent_messages as get_slack_thread
+
+            channel_id = str(context.get("slack_channel_id") or "")
+            slack_user = str(context.get("slack_user_id") or "")
+            thread_ts = str(context.get("slack_thread_ts") or "")
+            if channel_id:
+                context["recent_conversation"] = get_slack_thread(
+                    8,
+                    user_id=slack_user,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                )
         except Exception:
             pass
 
@@ -195,6 +234,9 @@ async def plan_node(state: CoordinatorState) -> dict[str, Any]:
             pass
 
     subtasks = plan_subtasks(state["user_message"], context)
+    from tempa.agents.tool_policy import filter_subtasks
+
+    subtasks = filter_subtasks(subtasks, context)
     others = [t for t in subtasks if t.get("agent") != "rag"]
     task_id = create_task(state["user_message"], others)
     rag_task = next((t for t in subtasks if t.get("agent") == "rag"), None)
@@ -437,7 +479,9 @@ def get_coordinator_graph():
     return _graph
 
 
-async def run_coordinator_full(user_message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _run_langgraph_coordinator_full(
+    user_message: str, context: dict[str, Any] | None = None
+) -> dict[str, Any]:
     graph = get_coordinator_graph()
     state = await graph.ainvoke(
         {
@@ -461,6 +505,40 @@ async def run_coordinator_full(user_message: str, context: dict[str, Any] | None
         "pending_actions": _collect_pending_actions(state),
         "artifacts": artifacts,
     }
+
+
+def _should_use_varys(user_message: str, context: dict[str, Any] | None) -> bool:
+    from tempa.settings import get_settings
+    from tempa.varys.manager import is_go_signal, is_work_request
+
+    mode = (get_settings().tempa_coordinator or "langgraph").strip().lower()
+    if mode == "langgraph":
+        return False
+    if mode == "varys":
+        return True
+    # hybrid
+    ctx = context or {}
+    if is_go_signal(user_message) or is_work_request(user_message):
+        return True
+    if ctx.get("varys_dispatch") or ctx.get("force_varys"):
+        return True
+    lowered = user_message.lower()
+    coding_hints = ("fix ", "implement", "refactor", "pr ", "github", "code", "repo", "ticket")
+    if any(h in lowered for h in coding_hints):
+        return True
+    from tempa.agents.intent import wants_calendar, wants_gmail_full
+
+    if wants_gmail_full(user_message) or wants_calendar(user_message):
+        return False
+    return False
+
+
+async def run_coordinator_full(user_message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    if _should_use_varys(user_message, context):
+        from tempa.varys.coordinator import run_varys_coordinator
+
+        return await run_varys_coordinator(user_message, context)
+    return await _run_langgraph_coordinator_full(user_message, context)
 
 
 async def run_coordinator_streaming(

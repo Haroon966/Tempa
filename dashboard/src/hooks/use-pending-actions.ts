@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
+import { toast } from "sonner"
 import {
   approvePendingAction,
   fetchPendingActions,
@@ -27,16 +28,28 @@ export function usePendingActions(pollMs = 5000) {
 
   const approve = useCallback(
     async (id: string) => {
-      await approvePendingAction(id)
-      await refresh()
+      try {
+        await approvePendingAction(id)
+        await refresh()
+        toast.success("Action approved")
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Approve failed")
+        throw e
+      }
     },
     [refresh],
   )
 
   const reject = useCallback(
     async (id: string) => {
-      await rejectPendingAction(id)
-      await refresh()
+      try {
+        await rejectPendingAction(id)
+        await refresh()
+        toast.success("Action rejected")
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Reject failed")
+        throw e
+      }
     },
     [refresh],
   )

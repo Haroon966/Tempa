@@ -2,6 +2,7 @@ import {
   ActivityIcon,
   BotIcon,
   DatabaseIcon,
+  GitBranchIcon,
   LayoutDashboardIcon,
   MailIcon,
   MessageSquareIcon,
@@ -14,6 +15,7 @@ import {
 export const NAV_ITEMS = [
   { value: "agent", path: "/agent", label: "Agent", icon: MessageSquareIcon, group: "monitor" },
   { value: "overview", path: "/overview", label: "Overview", icon: LayoutDashboardIcon, group: "monitor" },
+  { value: "qa", path: "/qa", label: "QA", icon: GitBranchIcon, group: "monitor" },
   { value: "live-meeting", path: "/live-meeting", label: "Live Meeting", icon: RadioIcon, group: "monitor" },
   { value: "activity", path: "/activity", label: "Activity", icon: ActivityIcon, group: "monitor" },
   { value: "pending", path: "/pending", label: "Approvals", icon: ShieldCheckIcon, group: "monitor" },
@@ -41,6 +43,10 @@ export const PAGE_META: Record<NavSection, { title: string; description: string 
   overview: {
     title: "Overview",
     description: "System health, stats, and quick status at a glance",
+  },
+  qa: {
+    title: "QA",
+    description: "Branch health, scan queue, vulnerabilities, and test failures across repos",
   },
   "live-meeting": {
     title: "Live Meeting",

@@ -1,0 +1,8 @@
+agent_name: Tempa
+owner_name: ""
+owner_slack_user_id: U0ATY4J7NAJ
+orchestrator_tick_seconds: 270
+harness_db: data/harness/harness.db
+vault_dir: data/vault
+notion_enabled: false
+repos: []

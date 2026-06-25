@@ -7,6 +7,9 @@ from typing import Any
 
 from tempa.router.groq_router import get_router
 
+_filter_cache: dict[str, dict[str, Any]] = {}
+_FILTER_CACHE_MAX = 128
+
 
 def _parse_relative_date(text: str) -> tuple[str | None, str | None]:
     """Heuristic date range extraction from natural language."""
@@ -39,16 +42,26 @@ def _parse_relative_date(text: str) -> tuple[str | None, str | None]:
 
 def extract_filters_from_query(query: str) -> dict[str, Any]:
     """Extract metadata filters from a natural language memory query."""
+    cache_key = query.strip().lower()
+    if cache_key in _filter_cache:
+        return dict(_filter_cache[cache_key])
+
     filters: dict[str, Any] = {}
     lower = query.lower()
 
-    if "meet" in lower or "standup" in lower:
+    if (
+        "google meet" in lower
+        or "standup" in lower
+        or " in the meet" in lower
+        or " in meet" in lower
+        or re.search(r"\bmeet(ing)?\s+(last|yesterday|today|on\s+\w)", lower)
+    ) and "meet my" not in lower:
         filters["tool"] = "meet"
-    elif any(k in lower for k in ("gmail", "email", "inbox")):
+    elif any(k in lower for k in ("gmail", "email", "inbox", "unread", "reply to", "that email", "the email")):
         filters["tool"] = "gmail"
     elif "calendar" in lower or "schedule" in lower:
         filters["tool"] = "calendar"
-    elif "whatsapp" in lower:
+    elif "whatsapp" in lower or any(k in lower for k in ("you said", "earlier", "that message")):
         filters["tool"] = "whatsapp"
 
     date_from, date_to = _parse_relative_date(query)
@@ -103,4 +116,7 @@ def extract_filters_from_query(query: str) -> dict[str, Any]:
     except Exception:
         pass
 
+    if len(_filter_cache) >= _FILTER_CACHE_MAX:
+        _filter_cache.pop(next(iter(_filter_cache)))
+    _filter_cache[cache_key] = dict(filters)
     return filters

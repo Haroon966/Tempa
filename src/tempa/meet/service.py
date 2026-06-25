@@ -56,6 +56,7 @@ def build_worker_config(
 ) -> WorkerConfig:
     settings = get_settings()
     mid = meeting_id or str(uuid.uuid4())
+    display = os.environ.get("DISPLAY", "").strip()
     return WorkerConfig(
         meeting_id=mid,
         meet_url=meet_url,
@@ -64,7 +65,7 @@ def build_worker_config(
         audio=AudioConfig(debug=True),
         stt=SttConfig(provider="groq", extra={"chunk_seconds": 15.0, "language": "en"}),
         join=JoinConfig(
-            headless=True,
+            headless=not bool(display),
             storage_state_path=str(settings.google_storage_state_path),
             bot_name="Tempa",
             disable_mic=True,

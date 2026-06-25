@@ -99,6 +99,13 @@ async def sync_all(
     results["calendar"] = await sync_calendar_to_memory()
 
     try:
+        from tempa.channels.slack.sync import sync_once as sync_slack_once
+
+        results["slack"] = await sync_slack_once(full=True)
+    except Exception as exc:
+        results["slack"] = {"status": "error", "reason": str(exc)}
+
+    try:
         from tempa.rag.store import get_store
 
         results["rag_chunks"] = get_store().count()

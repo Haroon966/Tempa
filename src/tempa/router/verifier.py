@@ -25,6 +25,10 @@ _CREATED_RE = re.compile(
     r"\b(created|scheduled)\s+(the\s+)?(event|meeting|calendar)\b",
     re.I,
 )
+_UNREAD_CLAIM_RE = re.compile(
+    r"\b(\d+)\s+unread\b|\bno\s+unread\b|\bzero\s+unread\b|\bnothing\s+unread\b",
+    re.I,
+)
 
 _SUCCESS_MARKERS = (
     "created calendar event",
@@ -42,6 +46,29 @@ def _action_text(pack: dict[str, Any]) -> str:
 
 def _has_confirmed_success(actions: str) -> bool:
     return any(marker in actions for marker in _SUCCESS_MARKERS)
+
+
+def _extract_unread_from_gmail(pack: dict[str, Any]) -> int | None:
+    for key in ("gmail_full", "gmail_compact"):
+        block = str(pack.get(key) or "")
+        match = re.search(r"Inbox:\s*(\d+)\s+unread", block, re.I)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _claims_false_unread(reply: str, pack: dict[str, Any]) -> bool:
+    expected = _extract_unread_from_gmail(pack)
+    if expected is None:
+        return False
+    lower = reply.lower()
+    if "no unread" in lower or "zero unread" in lower or "nothing unread" in lower:
+        return expected > 0
+    match = _UNREAD_CLAIM_RE.search(reply)
+    if match and match.group(1):
+        claimed = int(match.group(1))
+        return claimed != expected
+    return False
 
 
 def _claims_false_action(reply: str, pack: dict[str, Any]) -> bool:
@@ -78,13 +105,32 @@ def _claims_false_action(reply: str, pack: dict[str, Any]) -> bool:
         if not actions:
             return True
 
+    if _claims_false_unread(reply, pack):
+        return True
+
     return False
+
+
+def _deterministic_correction(pack: dict[str, Any]) -> str | None:
+    corrected = deterministic_reply_from_actions(pack)
+    if corrected:
+        return corrected
+    expected_unread = _extract_unread_from_gmail(pack)
+    if expected_unread is not None:
+        return f"Your inbox snapshot shows {expected_unread} unread message(s)."
+    calendar = pack.get("calendar_today") or pack.get("calendar_full") or ""
+    if calendar.strip():
+        return calendar.strip()[:800]
+    gmail = pack.get("gmail_compact") or pack.get("gmail_full") or ""
+    if gmail.strip() and "not connected" not in gmail:
+        return gmail.strip()[:800]
+    return None
 
 
 def verify_reply(reply: str, grounding_pack: dict[str, Any]) -> tuple[bool, str]:
     """Check reply against grounding facts; return corrected reply on failure."""
     if not reply.strip():
-        corrected = deterministic_reply_from_actions(grounding_pack)
+        corrected = _deterministic_correction(grounding_pack)
         if corrected:
             return False, corrected
         return False, "I couldn't verify that action — please try again."
@@ -92,19 +138,25 @@ def verify_reply(reply: str, grounding_pack: dict[str, Any]) -> tuple[bool, str]
     if not _claims_false_action(reply, grounding_pack):
         return True, reply
 
-    corrected = deterministic_reply_from_actions(grounding_pack)
+    corrected = _deterministic_correction(grounding_pack)
     if corrected:
         return False, corrected
 
     try:
         router = get_router()
+        facts_parts = [_action_text(grounding_pack) or "none"]
+        for key in ("gmail_compact", "calendar_today", "pending_actions"):
+            val = grounding_pack.get(key)
+            if val:
+                facts_parts.append(f"{key}:\n{val}")
         prompt = (
             "You verify assistant replies against known facts. "
             "If the reply falsely claims an email was sent, calendar invite sent, "
-            "meeting joined, or event created without supporting facts, rewrite it to be accurate. "
+            "meeting joined, event created, or wrong unread count without supporting facts, "
+            "rewrite it to be accurate using the grounding blocks. "
             "If facts are empty, say the action was not confirmed. "
             "Keep the rewrite to 1–4 short sentences.\n\n"
-            f"Known facts:\n{_action_text(grounding_pack) or 'none'}\n\n"
+            f"Known facts:\n" + "\n\n".join(facts_parts) + "\n\n"
             f"Reply to verify:\n{reply}"
         )
         response = router.chat_completion(

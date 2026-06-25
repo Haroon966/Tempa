@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -99,12 +100,202 @@ def _dir_size(path: Path) -> int:
     return total
 
 
-def _component_checks() -> list[dict[str, Any]]:
+def _slack_component(slack: dict[str, Any], groq: dict[str, Any]) -> dict[str, Any]:
+    configured = slack.get("configured", False)
+    connected = slack.get("connected", False)
+    owner_ok = slack.get("owner_configured", False)
+    groq_ok = groq.get("connected", False)
+
+    if connected and groq_ok and owner_ok:
+        return {
+            "id": "slack_channel",
+            "name": "Slack",
+            "category": "channels",
+            "status": "healthy",
+            "message": "Socket Mode connected; DMs + @mentions → coordinator",
+            "action": None,
+        }
+    if connected and not owner_ok:
+        return {
+            "id": "slack_channel",
+            "name": "Slack",
+            "category": "channels",
+            "status": "degraded",
+            "message": "Connected — set SLACK_OWNER_USER_ID for DM auto-reply",
+            "action": "/connections",
+        }
+    if configured and not connected:
+        detail = slack.get("detail") or "Socket Mode not connected"
+        return {
+            "id": "slack_channel",
+            "name": "Slack",
+            "category": "channels",
+            "status": "degraded",
+            "message": detail,
+            "action": "/connections",
+        }
+    return {
+        "id": "slack_channel",
+        "name": "Slack",
+        "category": "channels",
+        "status": "unhealthy",
+        "message": "Set SLACK_BOT_TOKEN and SLACK_APP_TOKEN in .env (optional channel)",
+        "action": "/connections",
+    }
+
+
+def _whatsapp_bridge_component(
+    bridge: dict[str, Any], whatsapp: dict[str, Any]
+) -> dict[str, Any]:
+    reachable = bridge.get("reachable", False)
+    connected = whatsapp.get("connected", False)
+    if connected and reachable:
+        return {
+            "id": "whatsapp_channel",
+            "name": "WhatsApp Bridge",
+            "category": "channels",
+            "status": "healthy",
+            "message": "Evolution bridge reachable; WhatsApp session connected",
+            "action": "/connections",
+        }
+    if reachable and whatsapp.get("needs_qr_rescan"):
+        return {
+            "id": "whatsapp_channel",
+            "name": "WhatsApp Bridge",
+            "category": "channels",
+            "status": "degraded",
+            "message": "Bridge running — scan QR on Connections to reconnect WhatsApp",
+            "action": "/connections",
+        }
+    if reachable:
+        return {
+            "id": "whatsapp_channel",
+            "name": "WhatsApp Bridge",
+            "category": "channels",
+            "status": "degraded",
+            "message": "Bridge reachable — connect WhatsApp on Connections",
+            "action": "/connections",
+        }
+    detail = bridge.get("error") or (
+        f"HTTP {bridge['status_code']}" if bridge.get("status_code") else ""
+    )
+    msg = "Start Evolution API sidecar (see README docker compose)"
+    if detail:
+        msg = f"{msg} — {detail}"
+    return {
+        "id": "whatsapp_channel",
+        "name": "WhatsApp Bridge",
+        "category": "channels",
+        "status": "unhealthy",
+        "message": msg,
+        "action": "/connections",
+    }
+
+
+def _google_calendar_component(google: dict[str, Any]) -> dict[str, Any]:
+    connected = google.get("connected", False)
+    calendar_ok = google.get("calendar_api_ok", False)
+    needs_reconnect = google.get("needs_reconnect", False)
+    creds_ok = google.get("credentials_configured", False)
+
+    if connected and calendar_ok:
+        status = "healthy"
+        message = "OAuth connected; Calendar API OK"
+    elif needs_reconnect:
+        status = "degraded"
+        message = "Reconnect Google OAuth for calendar write access"
+    elif connected and not calendar_ok:
+        status = "degraded"
+        message = google.get("detail") or "Calendar API check failed"
+    elif creds_ok:
+        status = "unhealthy"
+        message = "Complete Google OAuth on Connections"
+    else:
+        status = "unhealthy"
+        message = "Add Google credentials and complete OAuth"
+
+    return {
+        "id": "google_calendar",
+        "name": "Google Calendar",
+        "category": "channels",
+        "status": status,
+        "message": message,
+        "action": "/connections" if status != "healthy" else None,
+    }
+
+
+def _calendar_reminders_component(
+    google: dict[str, Any], whatsapp: dict[str, Any], *, minutes_before: int
+) -> dict[str, Any]:
+    google_ready = google.get("connected", False) and google.get("calendar_api_ok", False)
+    wa_ready = whatsapp.get("connected", False)
+
+    if google_ready and wa_ready:
+        status = "healthy"
+        message = f"T−{minutes_before} min WhatsApp + desktop notify-send"
+    elif google_ready:
+        status = "degraded"
+        message = f"Calendar ready — connect WhatsApp for T−{minutes_before} min reminders"
+    elif google.get("connected", False):
+        status = "degraded"
+        message = google.get("detail") or "Calendar API unavailable for reminders"
+    else:
+        status = "degraded"
+        message = "Complete Google OAuth before reminders can run"
+
+    action = None
+    if status != "healthy":
+        action = "/connections"
+
+    return {
+        "id": "calendar_reminders",
+        "name": "Calendar Reminders",
+        "category": "channels",
+        "status": status,
+        "message": message,
+        "action": action,
+    }
+
+
+def _component_checks(
+    *,
+    groq: dict[str, Any],
+    google: dict[str, Any],
+    bridge: dict[str, Any],
+    whatsapp: dict[str, Any],
+    slack: dict[str, Any],
+    rag_connected: bool = True,
+    rag_error: str | None = None,
+) -> list[dict[str, Any]]:
     """End-to-end readiness per major Tempa subsystem."""
+    from tempa.security.sessions import secret_file_exists
+
     settings = get_settings()
-    groq_ok = bool(settings.load_groq_api_key())
-    google_ok = settings.google_token_path.exists()
-    storage_ok = settings.google_storage_state_path.exists()
+    groq_ok = groq.get("connected", False)
+    storage_ok = secret_file_exists("google/storage_state.json")
+    wa_connected = whatsapp.get("connected", False)
+    pause_reply = whatsapp.get("pause_auto_reply")
+
+    if wa_connected and groq_ok and not pause_reply:
+        autoreply_status = "healthy"
+        autoreply_msg = "Inbound → coordinator + RAG → safety screen → send"
+    elif wa_connected and pause_reply:
+        autoreply_status = "degraded"
+        autoreply_msg = "Auto-reply paused on Connections"
+    elif bridge.get("reachable") and not wa_connected:
+        autoreply_status = "degraded"
+        autoreply_msg = "Connect WhatsApp before auto-reply can run"
+    elif not groq_ok:
+        autoreply_status = "degraded"
+        autoreply_msg = "Configure Groq API key for auto-reply"
+    else:
+        autoreply_status = "unhealthy"
+        autoreply_msg = "WhatsApp bridge unreachable"
+
+    rag_status = "healthy" if rag_connected else "degraded"
+    rag_msg = f"Chroma collection `{COLLECTION_NAME}`"
+    if rag_error:
+        rag_msg = f"{rag_msg} — {rag_error}"
 
     return [
         {
@@ -125,8 +316,8 @@ def _component_checks() -> list[dict[str, Any]]:
             "id": "unified_rag",
             "name": "Unified Agentic RAG",
             "category": "memory",
-            "status": "healthy",
-            "message": f"Chroma collection `{COLLECTION_NAME}`",
+            "status": rag_status,
+            "message": rag_msg,
         },
         {
             "id": "coordinator",
@@ -135,34 +326,20 @@ def _component_checks() -> list[dict[str, Any]]:
             "status": "healthy" if groq_ok else "degraded",
             "message": "LangGraph coordinator + 5 specialists",
         },
-        {
-            "id": "whatsapp_channel",
-            "name": "WhatsApp Bridge",
-            "category": "channels",
-            "status": "degraded",
-            "message": "Webhook + client ready; requires WhatsApp bridge sidecar",
-        },
+        _whatsapp_bridge_component(bridge, whatsapp),
+        _slack_component(slack, groq),
         {
             "id": "whatsapp_autoreply",
             "name": "WhatsApp Auto-Reply",
             "category": "channels",
-            "status": "healthy",
-            "message": "Inbound → coordinator + RAG → safety screen → send",
+            "status": autoreply_status,
+            "message": autoreply_msg,
+            "action": "/connections" if autoreply_status != "healthy" else None,
         },
-        {
-            "id": "google_calendar",
-            "name": "Google Calendar",
-            "category": "channels",
-            "status": "healthy" if google_ok else "unhealthy",
-            "message": "OAuth connected" if google_ok else "Complete Google OAuth",
-        },
-        {
-            "id": "calendar_reminders",
-            "name": "Calendar Reminders",
-            "category": "channels",
-            "status": "healthy" if google_ok else "degraded",
-            "message": f"T−{settings.reminder_minutes_before} min WhatsApp + desktop notify-send",
-        },
+        _google_calendar_component(google),
+        _calendar_reminders_component(
+            google, whatsapp, minutes_before=settings.reminder_minutes_before
+        ),
         {
             "id": "meet_bot",
             "name": "Google Meet Bot (Playwright)",
@@ -217,72 +394,110 @@ def _component_checks() -> list[dict[str, Any]]:
     ]
 
 
-def _flow_status(groq_ok: bool = False) -> list[dict[str, Any]]:
-    chat_ui_status = "healthy" if groq_ok else "degraded"
-    return [
+def _aggregate_flow_status(steps: list[dict[str, Any]]) -> str:
+    statuses = [str(s.get("status", "")).lower() for s in steps]
+    if all(s == "healthy" for s in statuses):
+        return "healthy"
+    if any(s == "unhealthy" for s in statuses):
+        return "degraded" if any(s == "healthy" for s in statuses) else "unhealthy"
+    return "degraded"
+
+
+def _step_status(ok: bool, *, soft: bool = False) -> str:
+    if ok:
+        return "healthy"
+    return "degraded" if soft else "unhealthy"
+
+
+def _flow_status(
+    *,
+    groq_ok: bool,
+    google_ok: bool,
+    wa_ok: bool,
+    rag_connected: bool,
+    meet_ready: bool,
+    meet_worker_alive: bool,
+    meet_delegate_to_worker: bool,
+    meet_auto_join_enabled: bool,
+    meet_auto_send_whatsapp: bool,
+) -> list[dict[str, Any]]:
+    auto_join_ok = meet_ready and (meet_worker_alive if meet_delegate_to_worker else True)
+
+    flow_0_steps = [
+        {"name": "Daemon running", "status": "healthy"},
+        {"name": "Groq API key", "status": _step_status(groq_ok)},
+        {"name": "Google OAuth", "status": _step_status(google_ok)},
+        {"name": "WhatsApp QR", "status": _step_status(wa_ok)},
+    ]
+
+    flow_1_steps = [
+        {"name": "Calendar poll", "status": _step_status(google_ok)},
+        {"name": "T−N reminders", "status": _step_status(google_ok and wa_ok, soft=not wa_ok)},
+        {"name": "Meet trigger (T−2 min)", "status": _step_status(google_ok and meet_auto_join_enabled)},
+        {"name": "Auto-join Playwright", "status": _step_status(auto_join_ok, soft=not auto_join_ok)},
+        {"name": "Groq Whisper STT", "status": _step_status(groq_ok)},
+        {"name": "Minutes + archive", "status": _step_status(groq_ok and rag_connected, soft=not rag_connected)},
+        {"name": "WhatsApp summary", "status": _step_status(wa_ok and meet_auto_send_whatsapp, soft=not wa_ok)},
+    ]
+
+    flow_2_steps = [
+        {"name": "Unified ingest", "status": _step_status(rag_connected)},
+        {"name": "Agentic RAG graph", "status": _step_status(rag_connected and groq_ok)},
+        {"name": "Chat / dashboard UI", "status": _step_status(groq_ok)},
+    ]
+
+    flow_3_steps = [
+        {"name": "WhatsApp receive", "status": _step_status(wa_ok)},
+        {"name": "Coordinator invoke", "status": _step_status(groq_ok)},
+        {"name": "PC tools execute", "status": "healthy"},
+        {"name": "WhatsApp reply", "status": _step_status(wa_ok and groq_ok)},
+    ]
+
+    flow_6_steps = [
+        {"name": "Task decomposition", "status": _step_status(groq_ok)},
+        {"name": "Parallel Send", "status": _step_status(groq_ok)},
+        {"name": "Merge response", "status": _step_status(groq_ok)},
+        {"name": "Activity WebSocket", "status": "healthy"},
+    ]
+
+    flows = [
         {
             "id": "flow_0",
             "name": "Connections Init",
-            "status": "degraded",
+            "status": _aggregate_flow_status(flow_0_steps),
             "description": "Extension + dashboard setup Groq, Google, WhatsApp QR",
-            "steps": [
-                {"name": "Daemon running", "status": "healthy"},
-                {"name": "Groq API key", "status": "degraded"},
-                {"name": "Google OAuth", "status": "degraded"},
-                {"name": "WhatsApp QR", "status": "degraded"},
-            ],
+            "steps": flow_0_steps,
         },
         {
             "id": "flow_1",
             "name": "Meet Reminder & Full Capture",
-            "status": "degraded",
+            "status": _aggregate_flow_status(flow_1_steps),
             "description": "Calendar → reminder → auto-join → transcribe → minutes → WhatsApp",
-            "steps": [
-                {"name": "Calendar poll", "status": "healthy"},
-                {"name": "T−N reminders", "status": "healthy"},
-                {"name": "Meet trigger (T−2 min)", "status": "healthy"},
-                {"name": "Auto-join Playwright", "status": "degraded"},
-                {"name": "Groq Whisper STT", "status": "degraded"},
-                {"name": "Minutes + archive", "status": "healthy"},
-                {"name": "WhatsApp summary", "status": "degraded"},
-            ],
+            "steps": flow_1_steps,
         },
         {
             "id": "flow_2",
             "name": "Cross-Tool Memory Lookup",
-            "status": "degraded",
+            "status": _aggregate_flow_status(flow_2_steps),
             "description": "Query unified RAG across WhatsApp + Meet + calendar",
-            "steps": [
-                {"name": "Unified ingest", "status": "healthy"},
-                {"name": "Agentic RAG graph", "status": "healthy"},
-                {"name": "Chat / dashboard UI", "status": chat_ui_status},
-            ],
+            "steps": flow_2_steps,
         },
         {
             "id": "flow_3",
             "name": "PC Task via WhatsApp",
-            "status": "degraded",
+            "status": _aggregate_flow_status(flow_3_steps),
             "description": "WhatsApp message → coordinator → PC agent",
-            "steps": [
-                {"name": "WhatsApp receive", "status": "healthy"},
-                {"name": "Coordinator invoke", "status": "healthy"},
-                {"name": "PC tools execute", "status": "healthy"},
-                {"name": "WhatsApp reply", "status": "healthy"},
-            ],
+            "steps": flow_3_steps,
         },
         {
             "id": "flow_6",
             "name": "Multi-Agent Parallel",
-            "status": "degraded",
+            "status": _aggregate_flow_status(flow_6_steps),
             "description": "Coordinator fans out to specialists in parallel",
-            "steps": [
-                {"name": "Task decomposition", "status": "healthy"},
-                {"name": "Parallel Send", "status": "healthy"},
-                {"name": "Merge response", "status": "healthy"},
-                {"name": "Activity WebSocket", "status": "healthy"},
-            ],
+            "steps": flow_6_steps,
         },
     ]
+    return flows
 
 
 async def build_dashboard_payload() -> dict[str, Any]:
@@ -309,9 +524,14 @@ async def build_dashboard_payload() -> dict[str, Any]:
             "connected": wa_connected,
             "status": "connected" if wa_connected else snapshot.get("state", "disconnected"),
             "pause_auto_reply": snapshot.get("pause_auto_reply"),
+            "needs_qr_rescan": snapshot.get("needs_qr_rescan"),
         }
     except Exception as exc:
         wa_detail = {"connected": False, "status": "error", "detail": str(exc)}
+
+    from tempa.channels.slack.session import connection_status
+
+    slack_detail = await connection_status()
 
     meetings = await list_meetings()
 
@@ -352,22 +572,9 @@ async def build_dashboard_payload() -> dict[str, Any]:
             }
         )
 
-    components = _component_checks()
     groq_ok = groq.get("connected", False)
-    flows = _flow_status(groq_ok)
-
-    # Update flow step statuses from live connections
     google_ok = google.get("connected", False)
     wa_ok = wa_detail.get("connected", False)
-    for flow in flows:
-        if flow["id"] == "flow_0":
-            flow["steps"][1]["status"] = "healthy" if groq_ok else "unhealthy"
-            flow["steps"][2]["status"] = "healthy" if google_ok else "unhealthy"
-            flow["steps"][3]["status"] = "healthy" if wa_ok else "unhealthy"
-            statuses = [s["status"] for s in flow["steps"]]
-            flow["status"] = (
-                "healthy" if all(s == "healthy" for s in statuses) else "degraded" if any(s == "healthy" for s in statuses) else "unhealthy"
-            )
 
     rag_chunks = 0
     rag_status = "connected"
@@ -392,8 +599,50 @@ async def build_dashboard_payload() -> dict[str, Any]:
                 rag_error = str(retry_exc)[:200]
 
     from tempa.meet.scheduler import meet_readiness
+    from tempa.meet.worker_heartbeat import worker_is_alive
 
     meet_ready = meet_readiness()
+    meet_delegate_to_worker = os.environ.get("TEMPA_MEET_DELEGATE_TO_WORKER", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+    flows = _flow_status(
+        groq_ok=groq_ok,
+        google_ok=google_ok,
+        wa_ok=wa_ok,
+        rag_connected=rag_connected,
+        meet_ready=meet_ready.ready,
+        meet_worker_alive=worker_is_alive(),
+        meet_delegate_to_worker=meet_delegate_to_worker,
+        meet_auto_join_enabled=settings.meet_auto_join_enabled,
+        meet_auto_send_whatsapp=settings.meet_auto_send_summary_whatsapp,
+    )
+
+    components = _component_checks(
+        groq=groq,
+        google=google,
+        bridge=bridge,
+        whatsapp=wa_detail,
+        slack=slack_detail,
+        rag_connected=rag_connected,
+        rag_error=rag_error,
+    )
+
+    from tempa.core.sync_status import all_sync_status, get_sync_status
+
+    sync_all = all_sync_status()
+    gmail_sync = get_sync_status("gmail")
+    calendar_sync = get_sync_status("calendar")
+    slack_sync = get_sync_status("slack")
+    if gmail_sync:
+        gmail = {**gmail, **gmail_sync}
+    if calendar_sync:
+        google = {**google, "calendar_sync": calendar_sync}
+    if slack_sync:
+        slack_detail = {**slack_detail, **slack_sync}
+
     connections = {
         "daemon": {"status": "connected", "connected": True, "port": settings.tempa_daemon_port},
         "groq": groq,
@@ -401,6 +650,7 @@ async def build_dashboard_payload() -> dict[str, Any]:
         "gmail": gmail,
         "whatsapp": wa_detail,
         "whatsapp_bridge": bridge,
+        "slack": slack_detail,
         "evolution_api": bridge,
         "meet_auto_join": {
             "ready": meet_ready.ready,
@@ -418,6 +668,7 @@ async def build_dashboard_payload() -> dict[str, Any]:
             "path": str(settings.vector_dir),
             **({"error": rag_error} if rag_error else {}),
         },
+        "sync": sync_all,
     }
 
     healthy = sum(1 for c in components if c["status"] == "healthy")

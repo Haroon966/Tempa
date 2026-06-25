@@ -73,7 +73,7 @@ function ActivityPanel({
       <p className="border-b border-border px-3 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
         Live activity
       </p>
-      <ScrollArea className="min-h-0 flex-1 p-2">
+      <ScrollArea className="h-0 min-h-0 flex-1 basis-0 p-2">
         {!hasSteps && activity.length === 0 ? (
           <p className="px-1 py-2 text-xs text-muted-foreground">
             {streaming ? "Coordinator is working…" : "Activity appears during requests."}
@@ -164,7 +164,7 @@ function ChatMessageBubble({
       <div
         className={cn(
           "inline-block max-w-full rounded-2xl border px-3 py-2.5 text-left sm:px-4 sm:py-3",
-          isUser ? "border-primary/20 bg-primary/8" : "border-border bg-card",
+          isUser ? "border-border bg-muted" : "border-border bg-card",
         )}
       >
         {isUser ? (
@@ -400,7 +400,7 @@ export function AgentTab({ data }: AgentTabProps) {
   const availablePrompts = EXAMPLE_PROMPTS.filter((p) => isPromptAvailable(p.requires))
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:flex-row lg:items-stretch lg:gap-4">
+    <div className="flex h-full min-h-0 flex-1 flex-col gap-3 overflow-hidden lg:h-full lg:flex-row lg:items-stretch lg:gap-4">
       <ConversationSidebarSheet
         {...sidebarProps}
         open={historyOpen}
@@ -409,7 +409,7 @@ export function AgentTab({ data }: AgentTabProps) {
 
       <ConversationSidebarDesktop {...sidebarProps} />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
         {!groqConnected && (
           <Alert className="shrink-0 border-amber-200 bg-amber-50">
             <AlertTitle>Groq not connected</AlertTitle>
@@ -461,21 +461,21 @@ export function AgentTab({ data }: AgentTabProps) {
               </Button>
             </div>
           }
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden py-0"
           contentClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
         >
           <div
             className={cn(
-              "grid h-full min-h-0 flex-1 overflow-hidden",
+              "grid min-h-0 flex-1 overflow-hidden",
               showActivity && "lg:grid-cols-[minmax(0,1fr)_240px] xl:grid-cols-[minmax(0,1fr)_260px]",
             )}
           >
-            <div className="flex h-full min-h-0 flex-col overflow-hidden">
-              <ScrollArea className="min-h-0 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <ScrollArea className="h-0 min-h-0 flex-1 basis-0">
                 <div className="px-3 sm:px-4 lg:px-6">
                   {messages.length === 0 ? (
                     <div className="flex flex-col items-center gap-4 py-10 text-center sm:gap-6 sm:py-14">
-                      <div className="flex size-12 items-center justify-center rounded-full border border-primary/25 bg-primary/8 sm:size-14">
+                      <div className="flex size-12 items-center justify-center rounded-full border border-border bg-muted sm:size-14">
                         <MessageSquareIcon className="size-5 text-primary sm:size-6" />
                       </div>
                       <div className="max-w-md px-2">
@@ -548,12 +548,12 @@ export function AgentTab({ data }: AgentTabProps) {
             </div>
 
             {showActivity && (
-              <div className="hidden min-h-0 overflow-hidden border-l border-border lg:block">
+              <div className="hidden min-h-0 flex-1 overflow-hidden border-l border-border lg:flex lg:flex-col">
                 <ActivityPanel
                   activity={activity}
                   steps={steps}
                   streaming={streaming}
-                  className="h-full rounded-none border-0 bg-transparent"
+                  className="min-h-0 flex-1 rounded-none border-0 bg-transparent"
                 />
               </div>
             )}

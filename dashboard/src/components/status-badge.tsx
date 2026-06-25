@@ -29,11 +29,11 @@ export function StatusBadge({
     <Badge
       variant="outline"
       className={cn(
-        "gap-1.5 border font-medium tracking-wide uppercase",
-        isGood     && "border-green-300 bg-green-50 text-green-700",
-        isDegraded && "border-amber-300 bg-amber-50 text-amber-700",
-        isDiscon   && "border-slate-300 bg-slate-50 text-slate-500",
-        !isGood && !isDegraded && !isDiscon && "border-red-300 bg-red-50 text-red-600",
+        "gap-1.5 border font-semibold tracking-wide uppercase",
+        isGood     && "border-emerald-200 bg-emerald-50 text-emerald-800",
+        isDegraded && "border-amber-200 bg-amber-50 text-amber-800",
+        isDiscon   && "border-slate-200 bg-slate-50 text-slate-600",
+        !isGood && !isDegraded && !isDiscon && "border-red-200 bg-red-50 text-red-700",
         className,
       )}
     >
@@ -51,10 +51,10 @@ export function StatusBadge({
 export function statusDot(status: HealthStatus | string) {
   const key = status.toLowerCase()
   if (key === "healthy" || key === "connected")
-    return "bg-green-500 shadow-[0_0_7px_rgba(22,163,74,0.8)]"
+    return "bg-emerald-500 glow-green"
   if (key === "degraded")
-    return "bg-amber-500 shadow-[0_0_6px_rgba(217,119,6,0.7)]"
+    return "bg-amber-500 glow-amber"
   if (key === "disconnected")
     return "bg-slate-400"
-  return "bg-red-500 shadow-[0_0_6px_rgba(220,38,38,0.7)]"
+  return "bg-red-500 glow-red"
 }

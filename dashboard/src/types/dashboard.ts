@@ -52,6 +52,13 @@ export interface ConnectionInfo {
   error?: unknown
   status_code?: number
   raw?: unknown
+  last_sync_error?: string
+  needs_qr_rescan?: boolean
+  calendar_sync?: { last_sync_error?: string }
+  configured?: boolean
+  owner_configured?: boolean
+  owner_user_id?: string | null
+  last_event_at?: string | null
 }
 
 export interface AgentInfo {
@@ -68,6 +75,7 @@ export interface ComponentInfo {
   category: string
   status: HealthStatus
   message: string
+  action?: string
 }
 
 export interface FlowInfo {

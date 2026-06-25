@@ -17,9 +17,11 @@ export function MailTab() {
   const [messages, setMessages]   = useState<GmailMessage[]>([])
   const [lastSync, setLastSync]   = useState<string>("")
   const [loading, setLoading]     = useState(true)
-  const [syncing, setSyncing]     = useState(false)
-  const [contacts, setContacts]   = useState<Contact[]>([])
+  const [syncing, setSyncing]             = useState(false)
   const [contactSyncing, setContactSyncing] = useState(false)
+  const [contacts, setContacts]           = useState<Contact[]>([])
+  const [syncError, setSyncError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const refreshContacts = useCallback(async () => {
     try {
@@ -38,10 +40,14 @@ export function MailTab() {
 
   const refresh = useCallback(async () => {
     setLoading(true)
+    setLoadError(null)
     try {
       const data = await fetchGmailMessages()
       setMessages(data.messages ?? [])
       setLastSync(data.last_sync_at ?? "")
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to load mail")
+      setMessages([])
     } finally { setLoading(false) }
   }, [])
 
@@ -49,8 +55,13 @@ export function MailTab() {
 
   const handleSync = async () => {
     setSyncing(true)
-    try { await syncGmail(); await refresh() }
-    finally { setSyncing(false) }
+    setSyncError(null)
+    try {
+      await syncGmail()
+      await refresh()
+    } catch (e) {
+      setSyncError(e instanceof Error ? e.message : "Sync failed")
+    } finally { setSyncing(false) }
   }
 
   const unreadCount = messages.filter((m) => m.unread).length
@@ -64,7 +75,7 @@ export function MailTab() {
             <MailIcon className="size-4 text-muted-foreground" />
             <h2 className="text-sm font-semibold text-foreground">Inbox</h2>
             {unreadCount > 0 && (
-              <Badge variant="outline" className="border-primary/25 bg-primary/8 text-xs text-primary">
+              <Badge variant="outline" className="border-border bg-muted text-xs text-primary">
                 {unreadCount} unread
               </Badge>
             )}
@@ -86,6 +97,10 @@ export function MailTab() {
           </Button>
         </div>
 
+        {(syncError || loadError) && (
+          <p className="mb-3 text-sm text-destructive">{syncError || loadError}</p>
+        )}
+
         {loading && messages.length === 0 ? (
           <div className="flex flex-col gap-2">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -95,9 +110,13 @@ export function MailTab() {
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-muted/30 py-14 text-center">
             <MailIcon className="size-7 text-muted-foreground/30" />
-            <p className="text-sm font-medium text-foreground">No messages</p>
+            <p className="text-sm font-medium text-foreground">
+              {loadError ? "Could not load inbox" : "No messages"}
+            </p>
             <p className="text-xs text-muted-foreground">
-              Connect Gmail and run sync to see your inbox here.
+              {loadError
+                ? "Check Gmail connection in Connections and try Sync now."
+                : "Connect Gmail and run sync to see your inbox here."}
             </p>
           </div>
         ) : (
@@ -108,8 +127,8 @@ export function MailTab() {
                 className={cn(
                   "rounded-xl border p-4 transition-all duration-200",
                   m.unread
-                    ? "border-primary/30 bg-primary/5 hover:border-primary/40 hover:bg-primary/8"
-                    : "border-border bg-card hover:border-primary/20 hover:bg-muted/40",
+                    ? "border-border bg-muted hover:bg-muted/80"
+                    : "border-border bg-card hover:bg-muted/40",
                 )}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -170,7 +189,7 @@ export function MailTab() {
                 key={c.id}
                 className="flex items-center gap-3 rounded-xl border border-border bg-card p-3 transition-colors duration-200 hover:border-primary/25 hover:bg-muted/40"
               >
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-full border border-primary/20 bg-primary/8 text-xs font-semibold text-primary">
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-xs font-semibold text-primary">
                   {(c.name || c.email || "?").charAt(0).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">

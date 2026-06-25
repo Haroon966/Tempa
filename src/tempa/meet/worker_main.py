@@ -12,8 +12,11 @@ logger = logging.getLogger(__name__)
 
 
 async def _poll_loop() -> None:
+    from tempa.meet.worker_heartbeat import write_worker_heartbeat
+
     poll_seconds = float(os.environ.get("TEMPA_MEET_WORKER_POLL_SECONDS", "3"))
     while True:
+        write_worker_heartbeat(pid=os.getpid())
         job = claim_next_job()
         if job:
             meeting_id = str(job["id"])
@@ -22,7 +25,15 @@ async def _poll_loop() -> None:
             notify = job.get("notify_number")
             logger.info("Meet worker claimed job %s for %s", meeting_id, meet_url)
             try:
-                config = build_worker_config(meet_url, meeting_id)
+                config = build_worker_config(
+                    meet_url,
+                    meeting_id,
+                    duration_seconds=int(job.get("duration_seconds") or 3600),
+                    calendar_event_id=job.get("calendar_event_id"),
+                    calendar_event_start=job.get("calendar_event_start"),
+                    calendar_event_end=job.get("calendar_event_end"),
+                    attendee_emails=job.get("attendee_emails"),
+                )
                 await asyncio.to_thread(
                     run_meeting_job_sync,
                     config,

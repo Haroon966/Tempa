@@ -156,6 +156,20 @@ async def api_gmail_sync(full: bool = False):
     return await sync_once(full=full)
 
 
+@router.post("/slack/sync")
+async def api_slack_sync(full: bool = False):
+    from tempa.channels.slack.sync import sync_once
+    from tempa.core.sync_status import record_sync
+
+    result = await sync_once(full=full)
+    status = str(result.get("status", "ok"))
+    if status in {"ok", "skipped"}:
+        record_sync("slack", status=status, details=result)
+    else:
+        record_sync("slack", status="error", error=str(result.get("reason") or status), details=result)
+    return result
+
+
 @router.get("/contacts")
 async def api_contacts(q: str = "", limit: int = 50):
     from tempa.channels.contacts.store import contact_count, list_contacts, search_contacts

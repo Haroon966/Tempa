@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     evolution_api_key: str = "tempa-evolution-key"
     tempa_instance_name: str = "tempa"
     whatsapp_owner_number: str = ""
+    slack_bot_token: str = ""
+    slack_app_token: str = ""
+    slack_owner_user_id: str = ""
+    slack_allowed_user_ids: str = ""
     vector_db: str = "chroma"
     calendar_poll_seconds: int = 30
     meet_trigger_before_minutes: int = 2
@@ -35,10 +39,34 @@ class Settings(BaseSettings):
     meet_auto_join_on_reminder: bool = True
     meet_auto_join_enabled: bool = True
     meet_skip_keywords: list[str] = ["focus time", "ooo", "out of office"]
-    meet_retention_days: int = 0
+    meet_retention_days: int = 90
     meet_auto_send_summary_whatsapp: bool = True
     meet_copilot_whatsapp_notify: bool = False
     meet_chat_prefix: str = "[via Tempa]"
+    tempa_timezone: str = "Asia/Karachi"
+    gmail_poll_interval_seconds: int = 120
+    calendar_poll_interval_seconds: int = 300
+    github_app_id: str = ""
+    github_private_key: str = ""
+    github_webhook_secret: str = ""
+    tempa_qa_enabled: bool = True
+    tempa_qa_scan_interval_minutes: int = 60
+    tempa_qa_max_branches_per_repo: int = 50
+    tempa_qa_deep_review_mode: str = "lite"
+    anthropic_api_key: str = ""
+    tempa_qa_claude_model: str = "claude-sonnet-4-20250514"
+    tempa_coordinator: str = "langgraph"
+    varys_orchestrator_enabled: bool = False
+    varys_tick_seconds: int = 270
+    varys_harness_db: Path = Path("./data/harness/harness.db")
+    varys_vault_dir: Path = Path("./data/vault")
+    varys_agent_name: str = "Tempa"
+    varys_owner_name: str = ""
+    notion_api_key: str = ""
+    notion_harness_db_id: str = ""
+    notion_enabled: bool = False
+    claude_code_path: str = "claude"
+    varys_claude_cli_only: bool = True
 
     @property
     def project_root(self) -> Path:
@@ -84,7 +112,12 @@ class Settings(BaseSettings):
             self.sessions_dir / "google",
             self.sessions_dir / "gmail",
             self.sessions_dir / "whatsapp",
+            self.sessions_dir / "slack",
+            self.sessions_dir / "qa",
+            self.tempa_data_dir / "qa" / "worktrees",
             self.db_path.parent,
+            self.varys_harness_db.parent,
+            self.varys_vault_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -113,5 +146,9 @@ def get_settings() -> Settings:
     settings = Settings()
     if not settings.tempa_data_dir.is_absolute():
         settings.tempa_data_dir = (settings.project_root / settings.tempa_data_dir).resolve()
+    if not settings.varys_harness_db.is_absolute():
+        settings.varys_harness_db = (settings.project_root / settings.varys_harness_db).resolve()
+    if not settings.varys_vault_dir.is_absolute():
+        settings.varys_vault_dir = (settings.project_root / settings.varys_vault_dir).resolve()
     settings.ensure_dirs()
     return settings

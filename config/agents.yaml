@@ -11,7 +11,7 @@ specialists:
     model_category: tool_use
   channel:
     name: Channel Agent
-    role: WhatsApp messaging and inbound handling
+    role: WhatsApp and Slack messaging and inbound handling
     model_category: text
   gmail:
     name: Gmail Agent
@@ -33,3 +33,7 @@ specialists:
     name: Plugin Agent
     role: Execute registered plugin tools via function calling
     model_category: tool_use
+  qa:
+    name: QA Agent
+    role: Monitor repos, explain failures, propose fixes, trigger scans
+    model_category: reasoning

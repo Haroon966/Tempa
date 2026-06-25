@@ -97,7 +97,7 @@ async def test_whatsapp_meet_link_triggers_join(monkeypatch):
         assert result["handled"] == 1
         join.assert_called_once()
         prompt = router.chat_completion.call_args.kwargs["messages"][1]["content"]
-        assert "Conversation thread" in prompt
+        assert "WhatsApp conversation" in prompt
 
     get_settings.cache_clear()
 

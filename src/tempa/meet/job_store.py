@@ -32,6 +32,7 @@ def recover_stale_running_jobs(*, max_age_minutes: int = 10) -> int:
     _ensure_dir()
     now = datetime.now(timezone.utc)
     recovered = 0
+    changed = False
     with _lock:
         statuses = _read_statuses_unlocked()
         queue_lines: list[str] = []
@@ -44,12 +45,25 @@ def recover_stale_running_jobs(*, max_age_minutes: int = 10) -> int:
         for job_id, row in list(statuses.items()):
             if row.get("status") != "running":
                 continue
+            started_at = str(row.get("started_at") or row.get("enqueued_at") or "")
+            if started_at:
+                try:
+                    started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    age_min = (now - started).total_seconds() / 60.0
+                    if age_min < max_age_minutes:
+                        continue
+                except Exception:
+                    pass
             meet_url = str(row.get("meet_url") or "")
             if not meet_url:
                 statuses[job_id] = {**row, "status": "failed", "error": "missing meet_url"}
+                changed = True
                 continue
             if meet_url in queued_urls:
                 statuses[job_id] = {**row, "status": "failed", "error": "superseded by newer queued job"}
+                changed = True
                 continue
             statuses[job_id] = {**row, "status": "queued"}
             queue_lines.append(
@@ -66,7 +80,8 @@ def recover_stale_running_jobs(*, max_age_minutes: int = 10) -> int:
                 )
             )
             recovered += 1
-        if recovered:
+            changed = True
+        if changed:
             _queue_path().write_text("\n".join(queue_lines) + ("\n" if queue_lines else ""), encoding="utf-8")
             _write_statuses_unlocked(statuses)
     return recovered
@@ -114,7 +129,7 @@ def enqueue_meet_job(
         with _queue_path().open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
         statuses = _read_statuses_unlocked()
-        statuses[mid] = {"status": "queued", "meet_url": meet_url, "title": title}
+        statuses[mid] = {"status": "queued", "meet_url": meet_url, "title": title, **(extra or {})}
         _write_statuses_unlocked(statuses)
         return mid
 
@@ -193,10 +208,27 @@ def claim_next_job() -> dict[str, Any] | None:
         for job_id, row in list(statuses.items()):
             if job_id != claimed_id and row.get("status") == "queued" and row.get("meet_url") == claimed_url:
                 statuses[job_id] = {**row, "status": "skipped", "error": "superseded by newer job"}
+        for row in all_rows:
+            row_id = str(row.get("id") or "")
+            row_url = str(row.get("meet_url") or "")
+            if (
+                row_id
+                and row_id != claimed_id
+                and row.get("status") == "queued"
+                and row_url == claimed_url
+                and row_id not in statuses
+            ):
+                statuses[row_id] = {
+                    "status": "skipped",
+                    "meet_url": row_url,
+                    "title": row.get("title", ""),
+                    "error": "superseded by newer job",
+                }
         statuses[claimed_id] = {
             "status": "running",
             "meet_url": claimed.get("meet_url"),
             "title": claimed.get("title", ""),
+            "started_at": datetime.now(timezone.utc).isoformat(),
         }
         _write_statuses_unlocked(statuses)
         return claimed

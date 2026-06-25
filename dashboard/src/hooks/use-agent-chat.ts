@@ -25,6 +25,23 @@ function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 }
 
+function errorRecoveryHint(code?: string): string {
+  switch (code) {
+    case "GROQ_UNAVAILABLE":
+      return "Open Connections to add or test your Groq API key."
+    case "GMAIL_NOT_CONNECTED":
+      return "Connect Gmail under Connections."
+    case "CALENDAR_NOT_CONNECTED":
+      return "Authorize Google Calendar under Connections."
+    case "WHATSAPP_DISCONNECTED":
+      return "Scan the WhatsApp QR code under Connections."
+    case "SYNC_STALE":
+      return "Try Sync now on the Mail tab or wait for the next background sync."
+    default:
+      return ""
+  }
+}
+
 export function useAgentChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState(false)
@@ -133,7 +150,9 @@ export function useAgentChat() {
               artifacts: event.artifacts,
             })
           } else if (event.type === "error") {
-            finalizeAssistant({ content: `Error: ${event.error}` })
+            const hint = errorRecoveryHint(event.code)
+            const message = hint ? `${event.error}\n\n${hint}` : event.error
+            finalizeAssistant({ content: `Error: ${message}` })
           } else if (event.type === "done") {
             finalizeAssistant()
           }

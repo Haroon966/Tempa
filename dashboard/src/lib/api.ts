@@ -82,6 +82,20 @@ export async function disconnectWhatsApp() {
   return request<WhatsAppStatus>("/api/connections/whatsapp", { method: "DELETE" })
 }
 
+export interface SlackStatus {
+  connected?: boolean
+  configured?: boolean
+  owner_configured?: boolean
+  status?: string
+  detail?: string | null
+  last_event_at?: string | null
+  owner_user_id?: string | null
+}
+
+export async function fetchSlackStatus() {
+  return request<SlackStatus>("/api/connections/slack")
+}
+
 export async function restartWhatsApp() {
   return request<WhatsAppStatus>("/api/connections/whatsapp/restart", { method: "POST" })
 }
@@ -344,7 +358,7 @@ export type ChatStreamEvent =
       artifacts: ChatArtifact[]
       run_id: string | null
     }
-  | { type: "error"; error: string }
+  | { type: "error"; error: string; code?: string; recoverable?: boolean }
   | { type: "done" }
 
 export async function* streamChat(
@@ -423,7 +437,12 @@ export async function* streamChat(
       }
     }
     if (kind === "error") {
-      return { type: "error", error: String(data.error ?? "Unknown error") }
+      return {
+        type: "error",
+        error: String(data.error ?? "Unknown error"),
+        code: data.code ? String(data.code) : undefined,
+        recoverable: data.recoverable !== false,
+      }
     }
     if (kind === "done") {
       return { type: "done" }
@@ -485,4 +504,114 @@ export async function* streamChat(
   if (!sawDone) {
     yield { type: "done" }
   }
+}
+
+export interface QaSummary {
+  enabled: boolean
+  configured: boolean
+  groq_configured?: boolean
+  github_configured?: boolean
+  qa_engine?: string
+  repos_monitored?: number
+  branches_scanned?: number
+  failing_branches?: number
+  open_findings?: number
+  critical_findings?: number
+  queue_depth?: number
+  last_scan_at?: string | null
+}
+
+export interface QaBranchStatus {
+  repo: string
+  branch: string
+  commit_sha?: string
+  ci_status?: string
+  lint_status?: string
+  test_status?: string
+  security_count?: number
+  finding_count?: number
+  grade?: string
+  last_scan_at?: string
+}
+
+export interface QaFinding {
+  id: string
+  repo: string
+  branch: string
+  commit_sha?: string
+  category: string
+  severity: string
+  title: string
+  body?: string
+  suggestion?: string
+  file?: string
+  line?: number
+  status?: string
+  github_comment_url?: string | null
+  pr_number?: number | null
+  created_at?: string
+}
+
+export interface QaJob {
+  id: string
+  repo: string
+  branch?: string | null
+  job_type?: string
+  status: string
+  enqueued_at?: string
+  error?: string
+}
+
+export async function fetchQaSummary() {
+  return request<QaSummary>("/api/qa/summary")
+}
+
+export async function fetchQaBranches(repo?: string) {
+  const qs = repo ? `?repo=${encodeURIComponent(repo)}` : ""
+  return request<{ branches: QaBranchStatus[] }>(`/api/qa/branches${qs}`)
+}
+
+export async function fetchQaFindings() {
+  return request<{ findings: QaFinding[] }>("/api/qa/findings")
+}
+
+export async function fetchQaJobs() {
+  return request<{ jobs: QaJob[] }>("/api/qa/jobs")
+}
+
+export async function postQaScan(repo: string, branch?: string) {
+  return request<{ status: string; job_id: string }>("/api/qa/scan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo, branch: branch ?? null }),
+  })
+}
+
+export async function postQaComment(findingId: string) {
+  return request<{ status: string; url?: string }>(`/api/qa/findings/${findingId}/comment`, {
+    method: "POST",
+  })
+}
+
+export async function postQaFix(findingId: string) {
+  return request<{ status: string; action_id: string }>(`/api/qa/findings/${findingId}/fix`, {
+    method: "POST",
+  })
+}
+
+export interface QaAgentPlaybook {
+  target: "claude" | "cursor"
+  finding_id: string
+  api_base: string
+  project_root: string
+  prompt: string
+  launch_hint: string
+  terminal_command: string | null
+  curl_commands: Record<string, string>
+}
+
+export async function fetchQaAgentPlaybook(findingId: string, target: "claude" | "cursor") {
+  return request<QaAgentPlaybook>(
+    `/api/qa/findings/${findingId}/agent-playbook?target=${encodeURIComponent(target)}`,
+  )
 }

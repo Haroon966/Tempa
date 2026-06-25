@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+from datetime import datetime, timezone
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -65,6 +65,14 @@ def get_recent_messages(limit: int = 20) -> list[dict[str, Any]]:
     return list(_recent_messages)[-limit:]
 
 
+def get_conversation_thread(limit: int = 20, *, include_assistant: bool = True) -> list[dict[str, Any]]:
+    _load_history()
+    rows = list(_recent_messages)[-limit:]
+    if include_assistant:
+        return rows
+    return [r for r in rows if r.get("role") == "user"]
+
+
 def record_conversation_turn(
     *,
     role: str,
@@ -82,6 +90,7 @@ def record_conversation_turn(
         "text": text,
         "id": message_id,
         "chat_id": chat_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     _recent_messages.append(row)
     try:

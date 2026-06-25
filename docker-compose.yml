@@ -10,14 +10,21 @@ services:
       - .env
     environment:
       TEMPA_BIND_HOST: "0.0.0.0"
+      TEMPA_TIMEZONE: Asia/Karachi
       EVOLUTION_API_URL: http://whatsapp-bridge:8080
       TEMPA_WEBHOOK_BASE_URL: http://tempa-daemon:8787
       TEMPA_MEET_DELEGATE_TO_WORKER: "true"
+      # Varys uses Claude Code CLI inside the container (binary mounted from host)
+      CLAUDE_CODE_PATH: /usr/local/bin/claude
     volumes:
       - ./data:/app/data
       - ./config:/app/config
       - ./src:/app/src
       - ./dashboard/dist:/app/dashboard/dist
+      - ./data/huggingface:/root/.cache/huggingface
+      # Claude Code CLI + auth (host must have `claude` installed and logged in)
+      - ${CLAUDE_CLI_BIN:-/home/olufsen/.local/share/claude/versions/2.1.186}:/usr/local/bin/claude:ro
+      - ${CLAUDE_CONFIG_DIR:-/home/olufsen/.claude}:/root/.claude
     depends_on:
       whatsapp-bridge:
         condition: service_started
@@ -36,6 +43,7 @@ services:
       - .env
     environment:
       TEMPA_MEET_WORKER_POLL_SECONDS: "3"
+      TEMPA_TIMEZONE: Asia/Karachi
     volumes:
       - ./data:/app/data
       - ./config:/app/config

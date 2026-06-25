@@ -16,20 +16,62 @@ def _daemon_url() -> str:
 
 
 def cmd_setup() -> None:
+    import webbrowser
+
     from tempa.meet.consent import grant_recording_consent
     from tempa.settings import get_settings
 
     settings = get_settings()
     settings.ensure_dirs()
+    dashboard_url = f"{_daemon_url()}/overview"
     print("Tempa setup")
     print(f"  Data dir: {settings.tempa_data_dir}")
     print(f"  Daemon:   {_daemon_url()}")
-    print(f"  Dashboard: {_daemon_url()}/")
+    print(f"  Dashboard: {dashboard_url}")
     print()
-    print("1. Set GROQ_API_KEY in .env or run: tempa setup --groq-key YOUR_KEY")
-    print("2. Connect Google: open dashboard Connections → Google")
-    print("3. WhatsApp QR: tempa whatsapp-qr  (or extension popup)")
+
+    daemon_ok = False
+    try:
+        with httpx.Client(timeout=5) as client:
+            res = client.get(f"{_daemon_url()}/api/health")
+            daemon_ok = res.status_code == 200
+    except httpx.ConnectError:
+        pass
+
+    if daemon_ok:
+        print("Daemon is reachable")
+        try:
+            webbrowser.open(dashboard_url)
+            print("Opened dashboard in browser")
+        except Exception:
+            print(f"Open {dashboard_url} in your browser")
+    else:
+        print("Daemon not running — start with: tempa start")
+
+    print()
+    print("1. Groq API key (.env or tempa setup --groq-key YOUR_KEY)")
+    print("2. Google + Gmail (Dashboard → Connections)")
+    print("3. WhatsApp QR (Dashboard → Connections or tempa whatsapp-qr)")
     print("4. Meet auth: tempa meet-auth")
+    print("5. Varys vault: initialized on first run (data/vault)")
+    from tempa.varys.vault_sync import ensure_vault_initialized
+
+    vault = ensure_vault_initialized()
+    print(f"   Vault dir: {vault}")
+    varys_setup = input("Configure Varys agent name now? [y/N] ").strip().lower()
+    if varys_setup == "y":
+        agent_name = input("Agent name [Tempa]: ").strip() or "Tempa"
+        owner_name = input("Your name (optional): ").strip()
+        import yaml
+
+        cfg_path = settings.config_dir / "varys.yaml"
+        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+        raw = raw or {}
+        raw["agent_name"] = agent_name
+        if owner_name:
+            raw["owner_name"] = owner_name
+        cfg_path.write_text(yaml.dump(raw, default_flow_style=False), encoding="utf-8")
+        print(f"Updated {cfg_path}")
     consent = input("Grant meeting recording consent now? [y/N] ").strip().lower()
     if consent == "y":
         grant_recording_consent()
@@ -95,6 +137,24 @@ def cmd_whatsapp_qr() -> None:
         print("No QR available (may already be connected).")
 
 
+def cmd_varys_status() -> None:
+    from tempa.varys.harness import harness_status
+
+    print(json.dumps(harness_status(), indent=2))
+
+
+def cmd_varys_tick() -> None:
+    from tempa.varys.dispatch import run_tick
+
+    print(json.dumps(run_tick(), indent=2))
+
+
+def cmd_vault_sync() -> None:
+    from tempa.varys.vault_sync import mine_vault
+
+    print(json.dumps(mine_vault(), indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="tempa")
     sub = parser.add_subparsers(dest="command")
@@ -106,6 +166,11 @@ def main() -> None:
     sub.add_parser("whatsapp-qr", help="Fetch and save WhatsApp QR")
     auth = sub.add_parser("meet-auth", help="Generate Google storage state for Meet bot")
     auth.add_argument("--output", default=None)
+    varys = sub.add_parser("varys", help="Varys harness commands")
+    varys_sub = varys.add_subparsers(dest="varys_command")
+    varys_sub.add_parser("status", help="Harness DB summary")
+    varys_sub.add_parser("tick", help="Run one orchestrator tick")
+    sub.add_parser("vault-sync", help="Mine data/vault into unified RAG")
 
     args = parser.parse_args()
     if args.command == "setup":
@@ -133,6 +198,15 @@ def main() -> None:
 
         sys.argv = ["meeto-auth", "--output", output]
         auth_main()
+    elif args.command == "varys":
+        if args.varys_command == "status":
+            cmd_varys_status()
+        elif args.varys_command == "tick":
+            cmd_varys_tick()
+        else:
+            varys.print_help()
+    elif args.command == "vault-sync":
+        cmd_vault_sync()
     else:
         parser.print_help()
 

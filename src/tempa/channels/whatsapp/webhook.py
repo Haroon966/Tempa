@@ -6,15 +6,26 @@ from collections import deque
 from typing import Any
 
 from tempa.channels.whatsapp.conversation import record_conversation_turn
+from tempa.channels.whatsapp.dedupe import bootstrap as bootstrap_dedupe, is_seen, mark_seen as persist_mark_seen
 from tempa.channels.whatsapp.inbound_queue import enqueue_inbound, start_inbound_worker
-from tempa.channels.whatsapp.schemas import EvolutionWebhookPayload, WhatsAppMessage, parse_messages_upsert
+from tempa.channels.whatsapp.schemas import (
+    EvolutionWebhookPayload,
+    WhatsAppMessage,
+    parse_messages_upsert,
+    parse_outbound_messages_upsert,
+)
 from tempa.channels.whatsapp.client import WhatsAppBridgeClient
 from tempa.channels.whatsapp.session import store_qr_code, update_connection_state
 from tempa.core.events import event_bus
 from tempa.debug_agent_log import agent_log
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 _seen_message_ids: set[str] = set()
 _seen_message_order: deque[str] = deque(maxlen=500)
+_MAX_MESSAGE_AGE_SECONDS = 3600
 
 
 async def _enable_webhook_after_connect() -> None:
@@ -44,7 +55,11 @@ def _dedupe_key(msg: WhatsAppMessage) -> str:
 
 
 def _mark_seen(key: str) -> bool:
+    if is_seen(key):
+        return False
     if key in _seen_message_ids:
+        return False
+    if not persist_mark_seen(key):
         return False
     _seen_message_ids.add(key)
     _seen_message_order.append(key)
@@ -103,9 +118,24 @@ async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
 
     if event in {"MESSAGES_UPSERT", "MESSAGES.UPSERT"}:
         from tempa.channels.whatsapp.conversation import has_assistant_reply_for
-        from tempa.channels.whatsapp.numbers import remember_message_lid_mapping
+        from tempa.channels.whatsapp.numbers import get_bridge_whatsapp_phone, remember_message_lid_mapping
 
         _bootstrap_seen_from_history()
+        bootstrap_dedupe()
+
+        for out in parse_outbound_messages_upsert(payload):
+            remember_message_lid_mapping(out.raw_item)
+            key = out.message_id or f"out:{out.chat_id}:{out.text}"
+            if not _mark_seen(key):
+                continue
+            record_conversation_turn(
+                role="owner",
+                text=out.text,
+                from_number=get_bridge_whatsapp_phone() or "owner",
+                message_id=out.message_id,
+                chat_id=out.chat_id,
+            )
+
         messages = parse_messages_upsert(payload)
         queued = 0
         for msg in messages:
@@ -114,7 +144,12 @@ async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
             if msg.timestamp:
                 age = int(time.time()) - int(msg.timestamp)
-                if age > 900:
+                if age > _MAX_MESSAGE_AGE_SECONDS:
+                    logger.warning(
+                        "Dropped stale WhatsApp message %s (age %ds)",
+                        msg.message_id,
+                        age,
+                    )
                     continue
             key = _dedupe_key(msg)
             if not _mark_seen(key):

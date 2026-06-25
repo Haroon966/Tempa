@@ -127,24 +127,38 @@ async def sync_contacts() -> dict[str, Any]:
     from tempa.channels.contacts.gmail_extract import extract_contacts_from_gmail
     from tempa.channels.contacts.store import upsert_contacts
 
+    results: dict[str, Any] = {}
+
+    try:
+        from tempa.channels.slack.sync import sync_slack_contacts
+
+        results["slack"] = await sync_slack_contacts()
+    except Exception as exc:
+        logger.warning("Slack contact sync failed: %s", exc)
+        results["slack"] = {"status": "error", "reason": str(exc)}
+
     creds = _load_google_creds()
     if creds is None:
-        return {"status": "skipped", "reason": "Google not connected"}
+        if results.get("slack", {}).get("status") == "ok":
+            return {"status": "ok", **results, "count": results["slack"].get("count", 0)}
+        return {"status": "skipped", "reason": "Google not connected", **results}
 
     if not _has_contacts_scope(creds):
         logger.info("Google token lacks contacts scope; using Gmail contact extract")
-        return await extract_contacts_from_gmail()
+        gmail_result = await extract_contacts_from_gmail()
+        return {"status": gmail_result.get("status", "ok"), **results, **gmail_result}
 
     contacts, err = await asyncio.to_thread(_fetch_google_contacts)
     if err == "no_contacts_scope":
         logger.info("People API unavailable; falling back to Gmail contact extract")
-        return await extract_contacts_from_gmail()
+        gmail_result = await extract_contacts_from_gmail()
+        return {"status": gmail_result.get("status", "ok"), **results, **gmail_result}
     if err:
         logger.warning("Contact sync failed: %s", err)
-        return {"status": "error", "reason": err}
+        return {"status": "error", "reason": err, **results}
 
     count = await upsert_contacts(contacts)
-    return {"status": "ok", "count": count}
+    return {"status": "ok", "count": count, "google": count, **results}
 
 
 def resolve_recipient(query: str) -> dict[str, str]:

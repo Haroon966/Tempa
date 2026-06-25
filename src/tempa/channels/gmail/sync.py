@@ -119,9 +119,18 @@ async def sync_once(*, full: bool = False) -> dict[str, Any]:
     state["last_sync_at"] = datetime.now(timezone.utc).isoformat()
     save_sync_state(state)
 
+    snapshot_result: dict[str, Any] = {}
+    try:
+        from tempa.channels.gmail.snapshot import refresh_gmail_snapshot
+
+        snapshot_result = await asyncio.to_thread(refresh_gmail_snapshot)
+    except Exception:
+        logger.exception("Gmail snapshot refresh failed")
+
     return {
         "status": "ok",
         "new_messages": ingested,
         "notifications": notified,
         "history_id": current_history_id,
+        "snapshot": snapshot_result,
     }

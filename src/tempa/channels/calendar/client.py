@@ -235,10 +235,14 @@ class GoogleCalendar:
         end: dt.datetime,
         calendar_id: str = "primary",
         with_meet: bool = True,
-        timezone: str = "UTC",
+        timezone: str | None = None,
         attendee_emails: list[str] | None = None,
         send_updates: str = "all",
     ) -> CalendarEvent:
+        if timezone is None:
+            from tempa.core.timezone import tz_name
+
+            timezone = tz_name()
         body: dict[str, Any] = {
             "summary": summary,
             "start": {"dateTime": start.isoformat(), "timeZone": timezone},

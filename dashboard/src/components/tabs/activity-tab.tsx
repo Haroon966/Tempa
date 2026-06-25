@@ -28,6 +28,14 @@ export function ActivityTab({ data }: { data: DashboardPayload }) {
     return () => ws.close()
   }, [])
 
+  useEffect(() => {
+    if (connected) return
+    const id = setInterval(() => {
+      setLive((prev) => (prev.length ? prev : data.recent_activity))
+    }, 10000)
+    return () => clearInterval(id)
+  }, [connected, data.recent_activity])
+
   const events = [...(live.length ? live : data.recent_activity)].reverse()
 
   return (
@@ -76,7 +84,7 @@ export function ActivityTab({ data }: { data: DashboardPayload }) {
 
                 {/* dot */}
                 <span
-                  className="relative z-10 mt-1 flex size-[22px] shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/8"
+                  className="relative z-10 mt-1 flex size-[22px] shrink-0 items-center justify-center rounded-full border border-border bg-muted"
                   aria-hidden
                 >
                   <span className="size-1.5 rounded-full bg-primary" />
@@ -85,7 +93,7 @@ export function ActivityTab({ data }: { data: DashboardPayload }) {
                 {/* card */}
                 <div className="min-w-0 flex-1 rounded-lg border border-border bg-muted/30 p-3 transition-colors duration-200 hover:border-primary/25 hover:bg-muted/60">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline" className="border-primary/25 bg-primary/8 text-xs text-primary">
+                    <Badge variant="outline" className="border-border bg-muted text-xs text-primary">
                       {event.agent}
                     </Badge>
                     <span className="text-sm font-medium text-foreground">{event.action}</span>

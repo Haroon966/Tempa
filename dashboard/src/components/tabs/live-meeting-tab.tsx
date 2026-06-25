@@ -17,15 +17,22 @@ export function LiveMeetingTab() {
   const [chatText, setChatText] = useState("")
   const [sending, setSending] = useState(false)
 
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
   const load = useCallback(async () => {
     try {
       const res = await fetchActiveMeetings()
       setActive(res.active)
+      setLoadError(null)
       if (res.active.length > 0 && !selectedId) {
         setSelectedId(res.active[0].meeting_id)
       }
-    } catch {
-      /* ignore poll errors */
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Meet worker unavailable")
+      setActive([])
+    } finally {
+      setLoading(false)
     }
   }, [selectedId])
 
@@ -51,6 +58,25 @@ export function LiveMeetingTab() {
     } finally {
       setSending(false)
     }
+  }
+
+  if (loading) {
+    return (
+      <PanelCard title="Live meeting" description="Loading…" icon={RadioIcon}>
+        <p className="text-sm text-muted-foreground">Checking for active sessions…</p>
+      </PanelCard>
+    )
+  }
+
+  if (loadError) {
+    return (
+      <PanelCard title="Live meeting" description="Worker unavailable" icon={RadioIcon}>
+        <p className="text-sm text-destructive">{loadError}</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Ensure the Meet worker is running and calendar auto-join is configured.
+        </p>
+      </PanelCard>
+    )
   }
 
   if (active.length === 0) {

@@ -35,4 +35,22 @@ gmail:
   poll_interval_seconds: 120
   max_messages_per_sync: 50
 
+calendar:
+  sync_on_startup: true
+  poll_interval_seconds: 300
+
 whatsapp_auto_reply_skip_confirm: true
+
+qa:
+  pending_action_ttl_seconds: 3600
+  risk_level: high
+
+slack:
+  sync_on_startup: true
+  poll_interval_seconds: 300
+  max_messages_per_channel: 200
+  # im + public_channel match default bot scopes. Add private_channel only after
+  # granting groups:read (+ groups:history) in your Slack app OAuth settings.
+  channel_types:
+    - im
+    - public_channel

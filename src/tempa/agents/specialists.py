@@ -23,6 +23,8 @@ from tempa.channels.gmail.session_state import record_gmail_action
 from tempa.channels.gmail.whatsapp_format import format_whatsapp_email_list
 from tempa.channels.whatsapp.outbound import send_whatsapp_message
 from tempa.channels.whatsapp.webhook import get_recent_messages
+from tempa.channels.slack.outbound import send_slack_message
+from tempa.channels.slack.conversation import get_recent_messages as get_slack_recent_messages
 from tempa.core.events import event_bus
 from tempa.pc.tools import run_pc_tool
 from tempa.rag.agent import run_rag_agent
@@ -35,10 +37,140 @@ def _extract_meet_url(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _slack_read_query_from_context(user_message: str, context: dict[str, Any]) -> str:
+    from tempa.channels.slack.lookup import parse_slack_read_query, wants_slack_read_intent
+
+    text = (user_message or "").strip()
+    now = parse_slack_read_query(text)
+
+    channel_id = str(context.get("slack_channel_id") or "")
+    thread_ts = str(context.get("slack_thread_ts") or "")
+    prior_user = ""
+    prior_channel = ""
+    prior_text = ""
+    if channel_id:
+        prior = get_slack_recent_messages(12, channel_id=channel_id, thread_ts=thread_ts)
+        for row in reversed(prior):
+            if row.get("role") != "user":
+                continue
+            candidate = str(row.get("text") or "").strip()
+            if candidate == text or not wants_slack_read_intent(candidate):
+                continue
+            prev = parse_slack_read_query(candidate)
+            prior_user = prev.get("user") or ""
+            prior_channel = prev.get("channel") or ""
+            prior_text = candidate
+            break
+
+    channel = now.get("channel") or prior_channel
+    user = now.get("user") or prior_user
+    if channel and user:
+        return f"latest message from {user} in {channel} channel"
+    if channel:
+        return f"latest message in {channel} channel"
+    if wants_slack_read_intent(text):
+        return text
+    return prior_text or text
+
+
 async def run_channel_agent(task: str, context: dict[str, Any]) -> str:
+    import asyncio
+
     await event_bus.publish_json("channel", "start", task[:120])
     number = context.get("whatsapp_number", "")
-    if "send" in task.lower() and number:
+    slack_channel = context.get("slack_channel_id") or context.get("slack_target_channel", "")
+    user_message = str(context.get("user_message") or task)
+    lower = f"{user_message} {task}".lower()
+
+    if context.get("channel") == "slack" or context.get("inbound_slack"):
+        from tempa.channels.slack.lookup import (
+            lookup_latest_slack_message,
+            parse_slack_read_query,
+            slack_invite_help_text,
+            wants_slack_invite_help,
+            wants_slack_read_intent,
+        )
+
+        if wants_slack_invite_help(user_message) or wants_slack_invite_help(task):
+            return json.dumps(
+                {"status": "ok", "message": slack_invite_help_text(), "help": True},
+                ensure_ascii=False,
+            )
+
+        read_query = _slack_read_query_from_context(user_message, context)
+        if not wants_slack_read_intent(read_query):
+            read_query = _slack_read_query_from_context(task, context)
+        if wants_slack_read_intent(read_query):
+            result = await asyncio.to_thread(lookup_latest_slack_message, read_query)
+            return json.dumps(result, ensure_ascii=False)
+
+    if context.get("channel") == "slack" or "slack" in lower:
+        from tempa.channels.slack.outbound import open_dm_for_user, send_slack_message
+        from tempa.channels.slack.recipients import (
+            extract_slack_message_body,
+            extract_slack_recipient_name,
+            resolve_slack_recipient,
+            wants_slack_send_intent,
+        )
+
+        recipient_name = extract_slack_recipient_name(user_message) or extract_slack_recipient_name(task)
+        wants_send = wants_slack_send_intent(user_message) or wants_slack_send_intent(task)
+        body = (
+            extract_slack_message_body(user_message)
+            or extract_slack_message_body(task)
+            or str(context.get("draft_reply") or context.get("coordinator_reply") or "").strip()
+        )
+
+        if wants_send and recipient_name:
+            resolved = resolve_slack_recipient(recipient_name)
+            user_id = str(resolved.get("user_id") or "")
+            target_channel = str(resolved.get("channel_id") or "")
+            if user_id and not target_channel:
+                try:
+                    target_channel = await open_dm_for_user(user_id)
+                except Exception as exc:
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "reason": f"Could not open DM with {recipient_name}: {exc}",
+                        },
+                        ensure_ascii=False,
+                    )
+            if not target_channel:
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "reason": f"Could not find Slack user '{recipient_name}'.",
+                    },
+                    ensure_ascii=False,
+                )
+            owner_send = bool(context.get("slack_privileged") and context.get("inbound_slack"))
+            result = await send_slack_message(
+                target_channel,
+                body or "Hello from Tempa.",
+                source_channel="slack_owner_send" if owner_send else "coordinator",
+                require_user_confirmation=not owner_send,
+            )
+            payload = {
+                **result,
+                "to": resolved.get("name") or recipient_name,
+                "user_id": user_id or None,
+                "channel": target_channel,
+            }
+            return json.dumps(payload, ensure_ascii=False)
+
+    if "send" in lower and slack_channel and ("slack" in lower or context.get("channel") == "slack"):
+        reply = context.get("draft_reply") or context.get("coordinator_reply", "Tempa acknowledgement.")
+        if context.get("inbound_slack"):
+            return json.dumps({"draft": reply}, ensure_ascii=False)
+        result = await send_slack_message(
+            slack_channel,
+            reply,
+            thread_ts=str(context.get("slack_thread_ts") or ""),
+            source_channel="coordinator",
+        )
+        return json.dumps(result, ensure_ascii=False)
+    if "send" in lower and number:
         reply = context.get("draft_reply") or context.get("coordinator_reply", "Tempa acknowledgement.")
         if context.get("inbound_whatsapp"):
             return json.dumps({"draft": reply}, ensure_ascii=False)
@@ -48,6 +180,26 @@ async def run_channel_agent(task: str, context: dict[str, Any]) -> str:
         target = resolved.get("phone") or number
         result = await send_whatsapp_message(target, reply, source_channel="coordinator")
         return json.dumps(result, ensure_ascii=False)
+    if context.get("channel") == "slack":
+        from tempa.channels.slack.context import build_slack_context_pack, format_slack_context_for_prompt
+
+        pack = build_slack_context_pack()
+        user_id = str(context.get("slack_user_id") or "")
+        channel_id = str(context.get("slack_channel_id") or "")
+        thread_ts = str(context.get("slack_thread_ts") or "")
+        recent = get_slack_recent_messages(
+            8,
+            user_id=user_id,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+        )
+        return json.dumps(
+            {
+                "recent_messages": recent,
+                "slack_context": format_slack_context_for_prompt(pack),
+            },
+            ensure_ascii=False,
+        )
     recent = get_recent_messages(5)
     return json.dumps({"recent_messages": recent}, ensure_ascii=False)
 
@@ -126,6 +278,14 @@ async def _compose_email_draft(task: str, context: dict[str, Any]) -> dict[str, 
         f"User request: {task}\n"
         f"Context: {rag[:2000] if rag else 'none'}"
     )
+    try:
+        from tempa.channels.gmail.context import build_gmail_context_pack, format_gmail_context_for_prompt
+
+        gmail_ctx = format_gmail_context_for_prompt(build_gmail_context_pack(), compact=False)
+        if gmail_ctx and "not connected" not in gmail_ctx:
+            prompt += f"\n\nRecent Gmail context:\n{gmail_ctx[:2500]}"
+    except Exception:
+        pass
     response = router.chat_completion(
         category="text",
         messages=[{"role": "user", "content": prompt}],
@@ -193,10 +353,23 @@ def _gmail_search_payload(
 
 
 async def run_gmail_agent(task: str, context: dict[str, Any]) -> str:
+    import asyncio
     import logging
 
     logger = logging.getLogger(__name__)
     await event_bus.publish_json("gmail", "start", task[:120])
+
+    snapshot_meta: dict[str, Any] = {}
+    inbox_summary = ""
+    try:
+        from tempa.channels.gmail.context import build_gmail_context_pack, format_gmail_context_for_prompt
+        from tempa.channels.gmail.snapshot import refresh_gmail_snapshot
+
+        snapshot_meta = await asyncio.to_thread(refresh_gmail_snapshot)
+        inbox_summary = format_gmail_context_for_prompt(build_gmail_context_pack(), compact=True)
+    except Exception:
+        logger.exception("Gmail snapshot refresh failed")
+
     client = load_gmail_client()
     if client is None:
         return "Gmail not connected. Connect Gmail in the Connections panel first."
@@ -284,6 +457,8 @@ async def run_gmail_agent(task: str, context: dict[str, Any]) -> str:
                 "count": 0,
                 "summary": "No messages found.",
                 "tried_fallbacks": list(plan.fallbacks),
+                "inbox_summary": inbox_summary,
+                "snapshot": snapshot_meta,
             },
             ensure_ascii=False,
         )
@@ -301,6 +476,8 @@ async def run_gmail_agent(task: str, context: dict[str, Any]) -> str:
         query=query,
         used_fallback_query=used_fallback if used_fallback and used_fallback != plan.primary else "",
     )
+    payload["inbox_summary"] = inbox_summary
+    payload["snapshot"] = snapshot_meta
     if not skip_ingest:
         try:
             ingest_text(
@@ -316,46 +493,101 @@ async def run_gmail_agent(task: str, context: dict[str, Any]) -> str:
 
 async def run_calendar_agent(task: str, context: dict[str, Any]) -> str:
     await event_bus.publish_json("calendar", "start", task[:120])
+    import asyncio
     from datetime import datetime, timedelta, timezone
 
+    from tempa.channels.calendar.context import build_meeting_context_pack
     from tempa.channels.calendar.events import apply_calendar_actions_from_message
+    from tempa.channels.calendar.sync import load_calendar_snapshot
+
+    try:
+        await asyncio.to_thread(sync_calendar_snapshot)
+    except Exception:
+        logger.exception("Calendar sync before agent failed")
 
     user_message = str(context.get("user_message") or task)
     recent = context.get("recent_user_messages") or []
+    conv = context.get("recent_conversation") or []
+    if conv and not recent:
+        recent = [m.get("text", "") for m in conv if m.get("role") == "user"]
     actions = apply_calendar_actions_from_message(user_message, recent_texts=recent)
 
     client = load_calendar_client()
     if client is None and actions.get("action") == "none":
         return "Google Calendar not connected."
 
-    upcoming: list[dict[str, str | None]] = []
+    meeting_pack = build_meeting_context_pack(days_future=7)
+    upcoming: list[dict[str, Any]] = []
     if client is not None:
+        from tempa.channels.calendar.sync import load_calendar_snapshot
+
+        snapshot = load_calendar_snapshot()
         now = datetime.now(timezone.utc)
-        events = client.list_upcoming_events(
-            calendar_id="primary",
-            time_min=now,
-            time_max=now + timedelta(days=7),
-        )
-        meet_events = [e for e in events if e.meet_url]
-        for e in meet_events[:10]:
-            ingest_calendar_event(e)
-        upcoming = [
-            {
-                "summary": e.summary,
-                "start": e.start.isoformat(),
-                "meet_url": e.meet_url,
-            }
-            for e in meet_events[:10]
-        ]
+        for row in snapshot.get("events") or []:
+            if not isinstance(row, dict):
+                continue
+            if row.get("status") == "cancelled":
+                continue
+            start_str = str(row.get("start", ""))
+            try:
+                start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if start < now - timedelta(days=7) or start > now + timedelta(days=7):
+                continue
+            upcoming.append(
+                {
+                    "summary": row.get("summary", ""),
+                    "start": start_str,
+                    "end": str(row.get("end", "")),
+                    "meet_url": row.get("meet_url"),
+                    "description": str(row.get("description") or "")[:500],
+                    "status": str(row.get("status") or "confirmed"),
+                    "attendees": row.get("attendees") or [],
+                }
+            )
+        upcoming.sort(key=lambda e: str(e.get("start", "")))
+        upcoming = upcoming[:15]
         if upcoming:
             ingest_text(json.dumps(upcoming), tool="calendar", source="upcoming", tags=["poll"])
 
-    return json.dumps({"actions": actions, "upcoming": upcoming}, ensure_ascii=False)
+    return json.dumps(
+        {
+            "actions": actions,
+            "upcoming": upcoming,
+            "recently_canceled": meeting_pack.get("recently_canceled", [])[:10],
+            "recent_past_with_minutes": meeting_pack.get("recent_past", [])[:10],
+        },
+        ensure_ascii=False,
+    )
 
 
 async def run_rag_agent_task(task: str, context: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    from tempa.agents.tool_policy import filter_rag_results, is_slack_guest
+
     await event_bus.publish_json("rag", "retrieve", task[:120])
     query = context.get("user_message", task)
+
+    def _results_to_sources(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "label": f"{r['metadata'].get('tool', '?')}/{r['metadata'].get('source', '?')}",
+                "tool": r["metadata"].get("tool"),
+                "source": r["metadata"].get("source"),
+                "title": r["metadata"].get("title") or "",
+                "timestamp": r["metadata"].get("timestamp") or "",
+                "score": r.get("score"),
+            }
+            for r in results
+        ]
+
+    if is_slack_guest(context):
+        results = filter_rag_results(search_memory(query, top_k=20), context)
+        if not results:
+            return "No relevant memory found.", []
+        trimmed = results[:5]
+        return "\n\n".join(r["content"] for r in trimmed), _results_to_sources(trimmed)
+
     mode = "fast" if context.get("channel") == "whatsapp" else "full"
     try:
         if mode == "full":
@@ -383,21 +615,10 @@ async def run_rag_agent_task(task: str, context: dict[str, Any]) -> tuple[str, l
         answer = _llm_text([{"role": "user", "content": answer_prompt}], category="text")
         return answer, sources
     except Exception:
-        results = search_memory(query, top_k=5)
+        results = filter_rag_results(search_memory(query, top_k=5), context)
         if not results:
             return "No relevant memory found.", []
-        sources = [
-            {
-                "label": f"{r['metadata'].get('tool', '?')}/{r['metadata'].get('source', '?')}",
-                "tool": r["metadata"].get("tool"),
-                "source": r["metadata"].get("source"),
-                "title": r["metadata"].get("title") or "",
-                "timestamp": r["metadata"].get("timestamp") or "",
-                "score": r.get("score"),
-            }
-            for r in results
-        ]
-        return "\n\n".join(r["content"] for r in results), sources
+        return "\n\n".join(r["content"] for r in results), _results_to_sources(results)
 
 
 async def run_plugin_agent(task: str, context: dict[str, Any]) -> str:
@@ -444,6 +665,66 @@ async def run_plugin_agent(task: str, context: dict[str, Any]) -> str:
         results.append(run_tool(tool_name, **args))
     await event_bus.publish_json("plugin", "completed", task[:80])
     return json.dumps(results if len(results) > 1 else results[0], ensure_ascii=False)
+
+
+async def run_qa_agent(task: str, context: dict[str, Any]) -> str:
+    await event_bus.publish_json("qa", "start", task[:120])
+    from tempa.qa.config import qa_enabled
+    from tempa.qa.deep_review.lite import parse_pr_from_text
+    from tempa.qa.installations import installation_id_for_repo, list_repos
+    from tempa.qa.job_store import enqueue_scan
+    from tempa.qa.store import list_findings, summary_stats
+
+    if not qa_enabled():
+        return json.dumps({"status": "disabled", "message": "QA agent is disabled."}, ensure_ascii=False)
+
+    lower = f"{task} {context.get('user_message', '')}".lower()
+    stats = summary_stats()
+    findings = list_findings(limit=10)
+
+    if any(k in lower for k in ("deep review", "deep-review", "review pr", "pr review", "claude", "cursor")):
+        return json.dumps(
+            {
+                "status": "use_terminal_agent",
+                "message": (
+                    "Open the QA dashboard tab and use 'Fix in Claude' or 'Fix in Cursor' on a finding. "
+                    "Or call GET /api/qa/findings/{id}/agent-playbook?target=claude"
+                ),
+                "open_findings": [f.get("id") for f in findings[:5]],
+            },
+            ensure_ascii=False,
+        )
+
+    if any(k in lower for k in ("scan", "check branch", "run qa", "audit")):
+        repos = list_repos()
+        if not repos:
+            return json.dumps(
+                {"status": "error", "message": "No GitHub repos installed. Install the Tempa GitHub App."},
+                ensure_ascii=False,
+            )
+        jobs = []
+        for repo in repos:
+            jobs.append(enqueue_scan(repo, job_type="repo_scan"))
+        return json.dumps({"status": "queued", "jobs": jobs, "repos": repos}, ensure_ascii=False)
+
+    payload = {
+        "status": "ok",
+        "summary": stats,
+        "open_findings": [
+            {
+                "id": f.get("id"),
+                "repo": f.get("repo"),
+                "branch": f.get("branch"),
+                "severity": f.get("severity"),
+                "title": f.get("title"),
+                "category": f.get("category"),
+            }
+            for f in findings
+        ],
+        "hint": "Open the QA dashboard tab for branch health, queue, and fix approvals.",
+    }
+    await event_bus.publish_json("qa", "completed", f"{stats.get('open_findings', 0)} findings")
+    return json.dumps(payload, ensure_ascii=False)
 
 
 async def run_meet_agent(task: str, context: dict[str, Any]) -> str:
@@ -654,21 +935,46 @@ def get_settings_safe():
     return get_settings()
 
 
-def _heuristic_subtasks(user_message: str) -> list[dict[str, Any]]:
+def _heuristic_subtasks(user_message: str, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    from tempa.agents.tool_policy import allowed_agents
+
     tasks: list[dict[str, Any]] = [{"agent": "rag", "task": user_message}]
-    if _extract_meet_url(user_message):
+    permitted = allowed_agents(context)
+    if _extract_meet_url(user_message) and (permitted is None or "meet" in permitted):
         tasks.append({"agent": "meet", "task": "join meeting"})
     lower = user_message.lower()
-    if _is_email_task(user_message):
+    if _is_email_task(user_message) and (permitted is None or "gmail" in permitted):
         tasks.append({"agent": "gmail", "task": user_message})
     elif any(k in lower for k in ("whatsapp", "message", "remind", "notify")):
-        tasks.append({"agent": "channel", "task": user_message})
+        if permitted is None or "channel" in permitted:
+            tasks.append({"agent": "channel", "task": user_message})
     elif any(k in lower for k in ("send", "message")) and not _is_email_task(user_message):
-        tasks.append({"agent": "channel", "task": user_message})
-    if any(k in lower for k in ("calendar", "meeting", "schedule")):
+        if permitted is None or "channel" in permitted:
+            tasks.append({"agent": "channel", "task": user_message})
+    if any(k in lower for k in ("calendar", "meeting", "schedule")) and (
+        permitted is None or "calendar" in permitted
+    ):
         tasks.append({"agent": "calendar", "task": user_message})
-    if any(k in lower for k in ("open", "file", "shell", "vscode", "create")):
+    if any(k in lower for k in ("open", "file", "shell", "vscode", "create")) and (
+        permitted is None or "pc" in permitted
+    ):
         tasks.append({"agent": "pc", "task": user_message})
+    if any(
+        k in lower
+        for k in (
+            "qa",
+            "ci fail",
+            "test fail",
+            "vulnerability",
+            "security scan",
+            "branch health",
+            "code quality",
+            "dependabot",
+            "pull request review",
+            "deep review",
+        )
+    ) and (permitted is None or "qa" in permitted):
+        tasks.append({"agent": "qa", "task": user_message})
     return tasks
 
 
@@ -705,6 +1011,8 @@ def _count_intent_signals(user_message: str) -> int:
     if any(k in lower for k in ("calendar", "meeting", "schedule")):
         signals += 1
     if any(k in lower for k in ("open", "file", "shell", "vscode", "create")):
+        signals += 1
+    if any(k in lower for k in ("qa", "ci fail", "test fail", "vulnerability", "branch health")):
         signals += 1
     return signals
 
@@ -751,7 +1059,7 @@ def plan_subtasks(user_message: str, context: dict[str, Any] | None = None) -> l
     from tempa.plugins.registry import list_tools
 
     context = context or {}
-    heuristic = _heuristic_subtasks(user_message)
+    heuristic = _heuristic_subtasks(user_message, context)
     plugin_names = [t["name"] for t in list_tools()]
     lower_msg = user_message.lower()
     for plugin_name in plugin_names:
@@ -779,7 +1087,7 @@ def plan_subtasks(user_message: str, context: dict[str, Any] | None = None) -> l
 
     prompt = (
         "Decompose the user request into specialist subtasks for agents: "
-        "meet, channel, calendar, gmail, rag, pc, plugin.\n"
+        "meet, channel, calendar, gmail, rag, pc, plugin, qa.\n"
         "Rules:\n"
         "- Always include a rag subtask for context retrieval.\n"
         "- Only include agents that have a concrete task.\n"
@@ -864,23 +1172,69 @@ def _whatsapp_gmail_reply(gmail_result: str) -> str | None:
     return None
 
 
-def _build_merge_prompt(
+def _slack_read_reply(channel_result: str) -> str | None:
+    try:
+        payload = json.loads(channel_result)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("status") == "ok" and payload.get("message"):
+        if payload.get("help"):
+            return str(payload["message"])
+        channel = payload.get("channel") or "channel"
+        user = payload.get("user") or ""
+        when = payload.get("timestamp") or ""
+        header = f"Latest from {user} in #{channel}" if user else f"Latest in #{channel}"
+        if when:
+            header += f" ({when})"
+        return f"{header}:\n{payload['message']}"
+    if payload.get("status") == "error":
+        return str(payload.get("reason") or "Could not read Slack message.")
+    return None
+
+
+def _slack_send_reply(channel_result: str) -> str | None:
+    try:
+        payload = json.loads(channel_result)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    status = payload.get("status")
+    recipient = payload.get("to") or "the recipient"
+    if status == "sent":
+        return f"Slack message sent to {recipient}."
+    if status == "pending":
+        return (
+            f"Slack message to {recipient} is waiting for your approval in Tempa "
+            f"(pending id: {str(payload.get('pending_action_id', ''))[:8]}…)."
+        )
+    if status == "error":
+        reason = str(payload.get("reason") or payload.get("error") or "unknown error")
+        return f"Couldn't send Slack message: {reason}"
+    return None
+
+
+async def _build_merge_prompt_async(
     user_message: str,
     results: dict[str, str],
     context: dict[str, Any],
     sources: list[dict[str, Any]],
 ) -> tuple[str, Any, list[dict[str, Any]]]:
-    """Build merge prompt and grounding pack. Returns (prompt, pack, sources)."""
-    from tempa.agents.grounding import build_grounding_pack, format_grounding_for_prompt
+    from tempa.agents.grounding import build_grounding_pack_async, format_grounding_for_prompt
+    from tempa.agents.intent import wants_calendar_full
+    from tempa.agents.tool_policy import guest_merge_instruction
 
     channel = context.get("channel", "")
+    calendar_intent = wants_calendar_full(user_message)
 
-    pack = build_grounding_pack(
+    pack = await build_grounding_pack_async(
         user_message,
         context,
         specialist_results=results,
         memory_answer=context.get("rag_context", ""),
-        include_calendar=any(k in user_message.lower() for k in ("calendar", "meeting", "schedule", "event")),
+        include_calendar=calendar_intent,
     )
     grounding_block = format_grounding_for_prompt(
         pack,
@@ -900,9 +1254,90 @@ def _build_merge_prompt(
     style = (
         "Reply in 1–4 short sentences, warm and direct — this is WhatsApp.\n"
         if channel == "whatsapp"
-        else "Merge specialist outputs into one concise user-facing reply.\n"
+        else (
+            "Answer the user's Slack message directly in 1–3 short paragraphs. "
+            "Do not mention merging specialists or internal tools. "
+            "Do not bring up unrelated WhatsApp, email, or calendar unless they asked.\n"
+            if channel == "slack" or context.get("inbound_slack")
+            else "Merge specialist outputs into one concise user-facing reply.\n"
+        )
     )
+    guest_note = guest_merge_instruction(context)
     prompt = (
+        f"{guest_note}"
+        f"{style}"
+        f"{citation_block}"
+        f"Grounding facts:\n{grounding_block}\n\n"
+        f"Agent results JSON: {json.dumps(results, ensure_ascii=False)}"
+    )
+    if context.get("procedural_memory"):
+        prompt = f"{context['procedural_memory']}\n\n{prompt}"
+    return prompt, pack, sources
+
+
+def _build_merge_prompt(
+    user_message: str,
+    results: dict[str, str],
+    context: dict[str, Any],
+    sources: list[dict[str, Any]],
+) -> tuple[str, Any, list[dict[str, Any]]]:
+    """Build merge prompt and grounding pack. Returns (prompt, pack, sources)."""
+    from tempa.agents.grounding import build_grounding_pack, format_grounding_for_prompt
+    from tempa.agents.tool_policy import guest_merge_instruction
+
+    channel = context.get("channel", "")
+    lower = user_message.lower()
+    calendar_intent = any(
+        k in lower
+        for k in (
+            "calendar",
+            "meeting",
+            "schedule",
+            "event",
+            "agenda",
+            "today",
+            "tomorrow",
+            "what time",
+            "standup",
+        )
+    )
+
+    pack = build_grounding_pack(
+        user_message,
+        context,
+        specialist_results=results,
+        memory_answer=context.get("rag_context", ""),
+        include_calendar=calendar_intent,
+    )
+    grounding_block = format_grounding_for_prompt(
+        pack,
+        owner=context.get("whatsapp_number", "owner"),
+    )
+
+    citation_block = ""
+    if sources:
+        labels = [s.get("label", "") for s in sources[:5] if s.get("label")]
+        if labels:
+            citation_block = (
+                "Cite sources inline using [tool/source] labels when referencing memory: "
+                + ", ".join(labels)
+                + "\n"
+            )
+
+    style = (
+        "Reply in 1–4 short sentences, warm and direct — this is WhatsApp.\n"
+        if channel == "whatsapp"
+        else (
+            "Answer the user's Slack message directly in 1–3 short paragraphs. "
+            "Do not mention merging specialists or internal tools. "
+            "Do not bring up unrelated WhatsApp, email, or calendar unless they asked.\n"
+            if channel == "slack" or context.get("inbound_slack")
+            else "Merge specialist outputs into one concise user-facing reply.\n"
+        )
+    )
+    guest_note = guest_merge_instruction(context)
+    prompt = (
+        f"{guest_note}"
         f"{style}"
         f"{citation_block}"
         f"Grounding facts:\n{grounding_block}\n\n"
@@ -926,21 +1361,47 @@ async def merge_results_stream(
     channel = context.get("channel", "")
     sources: list[dict[str, Any]] = list(context.get("rag_sources") or [])
 
+    from tempa.agents.intent import is_casual_greeting
+
+    if (channel == "slack" or context.get("inbound_slack")) and is_casual_greeting(user_message):
+        greeting = "Hi — I'm Tempa. How can I help?"
+        if on_token:
+            await on_token(greeting)
+        return greeting, sources
+
     if channel == "whatsapp" and "gmail" in results:
         short = _whatsapp_gmail_reply(results["gmail"])
         if short:
+            _, pack, _ = _build_merge_prompt(user_message, results, context, sources)
+            ok, verified = verify_reply(short, pack)
+            final = verified if not ok else short
             if on_token:
-                await on_token(short)
-            return short, sources
+                await on_token(final)
+            return final, sources
 
     if "calendar" in results:
         short = _calendar_action_reply(results["calendar"])
         if short:
+            _, pack, _ = _build_merge_prompt(user_message, results, context, sources)
+            ok, verified = verify_reply(short, pack)
+            final = verified if not ok else short
             if on_token:
-                await on_token(short)
-            return short, sources
+                await on_token(final)
+            return final, sources
 
-    prompt, pack, sources = _build_merge_prompt(user_message, results, context, sources)
+    if channel == "slack" and "channel" in results:
+        short = _slack_read_reply(results["channel"])
+        if not short:
+            short = _slack_send_reply(results["channel"])
+        if short:
+            _, pack, _ = _build_merge_prompt(user_message, results, context, sources)
+            ok, verified = verify_reply(short, pack)
+            final = verified if not ok else short
+            if on_token:
+                await on_token(final)
+            return final, sources
+
+    prompt, pack, sources = await _build_merge_prompt_async(user_message, results, context, sources)
     parts: list[str] = []
     async for delta in router.chat_completion_stream(
         category=model_category_for_agent("channel", "text"),
@@ -954,10 +1415,11 @@ async def merge_results_stream(
 
     reply = "".join(parts) or json.dumps(results, ensure_ascii=False)
 
-    if channel == "whatsapp":
-        ok, verified = verify_reply(reply, pack)
-        if not ok:
-            return verified, sources
+    ok, verified = verify_reply(reply, pack)
+    if not ok:
+        if on_token and verified != reply:
+            await on_token(verified)
+        return verified, sources
     return reply, sources
 
 

@@ -13,6 +13,7 @@ export function PanelCard({
   headerClassName,
   descriptionClassName,
   titleClassName,
+  variant = "default",
 }: {
   title: string
   description?: string
@@ -24,21 +25,33 @@ export function PanelCard({
   headerClassName?: string
   descriptionClassName?: string
   titleClassName?: string
+  variant?: "default" | "featured"
 }) {
   return (
-    <Card className={cn("panel-card min-h-0 overflow-hidden", className)}>
+    <Card
+      className={cn(
+        "bento-tile min-h-0 overflow-hidden ring-0",
+        variant === "featured" && "border-border bg-white",
+        className,
+      )}
+    >
       <CardHeader className={cn("pb-4", headerClassName)}>
         <div className="flex items-start justify-between gap-2 sm:gap-3">
-          <div className="flex min-w-0 items-start gap-2 sm:gap-3">
+          <div className="flex min-w-0 items-start gap-2.5 sm:gap-3">
             {Icon && (
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary sm:size-9">
+              <div
+                className={cn(
+                  "flex size-9 shrink-0 items-center justify-center rounded-xl border border-border bg-muted text-primary sm:size-10",
+                  variant === "featured" && "shadow-[0_4px_16px_rgba(15,23,42,0.08)]",
+                )}
+              >
                 <Icon className="size-4" aria-hidden />
               </div>
             )}
             <div className="min-w-0">
               <CardTitle
                 className={cn(
-                  "text-sm font-semibold tracking-wide text-foreground",
+                  "text-sm font-bold tracking-tight text-foreground",
                   titleClassName,
                 )}
               >
@@ -47,7 +60,7 @@ export function PanelCard({
               {description && (
                 <CardDescription
                   className={cn(
-                    "mt-0.5 text-xs text-muted-foreground",
+                    "mt-0.5 text-xs leading-relaxed text-muted-foreground",
                     descriptionClassName,
                   )}
                 >

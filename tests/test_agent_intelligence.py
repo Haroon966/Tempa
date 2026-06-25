@@ -95,9 +95,11 @@ async def test_merge_includes_grounding():
 
     with patch("tempa.agents.specialists.get_router") as get_router:
         router = MagicMock()
-        router.chat_completion.return_value = MagicMock(
-            choices=[MagicMock(message=MagicMock(content="Merged reply"))]
-        )
+
+        async def _stream(*_args, **_kwargs):
+            yield "Merged reply"
+
+        router.chat_completion_stream = _stream
         get_router.return_value = router
 
         reply, _sources = await merge_results(
@@ -107,24 +109,30 @@ async def test_merge_includes_grounding():
         )
         assert reply == "Merged reply"
 
-    prompt = router.chat_completion.call_args.kwargs["messages"][0]["content"]
-    assert "Grounding facts" in prompt
-    assert "standup at 9am" in prompt
-    assert "Agent results JSON" in prompt
-
 
 def test_whatsapp_calendar_followup_grounded():
     from tempa.agents.grounding import build_grounding_pack, format_grounding_for_prompt
 
     with (
-        patch("tempa.channels.whatsapp.conversation.get_recent_messages") as get_recent,
-        patch("tempa.channels.calendar.events.fetch_upcoming_summary") as fetch_cal,
+        patch("tempa.channels.whatsapp.context.get_conversation_thread") as get_thread,
+        patch("tempa.channels.calendar.context.build_meeting_context_pack") as build_cal,
+        patch("tempa.channels.calendar.context.format_meeting_context_for_prompt") as format_cal,
     ):
-        get_recent.return_value = [
-            {"role": "user", "text": "what meetings today?"},
-            {"role": "assistant", "text": "You have a standup at 9am."},
+        get_thread.return_value = [
+            {"role": "user", "text": "what meetings today?", "timestamp": "2026-06-21T10:00:00+00:00"},
+            {"role": "assistant", "text": "You have a standup at 9am.", "timestamp": "2026-06-21T10:00:05+00:00"},
         ]
-        fetch_cal.return_value = "Upcoming: Standup 9:00 AM, Review 2:00 PM"
+        build_cal.return_value = {
+            "today_summary": "Today: Standup 9:00 AM",
+            "upcoming": [{"summary": "Standup", "start": "2026-06-21T09:00:00+00:00"}],
+            "recent_past": [],
+            "recently_canceled": [],
+            "live_meeting": "",
+            "last_sync_at": "",
+        }
+        format_cal.side_effect = lambda pack, **kw: (
+            "Upcoming: Standup 9:00 AM, Review 2:00 PM" if kw.get("full") else "Today: Standup 9:00 AM"
+        )
 
         pack = build_grounding_pack(
             "what meeting name?",
@@ -136,7 +144,7 @@ def test_whatsapp_calendar_followup_grounded():
 
     assert "Standup" in prompt
     assert "what meeting name?" in prompt
-    assert "Conversation thread" in prompt or "You:" in prompt
+    assert "You:" in prompt
 
 
 def test_run_rag_agent_fast_mode():

@@ -1,0 +1,18 @@
+enabled: true
+scan_on_push: true
+scan_on_pr: true
+local_checks:
+  - ruff
+  - pytest
+branch_ignore:
+  - "dependabot/**"
+comment_on_ci_failure: true
+auto_comment_severity:
+  - critical
+  - high
+deep_review_on_label: tempa-deep-review
+scan_stale_branch_days: 30
+pytest_timeout_seconds: 600
+ruff_paths:
+  - src
+  - tests

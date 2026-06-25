@@ -1,5 +1,6 @@
 import { useState } from "react"
-import { LayersIcon } from "lucide-react"
+import { Link } from "react-router-dom"
+import { ArrowRightIcon, LayersIcon } from "lucide-react"
 import type { DashboardPayload } from "@/types/dashboard"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { StatusBadge } from "@/components/status-badge"
@@ -42,15 +43,15 @@ export function ComponentsTab({ data }: { data: DashboardPayload }) {
             className={cn(
               "inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               filter === opt.value
-                ? "border-primary/35 bg-primary/10 text-primary"
-                : "border-border bg-card text-muted-foreground hover:border-primary/25 hover:text-foreground",
+                ? "border-border bg-muted text-primary"
+                : "border-border bg-card text-muted-foreground hover:border-border hover:text-foreground",
             )}
           >
             {opt.label}
             <span
               className={cn(
                 "rounded-full px-1.5 py-0.5 text-[10px] font-bold",
-                filter === opt.value ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground",
+                filter === opt.value ? "bg-muted text-primary" : "bg-muted text-muted-foreground",
               )}
             >
               {counts[opt.value]}
@@ -80,6 +81,15 @@ export function ComponentsTab({ data }: { data: DashboardPayload }) {
                     <p className="font-medium text-foreground">{component.name}</p>
                     {component.message && (
                       <p className="mt-0.5 text-xs text-muted-foreground">{component.message}</p>
+                    )}
+                    {component.action && component.status !== "healthy" && (
+                      <Link
+                        to={component.action}
+                        className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                      >
+                        Fix on Connections
+                        <ArrowRightIcon className="size-3" />
+                      </Link>
                     )}
                   </div>
                   <StatusBadge status={component.status} />

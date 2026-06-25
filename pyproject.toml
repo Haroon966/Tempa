@@ -39,6 +39,8 @@ dependencies = [
     "qrcode[pil]>=8.0",
     "zeroconf>=0.132.0",
     "python-multipart>=0.0.9",
+    "slack-bolt>=1.21.0",
+    "PyJWT[crypto]>=2.8.0",
 ]
 
 [project.optional-dependencies]

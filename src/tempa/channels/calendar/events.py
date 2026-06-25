@@ -126,22 +126,15 @@ def wants_delete_event(text: str) -> bool:
     return False
 
 
-def _local_tz() -> ZoneInfo:
-    try:
-        aware = datetime.now().astimezone()
-        key = getattr(aware.tzinfo, "key", None)
-        if isinstance(key, str) and key:
-            return ZoneInfo(key)
-    except Exception:
-        pass
-    return ZoneInfo("Asia/Karachi")
+from tempa.core.timezone import local_tz, tz_name
+
+
+def _local_tz():
+    return local_tz()
 
 
 def _tz_name() -> str:
-    tzinfo = datetime.now().astimezone().tzinfo
-    if isinstance(tzinfo, ZoneInfo):
-        return tzinfo.key
-    return "UTC"
+    return tz_name()
 
 
 def parse_delete_title(text: str, *, recent_texts: list[str] | None = None) -> str | None:
@@ -452,6 +445,15 @@ def format_calendar_error(exc: Exception) -> str:
 
 
 def fetch_upcoming_summary(*, days: int = 2, limit: int = 6) -> str:
+    try:
+        from tempa.channels.calendar.context import build_meeting_context_pack, format_meeting_context_for_prompt
+
+        pack = build_meeting_context_pack(days_future=max(days, 2))
+        text = format_meeting_context_for_prompt(pack, full=False)
+        if text:
+            return text
+    except Exception:
+        pass
     client = load_calendar_client()
     if client is None:
         return "Google Calendar: not connected — connect in the Tempa dashboard."
@@ -719,6 +721,11 @@ def delete_calendar_events_by_title(title: str) -> DeleteEventResult:
         for event in matches:
             client.delete_event(event.id)
             deleted.append(event.summary)
+            from tempa.channels.calendar.sync import remove_event_from_snapshot
+            from tempa.rag.purge import purge_calendar_event
+
+            purge_calendar_event(event.id)
+            remove_event_from_snapshot(event.id)
     except Exception as exc:
         return DeleteEventResult(ok=False, error=format_calendar_error(exc))
 

@@ -225,6 +225,69 @@ def get_latest_meeting_context() -> str:
     return "\n".join(lines)
 
 
+def _truncate_meeting_tldr(text: str, limit: int = 200) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def get_recent_meetings_context(*, limit: int = 3) -> str:
+    """Compact summary of recent archived meetings for always-on grounding."""
+    settings = get_settings()
+    if not settings.db_path.exists():
+        return ""
+    try:
+        conn = sqlite3.connect(settings.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT title, started_at, ended_at, minutes_json, calendar_event_id "
+            "FROM meetings ORDER BY COALESCE(ended_at, started_at, created_at) DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines: list[str] = ["Recent meeting archives:"]
+    for row in rows:
+        minutes = json.loads(row["minutes_json"] or "{}")
+        tldr = minutes.get("tldr") or minutes.get("summary") or "no minutes"
+        when = row["started_at"] or row["ended_at"] or "unknown"
+        lines.append(f"- {row['title'] or 'Untitled'} ({when}): {_truncate_meeting_tldr(str(tldr))}")
+    return "\n".join(lines)
+
+
+def get_meetings_index_by_calendar_id() -> dict[str, dict[str, Any]]:
+    """Map calendar_event_id → {title, tldr, action_items_count}."""
+    settings = get_settings()
+    if not settings.db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(settings.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT title, calendar_event_id, minutes_json FROM meetings "
+            "WHERE calendar_event_id IS NOT NULL AND calendar_event_id != ''"
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return {}
+    index: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        cid = str(row["calendar_event_id"])
+        minutes = json.loads(row["minutes_json"] or "{}")
+        tldr = minutes.get("tldr") or minutes.get("summary") or ""
+        action_items = minutes.get("action_items") or []
+        index[cid] = {
+            "title": row["title"] or "",
+            "tldr": tldr,
+            "action_items_count": len(action_items) if isinstance(action_items, list) else 0,
+        }
+    return index
+
+
 async def delete_meeting(meeting_id: str) -> bool:
     settings = get_settings()
     meeting = await get_meeting(meeting_id)

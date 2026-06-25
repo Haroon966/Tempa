@@ -53,8 +53,8 @@ https://github.com/Haroon966/Tempa/raw/main/animated_tempa.mp4
 <td width="50%" valign="top">
 <ul>
 <li>🧠 <strong>Unified RAG</strong> — one ChromaDB store, no memory silos</li>
-<li>🤖 <strong>Multi-agent</strong> — LangGraph coordinator + parallel specialists</li>
-<li>🧩 <strong>Extension</strong> — chat &amp; connections from Chrome</li>
+<li>🤖 <strong>Varys coordinator</strong> — Claude Code CLI brain + optional LangGraph specialists</li>
+<li>🧩 <strong>Extension</strong> — lightweight companion for status &amp; approvals (dashboard is primary)</li>
 <li>🔒 <strong>Local-first</strong> — your data stays on your machine</li>
 </ul>
 </td>
@@ -65,44 +65,184 @@ https://github.com/Haroon966/Tempa/raw/main/animated_tempa.mp4
 
 ## ✦ Architecture
 
+### System overview
+
+Everything funnels through the **Tempa daemon** (`8787`). Channels ingest into unified memory; the **coordinator** decides how to reply; specialists and tools reach Gmail, Calendar, Meet, Slack, and WhatsApp.
+
 ```mermaid
 flowchart TB
-    subgraph UI["Clients"]
-        direction LR
-        D["Dashboard"]
-        E["Extension"]
+    subgraph clients [Clients]
+        Dashboard[Dashboard]
+        Extension[Extension]
+        SlackIn[Slack DMs and mentions]
+        WhatsAppIn[WhatsApp webhook]
     end
 
-    T(["Tempa daemon"]):::daemon
+    Daemon["Tempa daemon :8787"]
 
-    subgraph AI["Intelligence"]
-        direction LR
-        G["Groq API"]
-        R["ChromaDB RAG"]
+    subgraph brain [Coordinator]
+        Router{TEMPA_COORDINATOR}
+        Varys[Varys coordinator]
+        LangGraph[LangGraph specialists]
     end
 
-    subgraph IO["Channels"]
-        direction LR
-        W["WhatsApp bridge"]
-        GA["Google APIs"]
-        M["Meet worker"]
+    subgraph varysCore [Varys core]
+        Harness[(harness.db)]
+        Tick[Orchestrator tick 270s]
+        ClaudeCLI[Claude Code CLI]
+        Vault[data/vault]
     end
 
-    D --> T
-    E --> T
-    T --> G
-    T --> R
-    T --> W
-    T --> GA
-    T --> M
+    subgraph memory [Unified memory]
+        Chroma[(ChromaDB RAG)]
+    end
 
-    classDef daemon fill:#3d6cb9,color:#fff,stroke:#1e3a66,stroke-width:2px
-    classDef ui fill:#f8fafc,stroke:#e2e8f0
-    classDef ai fill:#eef3fb,stroke:#3d6cb9
-    classDef io fill:#f0fdf4,stroke:#86efac
-    class UI ui
-    class AI ai
-    class IO io
+    subgraph channels [Channels and workers]
+        SlackOut[Slack Bolt]
+        WhatsAppBridge[WhatsApp bridge :8080]
+        GoogleAPIs[Gmail and Calendar]
+        MeetWorker[Meet worker]
+        QAWorker[QA worker]
+    end
+
+    subgraph llm [Models]
+        Groq[Groq API]
+        Claude[Claude via CLI]
+    end
+
+    Dashboard --> Daemon
+    Extension --> Daemon
+    SlackIn --> SlackOut --> Daemon
+    WhatsAppIn --> WhatsAppBridge --> Daemon
+
+    Daemon --> Router
+    Router -->|varys or hybrid| Varys
+    Router -->|langgraph or hybrid| LangGraph
+
+    Varys --> ClaudeCLI --> Claude
+    Varys --> Harness
+    Tick --> Harness
+    Tick --> ClaudeCLI
+    Varys --> Vault
+    Vault --> Chroma
+    Varys --> Chroma
+
+    LangGraph --> Groq
+    LangGraph --> Chroma
+    LangGraph --> GoogleAPIs
+    LangGraph --> SlackOut
+    LangGraph --> WhatsAppBridge
+    LangGraph --> MeetWorker
+
+    Daemon --> QAWorker
+    SlackOut --> SlackIn
+    WhatsAppBridge --> WhatsAppIn
+```
+
+### Message flow (Varys mode)
+
+When `TEMPA_COORDINATOR=varys`, dashboard and Slack messages use the Varys coordinator. WhatsApp casual chat still uses the fast Groq path unless routed to the full coordinator.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Channel as Slack or Dashboard
+    participant Daemon as Tempa daemon
+    participant Coord as Varys coordinator
+    participant Ctx as Context builder
+    participant Vault as data/vault
+    participant RAG as ChromaDB
+    participant Harness as harness.db
+    participant Claude as Claude Code CLI
+
+    User->>Channel: message
+    Channel->>Daemon: inbound event
+    Daemon->>Coord: run_coordinator_full
+
+    alt work request e.g. fix X in repo
+        Coord->>Harness: create ticket + event
+        Coord-->>User: ticket created, reply go to approve
+    else owner replies go
+        Coord->>Harness: message.go_signal event
+        Coord-->>User: approved, tick will dispatch
+    else conversational
+        Coord->>Ctx: build prompt
+        Ctx->>Vault: read wing and rules
+        Ctx->>RAG: search_memory
+        Ctx->>Claude: system + user prompt
+        Claude-->>Coord: reply
+        Coord-->>User: response
+    end
+
+    Note over Harness,Claude: Orchestrator tick polls tickets,<br/>dispatches pending events via Claude CLI
+```
+
+### Memory and vault
+
+Varys vault files and all channel ingest share **one** Chroma collection — no memory silos.
+
+```mermaid
+flowchart LR
+    subgraph sources [Memory sources]
+        VaultFiles["data/vault/*.md"]
+        GmailSync[Gmail sync]
+        SlackSync[Slack sync]
+        CalendarSync[Calendar sync]
+        MeetArchive[Meet transcripts]
+        WhatsAppIdx[WhatsApp ingest]
+    end
+
+    subgraph ingest [Ingest pipeline]
+        VaultSync[vault-sync / tempa vault-sync]
+        IngestFn[ingest_text]
+    end
+
+    Chroma[(ChromaDB tempa_unified)]
+
+    subgraph meta [Metadata tags]
+        Wing[wing e.g. tempa]
+        Room[room e.g. memory]
+        Tool[tool e.g. vault, gmail]
+    end
+
+    VaultFiles --> VaultSync --> IngestFn
+    GmailSync --> IngestFn
+    SlackSync --> IngestFn
+    CalendarSync --> IngestFn
+    MeetArchive --> IngestFn
+    WhatsAppIdx --> IngestFn
+    IngestFn --> Chroma
+    IngestFn --> meta
+    meta --> Chroma
+
+    Chroma --> VarysCtx[Varys context builder]
+    Chroma --> LangGraphRAG[LangGraph RAG agent]
+```
+
+### Docker layout
+
+```mermaid
+flowchart LR
+    subgraph host [Your machine]
+        ClaudeBin[Claude Code CLI]
+        ClaudeCfg["~/.claude auth"]
+    end
+
+    subgraph compose [docker compose]
+        DaemonC[tempa-daemon :8787]
+        BridgeC[whatsapp-bridge :8080]
+        MeetC[meet-worker]
+        PgC[postgres :5432]
+    end
+
+    Data["./data volume<br/>vector, vault, harness, sessions"]
+
+    ClaudeBin -.->|mounted binary| DaemonC
+    ClaudeCfg -.->|mounted config| DaemonC
+    DaemonC --> Data
+    DaemonC --> BridgeC
+    DaemonC --> MeetC
+    BridgeC --> PgC
 ```
 
 <table>
@@ -117,10 +257,31 @@ flowchart TB
 
 | Service | Port | Role |
 |:--|:--:|:--|
-| **Tempa daemon** | `8787` | API · dashboard · coordinator · webhooks |
+| **Tempa daemon** | `8787` | API · dashboard · coordinator · webhooks · Varys tick |
 | **WhatsApp bridge** | `8080` | Baileys sidecar · Evolution-compatible REST |
 | **Meet worker** | — | Playwright join / record / transcribe |
 | **Postgres** | `5432` | WhatsApp session storage |
+
+---
+
+## ✦ Varys coordinator
+
+[Varys](https://github.com/codebyshoaib/varys) is vendored under `vendor/varys` (reference only). Runtime code lives in `src/tempa/varys/`.
+
+| Setting | Purpose |
+|:--|:--|
+| `TEMPA_COORDINATOR` | `varys` · `langgraph` · `hybrid` |
+| `VARYS_ORCHESTRATOR_ENABLED` | Background 270s tick loop |
+| `VARYS_CLAUDE_CLI_ONLY` | Use Claude Code CLI only (no API fallback) |
+| `CLAUDE_CODE_PATH` | Path to `claude` binary |
+| `VARYS_VAULT_DIR` | Persistent vault memory (`data/vault`) |
+
+```bash
+tempa varys status    # harness DB summary
+tempa varys tick      # run one orchestrator tick
+tempa vault-sync      # index vault into Chroma RAG
+./scripts/vendor-varys.sh   # refresh vendored upstream
+```
 
 ---
 
@@ -135,7 +296,7 @@ flowchart TB
 <pre><code>cp .env.example .env</code></pre>
 <p><strong>②</strong> Launch stack</p>
 <pre><code>docker compose up -d</code></pre>
-<p><strong>③</strong> Connect services at <strong>Connections</strong></p>
+<p><strong>③</strong> Complete setup at <strong>Setup</strong> (dashboard is the primary UI; extension is optional)</p>
 </td>
 <td width="50%" valign="top">
 <h3>🛠 Native</h3>
@@ -162,9 +323,17 @@ cp .env.example .env</code></pre>
 | `GROQ_API_KEY` | LLM, STT & safety inference |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Calendar, Gmail, Meet OAuth |
 | `WHATSAPP_OWNER_NUMBER` | Auto-reply & reminders target |
+| `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | Slack Socket Mode (bot + app-level token) |
+| `SLACK_OWNER_USER_ID` | Slack user ID for DM auto-reply |
 | `EVOLUTION_API_URL` | WhatsApp bridge · default `http://localhost:8080` |
 | `EVOLUTION_API_KEY` | Bridge auth key |
 | `TEMPA_INSTANCE_NAME` | WhatsApp instance name |
+| `TEMPA_COORDINATOR` | `varys` · `langgraph` · `hybrid` |
+| `VARYS_ORCHESTRATOR_ENABLED` | Enable Varys background tick loop |
+| `VARYS_CLAUDE_CLI_ONLY` | Claude Code CLI only (no Anthropic API fallback) |
+| `CLAUDE_CODE_PATH` | Path to Claude Code CLI (`claude`) |
+| `VARYS_VAULT_DIR` | Vault memory directory (default `data/vault`) |
+| `NOTION_API_KEY` | Optional Notion brain for Varys harness |
 
 📄 [`.env.example`](.env.example) · [`services/whatsapp-bridge/.env.example`](services/whatsapp-bridge/.env.example)
 
@@ -174,10 +343,13 @@ cp .env.example .env</code></pre>
 
 ```bash
 tempa start          # start daemon
-tempa setup          # first-run wizard
+tempa setup          # first-run wizard (initializes vault)
 tempa chat           # terminal chat
 tempa whatsapp-qr    # show WhatsApp QR
 tempa meet-auth      # Meet browser auth
+tempa varys status   # Varys harness summary
+tempa varys tick     # manual orchestrator tick
+tempa vault-sync     # index vault into RAG
 ```
 
 ---
@@ -196,6 +368,29 @@ In-repo **Baileys bridge** at [`services/whatsapp-bridge/`](services/whatsapp-br
 <p>Rename volume <code>evolution_instances</code> → <code>whatsapp_instances</code>, or remount at <code>/app/instances</code>.</p>
 <p>Env vars unchanged: <code>EVOLUTION_API_URL</code> · <code>EVOLUTION_API_KEY</code> · <code>TEMPA_INSTANCE_NAME</code></p>
 </details>
+
+---
+
+## ✦ Slack (Socket Mode)
+
+**Bot events** (Event Subscriptions): `message.im`, `app_mention`, and **`assistant_thread_started`** (if using Slack's Assistant chat UI).
+
+- `SLACK_BOT_TOKEN` (`xoxb-…`)
+- `SLACK_APP_TOKEN` (`xapp-…` with `connections:write`)
+- `SLACK_OWNER_USER_ID` (your Slack member ID for DM auto-reply)
+
+**Bot token scopes** (OAuth & Permissions) — your app currently needs at least:
+
+- `app_mentions:read`
+- `chat:write`
+- `im:history`
+- `im:read` ← **missing on many setups; required for DMs**
+- `users:read`
+- `channels:history`, `channels:read` (for @mentions in public channels)
+
+**Required for DMs:** App Home → **Messages Tab** ON + allow user messages. **Event Subscriptions** → bot events **`message.im`** and **`app_mention`**. After changing scopes/events, **reinstall the app** to the workspace.
+
+DM the bot or `@mention` it in a channel. Outbound sends from the coordinator go through pending-action approval.
 
 ---
 

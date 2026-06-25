@@ -1,5 +1,21 @@
 const DEFAULT_DAEMON = "http://localhost:8787";
 
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin) return;
+  const data = event.data;
+  if (data?.type === "google_oauth") {
+    void refreshConnections();
+  }
+});
+
 async function getDaemonUrl() {
   const { daemonUrl } = await chrome.storage.local.get({ daemonUrl: DEFAULT_DAEMON });
   return daemonUrl || DEFAULT_DAEMON;
@@ -114,10 +130,18 @@ document.getElementById("chat-form").addEventListener("submit", async (e) => {
   const message = input.value.trim();
   if (!message) return;
   const log = document.getElementById("chat-log");
-  log.innerHTML += `<div><b>You:</b> ${message}</div>`;
+  log.innerHTML += `<div><b>You:</b> ${escapeHtml(message)}</div>`;
   input.value = "";
 
   const daemon = await getDaemonUrl();
+  try {
+    const health = await fetch(`${daemon}/api/health`);
+    if (!health.ok) throw new Error("Daemon offline");
+  } catch (err) {
+    log.innerHTML += `<div><b>Tempa:</b> ${escapeHtml(String(err.message || err))}</div>`;
+    return;
+  }
+
   const res = await fetch(`${daemon}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -137,7 +161,8 @@ document.getElementById("chat-form").addEventListener("submit", async (e) => {
       if (!dataLine) continue;
       try {
         const payload = JSON.parse(dataLine.slice(5).trim());
-        if (payload.content) log.innerHTML += `<div><b>Tempa:</b> ${payload.content}</div>`;
+        if (payload.content) log.innerHTML += `<div><b>Tempa:</b> ${escapeHtml(payload.content)}</div>`;
+        if (payload.error) log.innerHTML += `<div><b>Error:</b> ${escapeHtml(payload.error)}</div>`;
       } catch {}
     }
   }

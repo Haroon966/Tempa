@@ -42,8 +42,12 @@ def load_poller_state() -> PollerState:
 def save_poller_state(state: PollerState) -> None:
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    keys = sorted(state.triggered_keys)
+    if len(keys) > 500:
+        keys = keys[-500:]
+        state.triggered_keys = set(keys)
     path.write_text(
-        json.dumps({"triggered_keys": sorted(state.triggered_keys)}, indent=2),
+        json.dumps({"triggered_keys": keys}, indent=2),
         encoding="utf-8",
     )
 
@@ -121,9 +125,6 @@ async def poll_once(state: PollerState, on_trigger: TriggerCallback) -> list[Cal
             continue
         if ev.meet_url and has_active_job_for_url(ev.meet_url):
             continue
-        triggered.append(ev)
-        state.triggered_keys.add(key)
-        save_poller_state(state)
         try:
             ingest_calendar_event(ev)
         except Exception:
@@ -132,6 +133,9 @@ async def poll_once(state: PollerState, on_trigger: TriggerCallback) -> list[Cal
         logger.info("Calendar auto-join: triggering %s (%s)", ev.summary, ev.meet_url)
         try:
             await on_trigger(ev)
+            triggered.append(ev)
+            state.triggered_keys.add(key)
+            save_poller_state(state)
         except Exception:
             logger.exception("Calendar auto-join trigger failed for %s", ev.summary)
     return triggered

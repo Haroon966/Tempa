@@ -60,7 +60,7 @@ function SessionRow({
         className={cn(
           "flex min-h-11 min-w-0 flex-1 cursor-pointer flex-col justify-center rounded-lg border border-transparent px-3 py-2 text-left transition-colors duration-200",
           active
-            ? "border-primary/20 bg-primary/10 text-primary"
+            ? "border-border bg-muted text-primary"
             : "text-foreground hover:border-border hover:bg-muted/60",
         )}
       >

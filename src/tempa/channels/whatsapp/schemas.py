@@ -31,12 +31,10 @@ def _extract_text(message: dict[str, Any]) -> str:
     )
 
 
-def parse_messages_upsert(payload: dict[str, Any]) -> list[WhatsAppMessage]:
-    messages: list[WhatsAppMessage] = []
+def _iter_messages_upsert_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     data = payload.get("data", payload)
     items = data.get("messages")
     if items is None:
-        # Evolution API v2 sends a single message object in `data` with top-level `key`.
         if isinstance(data, dict) and "key" in data:
             items = [data]
         else:
@@ -44,19 +42,27 @@ def parse_messages_upsert(payload: dict[str, Any]) -> list[WhatsAppMessage]:
             items = [nested] if isinstance(nested, dict) else []
     if isinstance(items, dict):
         items = [items]
-    for item in items:
-        if not isinstance(item, dict):
-            continue
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _effective_jid(key: dict[str, Any]) -> tuple[str, bool]:
+    remote_jid = key.get("remoteJid", "") or ""
+    alt_jid = key.get("remoteJidAlt", "") or key.get("participantAlt", "") or ""
+    if remote_jid.endswith("@lid") and alt_jid:
+        effective_jid = alt_jid
+    else:
+        effective_jid = remote_jid or alt_jid
+    is_group = effective_jid.endswith("@g.us")
+    return effective_jid or remote_jid, is_group
+
+
+def parse_messages_upsert(payload: dict[str, Any]) -> list[WhatsAppMessage]:
+    messages: list[WhatsAppMessage] = []
+    for item in _iter_messages_upsert_items(payload):
         key = item.get("key", {})
         if key.get("fromMe"):
             continue
-        remote_jid = key.get("remoteJid", "") or ""
-        alt_jid = key.get("remoteJidAlt", "") or key.get("participantAlt", "") or ""
-        if remote_jid.endswith("@lid") and alt_jid:
-            effective_jid = alt_jid
-        else:
-            effective_jid = remote_jid or alt_jid
-        is_group = effective_jid.endswith("@g.us")
+        effective_jid, is_group = _effective_jid(key)
         participant = key.get("participant", "") or key.get("participantAlt", "")
         from_number = (
             participant.split("@")[0].split(":")[0]
@@ -75,8 +81,40 @@ def parse_messages_upsert(payload: dict[str, Any]) -> list[WhatsAppMessage]:
                     "text": text or "[voice note]",
                     "message_id": key.get("id", ""),
                     "timestamp": item.get("messageTimestamp"),
-                    "chat_id": effective_jid or remote_jid,
+                    "chat_id": effective_jid,
                     "is_group": is_group,
+                    "raw_item": item,
+                }
+            )
+        )
+    return messages
+
+
+def parse_outbound_messages_upsert(payload: dict[str, Any]) -> list[WhatsAppMessage]:
+    """Messages sent from the linked WhatsApp account (fromMe)."""
+    messages: list[WhatsAppMessage] = []
+    for item in _iter_messages_upsert_items(payload):
+        key = item.get("key", {})
+        if not key.get("fromMe"):
+            continue
+        effective_jid, is_group = _effective_jid(key)
+        if is_group:
+            continue
+        message = item.get("message", item)
+        text = _extract_text(message if isinstance(message, dict) else {})
+        has_audio = bool(isinstance(message, dict) and message.get("audioMessage"))
+        if not text and not has_audio:
+            continue
+        peer = effective_jid.split("@")[0].split(":")[0] if effective_jid else ""
+        messages.append(
+            WhatsAppMessage(
+                **{
+                    "from": peer,
+                    "text": text or "[voice note]",
+                    "message_id": key.get("id", ""),
+                    "timestamp": item.get("messageTimestamp"),
+                    "chat_id": effective_jid,
+                    "is_group": False,
                     "raw_item": item,
                 }
             )

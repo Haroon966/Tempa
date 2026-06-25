@@ -52,6 +52,11 @@ def ingest_text(
     tags: list[str] | None = None,
     meet_link: str | None = None,
     title: str = "",
+    content_date: str | None = None,
+    wing: str = "",
+    room: str = "",
+    drawer: str = "",
+    memory_class: str = "",
 ) -> dict[str, Any]:
     """Upsert text chunks into unified Chroma with PRD metadata schema."""
     if not text.strip():
@@ -61,6 +66,7 @@ def ingest_text(
     embedder = get_embedder()
     store = get_store()
     timestamp = datetime.now(timezone.utc).isoformat()
+    event_date = content_date or timestamp
 
     documents: list[str] = []
     embeddings: list[list[float]] = []
@@ -80,12 +86,17 @@ def ingest_text(
                 "source": source,
                 "participant": participant,
                 "timestamp": timestamp,
+                "content_date": event_date,
                 "participants": ",".join(participants or []),
                 "tags": ",".join(tags or []),
                 "meet_link": meet_link or "",
                 "title": title,
                 "chunk_start": chunk["start"],
                 "chunk_end": chunk["end"],
+                "wing": wing,
+                "room": room,
+                "drawer": drawer,
+                "memory_class": memory_class,
             }
         )
         ids.append(doc_id)
@@ -117,7 +128,7 @@ def _passes_metadata_filters(
     participant: str | None = None,
     tags: list[str] | None = None,
 ) -> bool:
-    ts = str(metadata.get("timestamp") or "")
+    ts = str(metadata.get("content_date") or metadata.get("timestamp") or "")
     if date_from and ts and ts < date_from:
         return False
     if date_to and ts and ts > date_to:
@@ -150,6 +161,8 @@ def search_memory(
     date_to: str | None = None,
     participant: str | None = None,
     tags: list[str] | None = None,
+    wing: str | None = None,
+    room: str | None = None,
 ) -> list[dict[str, Any]]:
     embedder = get_embedder()
     store = get_store()
@@ -159,6 +172,10 @@ def search_memory(
         filters.append({"tool": tool})
     if meet_link:
         filters.append({"meet_link": meet_link})
+    if wing:
+        filters.append({"wing": wing})
+    if room:
+        filters.append({"room": room})
     if len(filters) == 1:
         where = filters[0]
     elif len(filters) > 1:

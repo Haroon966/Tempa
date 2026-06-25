@@ -32,7 +32,7 @@ def test_dashboard_spa_routes(client):
     if not (settings.project_root / "dashboard" / "dist" / "index.html").exists():
         return
 
-    for path in ("/overview", "/agent", "/mail", "/dashboard"):
+    for path in ("/overview", "/agent", "/mail", "/qa", "/dashboard"):
         res = client.get(path)
         assert res.status_code == 200
         assert "text/html" in res.headers.get("content-type", "")

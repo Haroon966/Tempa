@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import {
+  HashIcon,
   BrainIcon,
   CalendarIcon,
   DatabaseIcon,
@@ -92,6 +93,7 @@ export function ConnectionsTab({
   const google   = data.connections.google
   const gmail    = data.connections.gmail
   const whatsapp = data.connections.whatsapp
+  const slack = data.connections.slack
   const bridge = data.connections.whatsapp_bridge ?? data.connections.evolution_api
   const meetAutoJoin = data.connections.meet_auto_join
 
@@ -380,7 +382,7 @@ export function ConnectionsTab({
   return (
     <div className="flex flex-col gap-8">
       {/* OAuth redirect URI notice */}
-      <Alert className="border-primary/25 bg-primary/5">
+      <Alert className="border-border bg-muted">
         <AlertDescription className="text-sm text-muted-foreground">
           Google OAuth redirect URI must be{" "}
           <code>
@@ -391,10 +393,11 @@ export function ConnectionsTab({
       </Alert>
 
       {/* Status strip */}
-      <section className="grid gap-3 sm:grid-cols-3">
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <InfraCard title="Tempa Daemon" conn={data.connections.daemon} icon={ServerIcon} />
         <InfraCard title="Unified RAG"  conn={data.connections.rag}    icon={DatabaseIcon} />
         <InfraCard title="WhatsApp Bridge" conn={bridge}              icon={MessageCircleIcon} />
+        <InfraCard title="Slack"          conn={slack}                icon={HashIcon} />
       </section>
 
       {/* Service cards */}
@@ -413,7 +416,7 @@ export function ConnectionsTab({
           {groqModels.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {groqModels.map((m) => (
-                <Badge key={m} variant="outline" className="border-primary/20 bg-primary/8 text-xs text-primary/70">
+                <Badge key={m} variant="outline" className="border-border bg-muted text-xs text-primary/70">
                   {m}
                 </Badge>
               ))}
@@ -583,6 +586,63 @@ export function ConnectionsTab({
               Refresh QR
             </Button>
           )}
+        </PanelCard>
+
+        {/* Slack */}
+        <PanelCard
+          title="Slack"
+          description="Socket Mode — DM the bot or @mention in channels (tokens in .env)"
+          icon={HashIcon}
+          action={
+            <StatusBadge
+              status={
+                slack?.connected
+                  ? "connected"
+                  : slack?.configured
+                    ? "degraded"
+                    : (slack?.status ?? "disconnected")
+              }
+            />
+          }
+          contentClassName="flex flex-col gap-3"
+        >
+          <p className="text-sm text-muted-foreground">
+            Configured:{" "}
+            <span className="font-semibold text-foreground">
+              {slack?.configured ? "yes" : "no"}
+            </span>
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Socket Mode:{" "}
+            <span className="font-semibold text-foreground">
+              {slack?.connected ? "connected" : "not connected"}
+            </span>
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Owner user ID:{" "}
+            <span className="font-semibold text-foreground">
+              {slack?.owner_configured
+                ? (slack?.owner_user_id ?? "set")
+                : "not set (SLACK_OWNER_USER_ID)"}
+            </span>
+          </p>
+          {slack?.detail && (
+            <p className="text-sm text-muted-foreground">{slack.detail}</p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Create a Slack app at{" "}
+            <a
+              href="https://api.slack.com/apps"
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              api.slack.com
+            </a>
+            , enable Socket Mode, subscribe to <code>message.im</code> and{" "}
+            <code>app_mention</code>, then set <code>SLACK_BOT_TOKEN</code> and{" "}
+            <code>SLACK_APP_TOKEN</code> in <code>.env</code> and restart the daemon.
+          </p>
         </PanelCard>
 
         {/* Google Meet bot */}

@@ -22,8 +22,15 @@ export function DataTab({ data }: { data: DashboardPayload }) {
   const { data: stats, meetings, calendar, whatsapp } = data
   const [selectedMeeting, setSelectedMeeting] = useState<MeetingRecord | null>(null)
 
+  const rag = data.connections.rag
+
   return (
     <div className="flex flex-col gap-8">
+      {rag?.error != null && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/8 p-4 text-sm text-destructive">
+          RAG store error: {String(rag.error)}
+        </div>
+      )}
       <section className="grid gap-4 sm:grid-cols-2">
         <StatCard
           label="Memory index"
@@ -54,7 +61,7 @@ export function DataTab({ data }: { data: DashboardPayload }) {
                     {label}
                   </dt>
                   {size && (
-                    <Badge variant="outline" className="border-primary/25 bg-primary/8 text-xs text-primary">
+                    <Badge variant="outline" className="border-border bg-muted text-xs text-primary">
                       {size}
                     </Badge>
                   )}

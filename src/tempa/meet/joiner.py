@@ -57,8 +57,10 @@ async def _dismiss_consent_popup(
         'button:has-text("Continue without microphone")',
         'button:has-text("Got it")',
         'button:has-text("Dismiss")',
+        'button:has-text("OK")',
         "text=/Continue without microphone and camera/i",
         "text=/Continue without/i",
+        "text=/Click Allow/i",
     ]
 
     scopes = [page.locator('div[role="dialog"]').first, page]
@@ -377,16 +379,16 @@ async def join_meet(
     screenshot_storage = storage_adapter or LocalStorageAdapter()
     guest_mode = bool(bot_name) and not storage_state_path
 
-    if guest_mode and headless:
-        display = os.environ.get("DISPLAY")
-        if display:
-            _logger.info("GMEET: virtual display detected (DISPLAY=%s), using headed mode for guest join", display)
-            headless = False
-        else:
-            _logger.warning(
-                "GMEET: headless guest mode may fail due to Google's bot detection. "
-                "For reliable guest join, use a virtual display (Xvfb) with DISPLAY env var."
-            )
+    display = os.environ.get("DISPLAY", "").strip()
+    if display and headless:
+        _logger.info("GMEET: virtual display detected (DISPLAY=%s), using headed mode", display)
+        headless = False
+
+    if guest_mode and headless and not display:
+        _logger.warning(
+            "GMEET: headless guest mode may fail due to Google's bot detection. "
+            "For reliable guest join, use a virtual display (Xvfb) with DISPLAY env var."
+        )
 
     p = await async_playwright().start()
     browser = None
@@ -394,10 +396,12 @@ async def join_meet(
     page = None
     try:
         launch_kwargs = {"headless": headless, "slow_mo": slow_mo_ms}
-        launch_args = list(_GUEST_LAUNCH_ARGS if guest_mode else _LAUNCH_ARGS)
+        launch_args = list(_LAUNCH_ARGS)
+        if guest_mode:
+            launch_args = list(_GUEST_LAUNCH_ARGS)
         launch_kwargs["args"] = launch_args
         browser = await p.chromium.launch(**launch_kwargs)
-        context_kwargs = {}
+        context_kwargs: dict[str, object] = {"permissions": ["microphone", "camera"]}
         if storage_state_path:
             context_kwargs["storage_state"] = storage_state_path
         if guest_mode:
@@ -405,6 +409,11 @@ async def join_meet(
             context_kwargs["locale"] = "en-US"
             context_kwargs["permissions"] = ["microphone"]
         context = await browser.new_context(**context_kwargs)
+        with contextlib.suppress(Exception):
+            await context.grant_permissions(
+                ["microphone", "camera"],
+                origin="https://meet.google.com",
+            )
         if guest_mode:
             await context.add_init_script(_STEALTH_INIT_SCRIPT)
         page = await context.new_page()

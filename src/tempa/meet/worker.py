@@ -1,4 +1,4 @@
-"""Stable runtime entrypoint for executing a gmeet worker session."""
+"""Legacy Playwright worker runtime — job queue uses tempa.meet.service via worker_main."""
 
 import asyncio
 import logging
@@ -73,6 +73,21 @@ async def run_meeting_worker(
         config.meeting_id,
         status=MeetingLifecycleStatus.WAITING_FOR_ADMISSION.value,
     )
+    try:
+        from tempa.channels.whatsapp.outbound import send_whatsapp_message
+        from tempa.channels.whatsapp.reply import load_default_whatsapp_number
+
+        owner = load_default_whatsapp_number()
+        if owner:
+            await send_whatsapp_message(
+                owner,
+                f"Tempa is waiting to join *{config.meet_url.split('/')[-1]}*. "
+                "If Meet shows *Ask to join*, please admit Tempa from the participant list.",
+                source_channel="whatsapp_auto_reply",
+            )
+    except Exception:
+        _logger.debug("WhatsApp admission-wait notify skipped", exc_info=True)
+
     admitted = await wait_for_admission(session.page, timeout_s=admission_timeout_seconds)
     if not admitted:
         _logger.error("GMEET JOB: timed out waiting for admission to %s", config.meeting_id)
@@ -82,7 +97,10 @@ async def run_meeting_worker(
             ended_at=time.time(),
         )
         await session.close()
-        return
+        raise RuntimeError(
+            f"Timed out waiting to be admitted to the meeting ({int(admission_timeout_seconds)}s). "
+            "If Meet shows 'Ask to join', admit Tempa from the participant list."
+        )
 
     _logger.info("GMEET JOB: admitted to meeting %s, starting pipeline", config.meeting_id)
 

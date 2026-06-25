@@ -19,7 +19,12 @@ async def test_ingest_all_reply_owner_only(monkeypatch):
     from unittest.mock import AsyncMock, patch
 
     with (
+        patch("tempa.channels.whatsapp.conversation.has_assistant_reply_for", return_value=False),
         patch("tempa.channels.whatsapp.reply.is_auto_reply_paused", return_value=False),
+        patch("tempa.channels.whatsapp.reply.needs_qr_rescan", return_value=False),
+        patch("tempa.channels.whatsapp.dedupe.bootstrap"),
+        patch("tempa.channels.whatsapp.dedupe.is_seen", return_value=False),
+        patch("tempa.channels.whatsapp.dedupe.mark_seen", return_value=True),
         patch("tempa.channels.whatsapp.reply.run_whatsapp_reply", new_callable=AsyncMock, return_value="ok") as reply_fn,
         patch("tempa.channels.whatsapp.reply.asyncio.create_task"),
         patch("tempa.channels.whatsapp.reply.event_bus.publish_json", new_callable=AsyncMock),
@@ -53,7 +58,12 @@ async def test_reply_allowed_for_extra_numbers(monkeypatch, tmp_path):
     from unittest.mock import AsyncMock, patch
 
     with (
+        patch("tempa.channels.whatsapp.conversation.has_assistant_reply_for", return_value=False),
         patch("tempa.channels.whatsapp.reply.is_auto_reply_paused", return_value=False),
+        patch("tempa.channels.whatsapp.reply.needs_qr_rescan", return_value=False),
+        patch("tempa.channels.whatsapp.dedupe.bootstrap"),
+        patch("tempa.channels.whatsapp.dedupe.is_seen", return_value=False),
+        patch("tempa.channels.whatsapp.dedupe.mark_seen", return_value=True),
         patch("tempa.channels.whatsapp.reply.run_whatsapp_reply", new_callable=AsyncMock, return_value="ok") as reply_fn,
         patch("tempa.channels.whatsapp.reply.send_whatsapp_message", new_callable=AsyncMock, return_value={"status": "ok"}),
         patch("tempa.channels.whatsapp.reply.asyncio.create_task"),

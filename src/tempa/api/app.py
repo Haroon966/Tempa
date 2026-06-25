@@ -117,14 +117,20 @@ reminder_state = load_reminder_state()
 _scheduler_task: asyncio.Task | None = None
 _reminder_task: asyncio.Task | None = None
 _gmail_sync_task: asyncio.Task | None = None
+_calendar_sync_task: asyncio.Task | None = None
+_slack_sync_task: asyncio.Task | None = None
 _consolidation_task: asyncio.Task | None = None
 _retention_task: asyncio.Task | None = None
 _shutdown_requested = False
 
 
 async def _gmail_sync_loop() -> None:
-    from tempa.channels.gmail.sync import sync_once
+    import logging
 
+    from tempa.channels.gmail.sync import sync_once
+    from tempa.core.sync_status import record_sync
+
+    logger = logging.getLogger(__name__)
     settings = get_settings()
     try:
         import yaml
@@ -137,20 +143,145 @@ async def _gmail_sync_loop() -> None:
         interval = 120
         sync_on_startup = True
 
-    if sync_on_startup:
-        async def _startup_sync() -> None:
-            try:
-                await sync_once(full=False)
-            except Exception:
-                pass
+    backoff = interval
+    syncing = False
 
-        asyncio.create_task(_startup_sync())
-    while True:
-        await asyncio.sleep(interval)
+    async def _run_sync(*, full: bool) -> None:
+        nonlocal syncing, backoff
+        if syncing:
+            return
+        syncing = True
         try:
-            await sync_once(full=False)
-        except Exception:
-            pass
+            result = await sync_once(full=full)
+            status = str(result.get("status", "ok"))
+            if status in {"ok", "skipped"}:
+                record_sync("gmail", status=status, details=result)
+                backoff = interval
+            else:
+                err = str(result.get("reason") or result.get("error") or status)
+                record_sync("gmail", status="error", error=err, details=result)
+                backoff = min(backoff * 2, interval * 8)
+        except Exception as exc:
+            logger.exception("Gmail sync loop failed")
+            record_sync("gmail", status="error", error=str(exc))
+            backoff = min(backoff * 2, interval * 8)
+        finally:
+            syncing = False
+
+    if sync_on_startup:
+        asyncio.create_task(_run_sync(full=False))
+
+    while True:
+        await asyncio.sleep(backoff)
+        await _run_sync(full=False)
+
+
+async def _calendar_sync_loop() -> None:
+    import logging
+
+    from tempa.channels.calendar.sync import sync_calendar_snapshot
+    from tempa.core.sync_status import record_sync
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    try:
+        import yaml
+
+        with (settings.config_dir / "permissions.yaml").open(encoding="utf-8") as f:
+            cfg = (yaml.safe_load(f) or {}).get("calendar") or {}
+        interval = int(cfg.get("poll_interval_seconds", 300))
+        sync_on_startup = bool(cfg.get("sync_on_startup", True))
+    except Exception:
+        interval = 300
+        sync_on_startup = True
+
+    backoff = interval
+    syncing = False
+
+    async def _run_sync() -> None:
+        nonlocal syncing, backoff
+        if syncing:
+            return
+        syncing = True
+        try:
+            result = await asyncio.to_thread(sync_calendar_snapshot)
+            status = str(result.get("status", "ok"))
+            if status in {"ok", "skipped"}:
+                record_sync("calendar", status=status, details=result)
+                backoff = interval
+            else:
+                err = str(result.get("reason") or status)
+                record_sync("calendar", status="error", error=err, details=result)
+                backoff = min(backoff * 2, interval * 8)
+        except Exception as exc:
+            logger.exception("Calendar sync loop failed")
+            record_sync("calendar", status="error", error=str(exc))
+            backoff = min(backoff * 2, interval * 8)
+        finally:
+            syncing = False
+
+    if sync_on_startup:
+        asyncio.create_task(_run_sync())
+
+    while True:
+        await asyncio.sleep(backoff)
+        await _run_sync()
+
+
+async def _slack_sync_loop() -> None:
+    import logging
+
+    from tempa.channels.slack.sync import sync_once as sync_slack_once
+    from tempa.channels.slack.session import slack_configured
+    from tempa.core.sync_status import record_sync
+
+    logger = logging.getLogger(__name__)
+    if not slack_configured():
+        return
+
+    settings = get_settings()
+    try:
+        import yaml
+
+        with (settings.config_dir / "permissions.yaml").open(encoding="utf-8") as f:
+            cfg = (yaml.safe_load(f) or {}).get("slack") or {}
+        interval = int(cfg.get("poll_interval_seconds", 300))
+        sync_on_startup = bool(cfg.get("sync_on_startup", True))
+    except Exception:
+        interval = 300
+        sync_on_startup = True
+
+    backoff = interval
+    syncing = False
+
+    async def _run_sync(*, full: bool) -> None:
+        nonlocal syncing, backoff
+        if syncing:
+            return
+        syncing = True
+        try:
+            result = await sync_slack_once(full=full)
+            status = str(result.get("status", "ok"))
+            if status in {"ok", "skipped"}:
+                record_sync("slack", status=status, details=result)
+                backoff = interval
+            else:
+                err = str(result.get("reason") or result.get("error") or status)
+                record_sync("slack", status="error", error=err, details=result)
+                backoff = min(backoff * 2, interval * 8)
+        except Exception as exc:
+            logger.exception("Slack sync loop failed")
+            record_sync("slack", status="error", error=str(exc))
+            backoff = min(backoff * 2, interval * 8)
+        finally:
+            syncing = False
+
+    if sync_on_startup:
+        asyncio.create_task(_run_sync(full=True))
+
+    while True:
+        await asyncio.sleep(backoff)
+        await _run_sync(full=False)
 
 
 async def _calendar_loop() -> None:
@@ -210,7 +341,7 @@ async def _consolidation_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _scheduler_task, _reminder_task, _gmail_sync_task, _consolidation_task, _retention_task
+    global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _consolidation_task, _retention_task
     from tempa.channels.contacts.store import init_contacts_db
     from tempa.channels.whatsapp.inbound_queue import stop_inbound_worker
     from tempa.channels.whatsapp.webhook import ensure_webhook_worker
@@ -230,12 +361,23 @@ async def lifespan(app: FastAPI):
     await init_contacts_db()
     sweep_stale_tasks()
 
-    def _warm_embedder() -> None:
-        from tempa.rag.embeddings import get_embedder
+    async def _warm_embedder_background() -> None:
+        import logging
 
-        get_embedder().embed("tempa warmup")
+        log = logging.getLogger(__name__)
 
-    await asyncio.to_thread(_warm_embedder)
+        def _warm() -> None:
+            from tempa.rag.embeddings import get_embedder
+
+            get_embedder().embed("tempa warmup")
+
+        try:
+            await asyncio.to_thread(_warm)
+            log.info("Embedder warmup complete")
+        except Exception as exc:
+            log.warning("Embedder warmup failed (RAG may be unavailable): %s", exc)
+
+    asyncio.create_task(_warm_embedder_background(), name="embedder-warmup")
     await ensure_webhook_worker()
 
     async def _whatsapp_startup() -> None:
@@ -258,12 +400,25 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_whatsapp_startup())
 
+    from tempa.channels.slack.bolt_app import start_slack_socket_mode
+    from tempa.channels.slack.session import slack_configured
+
+    if slack_configured():
+        try:
+            await start_slack_socket_mode()
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning("Slack startup failed: %s", exc)
+
     async def _deferred_background() -> None:
-        global _scheduler_task, _reminder_task, _gmail_sync_task, _consolidation_task, _retention_task
+        global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _consolidation_task, _retention_task
         await asyncio.sleep(2)
         _scheduler_task = asyncio.create_task(_calendar_loop())
         _reminder_task = asyncio.create_task(_reminder_loop())
         _gmail_sync_task = asyncio.create_task(_gmail_sync_loop())
+        _calendar_sync_task = asyncio.create_task(_calendar_sync_loop())
+        _slack_sync_task = asyncio.create_task(_slack_sync_loop())
         _consolidation_task = asyncio.create_task(_consolidation_loop())
         _retention_task = asyncio.create_task(_retention_loop())
         try:
@@ -278,6 +433,20 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(ensure_transfer_server())
         except Exception:
             pass
+        try:
+            from tempa.qa.config import qa_enabled
+            from tempa.qa.worker import start_qa_worker
+
+            if qa_enabled():
+                await start_qa_worker()
+        except Exception:
+            pass
+        try:
+            from tempa.varys.tick import start_varys_tick_loop
+
+            await start_varys_tick_loop()
+        except Exception:
+            pass
 
     asyncio.create_task(_deferred_background())
     yield
@@ -287,6 +456,10 @@ async def lifespan(app: FastAPI):
         _reminder_task.cancel()
     if _gmail_sync_task:
         _gmail_sync_task.cancel()
+    if _calendar_sync_task:
+        _calendar_sync_task.cancel()
+    if _slack_sync_task:
+        _slack_sync_task.cancel()
     try:
         from tempa.pc.transfer.server import stop_transfer_server
 
@@ -294,6 +467,24 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     await stop_inbound_worker()
+    try:
+        from tempa.qa.worker import stop_qa_worker
+
+        await stop_qa_worker()
+    except Exception:
+        pass
+    try:
+        from tempa.varys.tick import stop_varys_tick_loop
+
+        await stop_varys_tick_loop()
+    except Exception:
+        pass
+    try:
+        from tempa.channels.slack.bolt_app import stop_slack_socket_mode
+
+        await stop_slack_socket_mode()
+    except Exception:
+        pass
     encrypt_sensitive_sessions()
 
 
@@ -301,8 +492,10 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Tempa Daemon", version="0.1.0", lifespan=lifespan)
     from tempa.api.features import router as features_router
+    from tempa.api.qa import router as qa_router
 
     app.include_router(features_router, prefix="/api")
+    app.include_router(qa_router, prefix="/api")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.tempa_cors_origin] if settings.tempa_cors_origin != "*" else ["*"],
@@ -338,12 +531,25 @@ def create_app() -> FastAPI:
                 return {"status": "degraded", "connected": False, "error": str(exc)[:200]}
 
         def _meet_worker_check() -> dict[str, Any]:
+            from tempa.meet.worker_heartbeat import read_worker_heartbeat, worker_is_alive
+
             delegate = os.environ.get("TEMPA_MEET_DELEGATE_TO_WORKER", "").lower() in ("1", "true", "yes")
             jobs = get_meeting_jobs()
             queued = sum(1 for j in jobs.values() if j.get("status") == "queued")
             running = sum(1 for j in jobs.values() if j.get("status") in ("running", "finalizing"))
             mode = "delegated" if delegate else "in_process"
-            return {"status": "ok", "mode": mode, "queued": queued, "running": running}
+            alive = worker_is_alive() if delegate else True
+            status = "ok" if alive or queued == 0 else "degraded"
+            if delegate and queued > 0 and not alive:
+                status = "degraded"
+            return {
+                "status": status,
+                "mode": mode,
+                "queued": queued,
+                "running": running,
+                "worker_alive": alive,
+                "heartbeat": read_worker_heartbeat(),
+            }
 
         chroma, groq, meet_worker = await asyncio.gather(
             asyncio.to_thread(_chromadb_check),
@@ -726,6 +932,12 @@ if (window.opener) {{
             "allowed_numbers": get_allowed_whatsapp_reply_numbers(),
         }
 
+    @app.get("/api/connections/slack")
+    async def slack_status():
+        from tempa.channels.slack.session import connection_status
+
+        return await connection_status()
+
     @app.post("/api/chat/runs/{run_id}/cancel")
     async def cancel_chat_run(run_id: str):
         from fastapi import HTTPException
@@ -815,9 +1027,20 @@ if (window.opener) {{
                         )
                     )
                 except asyncio.CancelledError:
-                    await queue.put(("error", {"error": "Run cancelled"}))
+                    await queue.put(
+                        (
+                            "error",
+                            {
+                                "error": "Run cancelled",
+                                "code": "CANCELLED",
+                                "recoverable": False,
+                            },
+                        )
+                    )
                 except Exception as exc:
-                    await queue.put(("error", {"error": str(exc)}))
+                    from tempa.core.chat_errors import classify_exception
+
+                    await queue.put(("error", classify_exception(exc)))
                 finally:
                     done.set()
                     await queue.put(None)
@@ -1097,17 +1320,14 @@ if (window.opener) {{
         )
         # #endregion
 
-        async def _process() -> None:
-            import json
+        import json
 
-            try:
-                payload = json.loads(body)
-            except Exception:
-                return
-            await handle_webhook(payload)
-
-        asyncio.create_task(_process())
-        return {"status": "accepted"}
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return {"status": "ignored", "reason": "invalid_json"}
+        result = await handle_webhook(payload)
+        return {"status": "accepted", **result}
 
     @app.websocket("/api/agents/activity")
     async def agents_activity(websocket: WebSocket):

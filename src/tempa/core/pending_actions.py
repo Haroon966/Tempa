@@ -14,11 +14,13 @@ logger = logging.getLogger(__name__)
 PendingActionType = Literal[
     "email_send",
     "whatsapp_send",
+    "slack_send",
     "pc_write",
     "pc_delete",
     "pc_mkdir",
     "file_transfer",
     "plan_preview",
+    "qa_autofix",
 ]
 PendingActionStatus = Literal["pending", "approved", "rejected", "expired", "failed", "executed"]
 
@@ -27,11 +29,13 @@ _lock = threading.Lock()
 ACTION_TYPES: set[str] = {
     "email_send",
     "whatsapp_send",
+    "slack_send",
     "pc_write",
     "pc_delete",
     "pc_mkdir",
     "file_transfer",
     "plan_preview",
+    "qa_autofix",
 }
 
 
@@ -134,12 +138,16 @@ def _default_title(action_type: str, payload: dict[str, Any]) -> str:
         return f"Email to {payload.get('to', 'unknown')}"
     if action_type == "whatsapp_send":
         return f"WhatsApp to {payload.get('number', 'unknown')}"
+    if action_type == "slack_send":
+        return f"Slack message to {payload.get('channel', 'unknown')}"
     if action_type == "file_transfer":
         return f"Transfer {payload.get('filename', payload.get('path', 'file'))}"
     if action_type.startswith("pc_"):
         return f"PC {action_type.replace('pc_', '')}: {payload.get('path', '')}"
     if action_type == "plan_preview":
         return "Review coordinator execution plan"
+    if action_type == "qa_autofix":
+        return f"QA fix: {payload.get('title', payload.get('file', 'patch'))}"
     return action_type
 
 
@@ -264,6 +272,15 @@ async def _run_executor(action_type: str, payload: dict[str, Any]) -> dict[str, 
             payload.get("text", ""),
             require_user_confirmation=False,
         )
+    if action_type == "slack_send":
+        from tempa.channels.slack.outbound import send_slack_message
+
+        return await send_slack_message(
+            payload.get("channel", ""),
+            payload.get("text", ""),
+            thread_ts=str(payload.get("thread_ts") or ""),
+            require_user_confirmation=False,
+        )
     if action_type == "pc_write":
         from tempa.pc.tools import run_pc_tool_confirmed
 
@@ -286,4 +303,20 @@ async def _run_executor(action_type: str, payload: dict[str, Any]) -> dict[str, 
         context = dict(payload.get("context") or {})
         context["plan_approved"] = True
         return await run_coordinator_full(payload.get("user_message", ""), context)
+    if action_type == "qa_autofix":
+        from tempa.qa.fix.autofix import apply_autofix
+        from tempa.qa.github.auth import get_installation_token
+        from tempa.qa.installations import installation_id_for_repo
+        from tempa.qa.store import update_finding
+
+        repo = str(payload.get("repo") or "")
+        inst_id = installation_id_for_repo(repo)
+        if not inst_id:
+            raise RuntimeError(f"No GitHub installation for {repo}")
+        token = get_installation_token(inst_id)
+        result = apply_autofix({**payload, "token": token})
+        finding_id = str(payload.get("finding_id") or "")
+        if finding_id:
+            update_finding(finding_id, status="fix_applied", github_comment_url=result.get("pr_url"))
+        return result
     raise ValueError(f"No executor for action type: {action_type}")

@@ -16,6 +16,7 @@ const TYPE_COLORS: Record<string, string> = {
   pc_delete:     "border-red-200 bg-red-50 text-red-600",
   pc_mkdir:      "border-amber-200 bg-amber-50 text-amber-700",
   file_transfer: "border-purple-200 bg-purple-50 text-purple-700",
+  qa_autofix:    "border-indigo-200 bg-indigo-50 text-indigo-700",
 }
 
 export function PendingTab() {
@@ -54,7 +55,7 @@ export function PendingTab() {
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
           Pending approvals
         </p>
-        <Badge variant="outline" className="border-primary/25 bg-primary/8 text-xs text-primary">
+        <Badge variant="outline" className="border-border bg-muted text-xs text-primary">
           {actions.length}
         </Badge>
       </div>

@@ -20,6 +20,14 @@ def purge_by_source(source: str) -> int:
         return 0
 
 
+def purge_gmail_message(message_id: str) -> int:
+    return purge_by_source(message_id)
+
+
+def purge_calendar_event(event_id: str) -> int:
+    return purge_by_source(event_id)
+
+
 def purge_meeting_vectors(meeting_id: str) -> int:
     removed = 0
     for src in (meeting_id, f"{meeting_id}:minutes"):

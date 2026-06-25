@@ -67,9 +67,10 @@ def test_begin_google_connect_clears_stale_token(tmp_path, monkeypatch):
     get_settings.cache_clear()
     oauth = __import__("tempa.channels.calendar.oauth", fromlist=["save_google_credentials"])
     oauth.save_google_credentials("test-client.apps.googleusercontent.com", "test-secret")
-    settings = get_settings()
-    settings.google_token_path.parent.mkdir(parents=True, exist_ok=True)
-    settings.google_token_path.write_text('{"token": "old"}', encoding="utf-8")
+    from tempa.security.sessions import secret_file_exists, write_secret_file
+
+    write_secret_file("google/token.json", '{"token": "old"}', encrypt=False)
+    assert secret_file_exists("google/token.json")
 
     mock_flow = MagicMock()
     mock_flow.authorization_url.return_value = ("https://accounts.google.com/o/oauth2/auth?x=1", "state-new")
@@ -79,6 +80,6 @@ def test_begin_google_connect_clears_stale_token(tmp_path, monkeypatch):
         url = begin_google_connect()
 
     assert url.startswith("https://accounts.google.com/")
-    assert not settings.google_token_path.exists()
+    assert not secret_file_exists("google/token.json")
 
     get_settings.cache_clear()

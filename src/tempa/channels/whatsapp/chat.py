@@ -58,7 +58,9 @@ Rules:
 - Never repeat your previous reply verbatim. If they ask again, give the detail they asked for.
 - Lead with the answer or what you did; skip filler ("Sure!", "Great question!").
 - Keep replies short (1–4 sentences) unless they ask for detail.
-- Use the conversation thread, calendar block, and memory when relevant — cite specifics (event titles, times).
+- Use the conversation thread, calendar block, inbox block, and memory when relevant — cite specifics (event titles, times, email subjects).
+- Distinguish canceled vs active calendar events; only reference meeting minutes when archive data confirms them.
+- Use conversation thread for follow-ups; do not ask the user to repeat what was just discussed.
 - ONLY say you created, deleted, scheduled, or sent something if "Actions just taken" confirms it.
 - NEVER claim you sent an email unless "Actions just taken" says an email was sent.
 - NEVER claim you sent a calendar invite unless "Actions just taken" confirms invites were sent.
@@ -287,17 +289,36 @@ def _fetch_memory_answer(user_message: str, *, timeout_s: float = 4.0) -> str:
         return "No matching memory yet."
 
 
+def _sync_before_read_sync(user_message: str, *, include_calendar: bool = False) -> None:
+    from tempa.agents.intent import wants_calendar_full, wants_gmail_full
+
+    if wants_gmail_full(user_message):
+        try:
+            from tempa.channels.gmail.snapshot import refresh_gmail_snapshot
+
+            refresh_gmail_snapshot()
+        except Exception as exc:
+            logger.warning("Gmail sync-before-read failed: %s", exc)
+
+    if wants_calendar_full(user_message, include_calendar=include_calendar):
+        try:
+            from tempa.channels.calendar.sync import sync_calendar_snapshot
+
+            sync_calendar_snapshot()
+        except Exception as exc:
+            logger.warning("Calendar sync-before-read failed: %s", exc)
+
+
 def _run_whatsapp_reply_sync(user_message: str, context: dict[str, Any]) -> str:
     router = get_router()
 
-    from tempa.channels.whatsapp.conversation import get_recent_messages
-
-    recent = get_recent_messages(12)
-
     include_calendar = _wants_calendar(user_message)
+    _sync_before_read_sync(user_message, include_calendar=include_calendar)
     action_successes, action_failures = _run_actions(user_message, context)
     action_notes = action_successes + action_failures
     memory_answer = _fetch_memory_answer(user_message)
+    if memory_answer == "No matching memory yet.":
+        memory_answer = "Memory search unavailable."
 
     from tempa.channels.calendar.events import (
         wants_add_guest,
@@ -312,7 +333,19 @@ def _run_whatsapp_reply_sync(user_message: str, context: dict[str, Any]) -> str:
         or wants_send_calendar_invite(user_message)
         or wants_add_guest(user_message)
     ):
-        return _format_action_reply(action_successes, action_failures)
+        from tempa.agents.grounding import build_grounding_pack
+        from tempa.router.verifier import verify_reply
+
+        action_reply = _format_action_reply(action_successes, action_failures)
+        pack = build_grounding_pack(
+            user_message,
+            context,
+            action_notes=action_notes,
+            memory_answer=memory_answer,
+            include_calendar=include_calendar,
+        )
+        ok, verified = verify_reply(action_reply, pack)
+        return verified if not ok else action_reply
 
     from tempa.agents.grounding import build_grounding_pack, format_grounding_for_prompt
     from tempa.router.verifier import verify_reply
@@ -437,14 +470,15 @@ async def run_whatsapp_reply(user_message: str, context: dict[str, Any] | None =
             return await _run_gmail_whatsapp_reply(user_message, context)
 
         if intent == WhatsAppIntent.COORDINATOR:
-            from tempa.agents.graph import run_coordinator
+            from tempa.agents.graph import run_coordinator_full
 
             merged_context = {
                 **context,
                 "channel": "whatsapp",
                 "inbound_whatsapp": True,
             }
-            return await run_coordinator(user_message, merged_context)
+            result = await run_coordinator_full(user_message, merged_context)
+            return str(result.get("response") or "")
 
         if intent in (WhatsAppIntent.CHAT, WhatsAppIntent.CALENDAR):
             loop = asyncio.get_running_loop()

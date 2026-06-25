@@ -139,9 +139,9 @@ def authorization_url() -> str:
 
 def begin_google_connect() -> str:
     """Start a fresh OAuth flow (drops any stale token/scopes)."""
-    settings = get_settings()
-    if settings.google_token_path.exists():
-        settings.google_token_path.unlink()
+    from tempa.security.sessions import delete_secret_file
+
+    delete_secret_file("google/token.json")
     _clear_pending_oauth()
     return authorization_url()
 

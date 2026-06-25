@@ -1,29 +1,62 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
-from tempa.channels.gmail.session_state import explain_last_action as explain_gmail_action
-from tempa.channels.gmail.session_state import record_gmail_action
+from tempa.channels.gmail.session_state import record_gmail_action as _record_gmail
+from tempa.channels.whatsapp.inbound_queue import load_persisted_actions, save_persisted_actions
+
+logger = logging.getLogger(__name__)
 
 _last_actions: dict[str, dict[str, Any]] = {}
 _last_action_channel: str | None = None
 _last_action_at: float = 0.0
+_bootstrapped = False
+
+
+def _bootstrap() -> None:
+    global _last_actions, _last_action_channel, _last_action_at, _bootstrapped
+    if _bootstrapped:
+        return
+    _bootstrapped = True
+    data = load_persisted_actions()
+    _last_actions = dict(data.get("actions") or {})
+    _last_action_channel = data.get("last_channel")
+    _last_action_at = float(data.get("last_at") or 0)
+
+
+def _persist() -> None:
+    save_persisted_actions(
+        {
+            "actions": _last_actions,
+            "last_channel": _last_action_channel,
+            "last_at": _last_action_at,
+        }
+    )
 
 
 def record_action(channel: str, action: dict[str, Any]) -> None:
     global _last_action_channel, _last_action_at
+    _bootstrap()
     stamped = {**action, "_ts": time.time()}
     _last_actions[channel] = stamped
     _last_action_channel = channel
     _last_action_at = stamped["_ts"]
     if channel == "gmail":
-        record_gmail_action(action)
+        _record_gmail(action)
+    try:
+        _persist()
+    except Exception as exc:
+        logger.warning("Failed to persist action state: %s", exc)
 
 
 def explain_last_action(channel: str | None = None) -> str | None:
+    from tempa.channels.gmail.session_state import explain_last_action as explain_gmail_action
     from tempa.core.pending_actions import list_pending_actions
     from tempa.core.task_store import list_active_tasks
+
+    _bootstrap()
 
     pending = list_pending_actions(status="pending")
     if pending:
