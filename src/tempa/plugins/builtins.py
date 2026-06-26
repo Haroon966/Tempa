@@ -218,6 +218,31 @@ def _register_jira_tools() -> None:
     )
 
 
+def _register_notion_tools() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from tempa.varys.notion.client import notion_configured, query_harness_database
+
+    if not notion_configured():
+        return
+
+    def notion_list_recent(days: int = 7) -> dict[str, Any]:
+        window = max(1, min(int(days), 90))
+        since = (datetime.now(timezone.utc) - timedelta(days=window)).isoformat()
+        pages = query_harness_database(since_iso=since)
+        return {"status": "ok", "count": len(pages), "pages": pages}
+
+    register_tool(
+        "notion.list_recent",
+        "List recently updated pages from the Notion harness database",
+        notion_list_recent,
+        input_schema={
+            "type": "object",
+            "properties": {"days": {"type": "integer", "default": 7}},
+        },
+    )
+
+
 def register_builtin_tools() -> None:
     """Register first-party plugin tools (FR-PLUGIN-01/02)."""
     _register_memory_tools()
@@ -226,6 +251,7 @@ def register_builtin_tools() -> None:
     _register_meet_tools()
     _register_preference_tools()
     _register_jira_tools()
+    _register_notion_tools()
 
     from tempa.pc import tools as pc_tools
 

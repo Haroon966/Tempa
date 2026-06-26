@@ -1028,6 +1028,15 @@ if (window.opener) {{
             session = ensure_session(body.session_id)
             session_id = session["id"]
             append_message(session_id, "user", body.message)
+            asyncio.create_task(
+                asyncio.to_thread(
+                    ingest_text,
+                    body.message,
+                    tool="dashboard",
+                    source=session_id,
+                    tags=["inbound"],
+                )
+            )
             await queue.put(("run_started", {"run_id": run_id, "session_id": session_id}))
 
             async def on_token(delta: str) -> None:

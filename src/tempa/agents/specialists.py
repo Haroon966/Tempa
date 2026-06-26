@@ -940,6 +940,7 @@ def get_settings_safe():
 
 
 def _heuristic_subtasks(user_message: str, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    from tempa.agents.intent import wants_jira, wants_notion
     from tempa.agents.tool_policy import allowed_agents
 
     tasks: list[dict[str, Any]] = [{"agent": "rag", "task": user_message}]
@@ -979,6 +980,11 @@ def _heuristic_subtasks(user_message: str, context: dict[str, Any] | None = None
         )
     ) and (permitted is None or "qa" in permitted):
         tasks.append({"agent": "qa", "task": user_message})
+    if (wants_jira(user_message) or wants_notion(user_message)) and (
+        permitted is None or "plugin" in permitted
+    ):
+        if not any(t.get("agent") == "plugin" for t in tasks):
+            tasks.append({"agent": "plugin", "task": user_message})
     return tasks
 
 

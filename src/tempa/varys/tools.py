@@ -81,6 +81,17 @@ async def invoke_runtime_tools(user_message: str, context: dict[str, Any] | None
         except Exception as exc:
             logger.warning("Varys Jira tool failed: %s", exc)
 
+    from tempa.agents.intent import wants_notion
+
+    if wants_notion(user_message):
+        from tempa.agents.specialists import run_plugin_agent
+
+        try:
+            result = await run_plugin_agent(user_message, ctx)
+            parts.append(_format_agent_block("Notion", result))
+        except Exception as exc:
+            logger.warning("Varys Notion tool failed: %s", exc)
+
     if ctx.get("inbound_slack") or ctx.get("channel") == "slack":
         from tempa.agents.specialists import _slack_read_query_from_context, run_channel_agent
         from tempa.channels.slack.lookup import wants_slack_read_intent, wants_slack_invite_help

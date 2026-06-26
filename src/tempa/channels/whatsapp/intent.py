@@ -100,6 +100,9 @@ def _is_resend_followup(text: str) -> bool:
 
 
 def route_whatsapp_intent(text: str, context: dict[str, Any] | None = None) -> WhatsAppIntent:
+    from tempa.agents.intent import wants_jira, wants_notion, wants_repo_qa
+    from tempa.varys.manager import is_go_signal
+
     context = context or {}
     lower = text.lower()
 
@@ -108,6 +111,9 @@ def route_whatsapp_intent(text: str, context: dict[str, Any] | None = None) -> W
 
     if _is_resend_followup(text):
         return WhatsAppIntent.ACTION_STATUS_FOLLOWUP
+
+    if is_go_signal(text):
+        return WhatsAppIntent.COORDINATOR
 
     if _MEET_URL_RE.search(text) or (lower.startswith("join ") and "meet.google.com" in lower):
         return WhatsAppIntent.MEET_JOIN
@@ -122,6 +128,9 @@ def route_whatsapp_intent(text: str, context: dict[str, Any] | None = None) -> W
         return WhatsAppIntent.COORDINATOR
 
     if "github.com" in lower or any(h in lower for h in _GITHUB_HINTS):
+        return WhatsAppIntent.COORDINATOR
+
+    if wants_jira(text) or wants_notion(text) or wants_repo_qa(text):
         return WhatsAppIntent.COORDINATOR
 
     if context.get("meet_url"):

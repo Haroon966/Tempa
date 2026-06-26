@@ -150,6 +150,21 @@ _JIRA_HINTS = (
 _JIRA_ISSUE_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 
 
+_NOTION_HINTS = ("notion", "harness db", "harness database")
+_NOTION_URL_RE = re.compile(r"notion\.(?:so|site)", re.I)
+
+
+def wants_notion(user_message: str) -> bool:
+    lower = user_message.lower()
+    if any(h in lower for h in _NOTION_HINTS):
+        return True
+    if _NOTION_URL_RE.search(user_message or ""):
+        return True
+    if is_follow_up(user_message) and "notion" in lower:
+        return True
+    return False
+
+
 def wants_jira(user_message: str) -> bool:
     lower = user_message.lower()
     if any(h in lower for h in _JIRA_HINTS):
@@ -174,6 +189,8 @@ def has_non_slack_tool_intent(user_message: str) -> bool:
         return False
 
     if wants_jira(user_message):
+        return True
+    if wants_notion(user_message):
         return True
     if wants_gmail_full(user_message):
         return True

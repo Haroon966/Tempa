@@ -456,6 +456,106 @@ async def _run_langgraph_coordinator_full(
     }
 
 
+def _is_coordinator_owner(context: dict[str, Any]) -> bool:
+    from tempa.settings import get_settings
+    from tempa.varys.config import load_varys_config
+
+    channel = str(context.get("channel") or "dashboard")
+    settings = get_settings()
+    if channel == "slack":
+        cfg = load_varys_config()
+        owner_id = cfg.owner_slack_user_id or settings.slack_owner_user_id
+        slack_user = str(context.get("slack_user_id") or "")
+        return bool(owner_id and slack_user == owner_id)
+    if channel == "whatsapp":
+        owner = (settings.whatsapp_owner_number or "").strip()
+        sender = str(context.get("whatsapp_number") or context.get("from_number") or "")
+        return bool(owner and sender and owner in sender)
+    return channel == "dashboard"
+
+
+async def _emit_harness_go_signal(ctx: dict[str, Any], user_message: str) -> dict[str, Any]:
+    from tempa.varys import harness
+
+    channel = str(ctx.get("channel") or "dashboard")
+    thread_ts = str(ctx.get("slack_thread_ts") or ctx.get("thread_ts") or "")
+    db = harness.get_db()
+    try:
+        origin = f"{ctx.get('slack_channel_id', channel)}-{thread_ts or 'main'}"
+        entity_id = harness.register_entity(db, channel, origin, "thread")
+        harness.insert_event(
+            db,
+            event_id=f"{channel}-go-{thread_ts or 'main'}-{user_message[:20]}",
+            source=channel,
+            event_type="message.go_signal",
+            context_key=entity_id,
+            payload={"thread_ts": thread_ts, "channel": ctx.get("slack_channel_id", channel)},
+            priority="high",
+        )
+    finally:
+        db.close()
+    return {
+        "response": "Approved — I'll proceed with the plan on the next orchestrator tick.",
+        "sources": [],
+        "paused": False,
+        "pending_actions": [],
+        "artifacts": [],
+    }
+
+
+async def _try_go_signal_approval(
+    user_message: str, context: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    from tempa.varys.manager import is_go_signal
+
+    if not is_go_signal(user_message):
+        return None
+
+    ctx = dict(context or {})
+    if not _is_coordinator_owner(ctx):
+        return {
+            "response": "Only the owner can approve with go/approve.",
+            "sources": [],
+            "paused": False,
+            "pending_actions": [],
+            "artifacts": [],
+        }
+
+    from tempa.core.pending_actions import execute_pending_action, list_pending_actions
+
+    channel = str(ctx.get("channel") or "dashboard")
+    pending = list_pending_actions(status="pending")
+    channel_pending = [a for a in pending if a.get("source_channel") == channel]
+    candidates = channel_pending or pending
+    if candidates:
+        action = candidates[0]
+        result = await execute_pending_action(action["id"])
+        title = action.get("title") or action.get("type") or "action"
+        if result.get("status") == "executed":
+            exec_result = result.get("result") or {}
+            if isinstance(exec_result, dict) and exec_result.get("response"):
+                reply = str(exec_result["response"])
+            else:
+                reply = f"Approved and executed: {title}"
+            return {
+                "response": reply,
+                "sources": [],
+                "paused": False,
+                "pending_actions": [],
+                "artifacts": [],
+            }
+        reason = result.get("reason") or "unknown error"
+        return {
+            "response": f"Approval failed: {reason}",
+            "sources": [],
+            "paused": False,
+            "pending_actions": [],
+            "artifacts": [],
+        }
+
+    return await _emit_harness_go_signal(ctx, user_message)
+
+
 def _should_use_varys(user_message: str, context: dict[str, Any] | None) -> bool:
     from tempa.settings import get_settings
     from tempa.varys.manager import is_go_signal, is_work_request
@@ -483,6 +583,9 @@ def _should_use_varys(user_message: str, context: dict[str, Any] | None) -> bool
 
 
 async def run_coordinator_full(user_message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    go_result = await _try_go_signal_approval(user_message, context)
+    if go_result is not None:
+        return go_result
     if _should_use_varys(user_message, context):
         from tempa.varys.coordinator import run_varys_coordinator
 

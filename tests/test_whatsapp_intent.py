@@ -31,3 +31,21 @@ def test_route_chat_default():
 def test_github_url_routes_to_coordinator():
     text = "https://github.com/Haroon966/Wavo scan this repo"
     assert route_whatsapp_intent(text) == WhatsAppIntent.COORDINATOR
+
+
+def test_go_routes_to_coordinator():
+    assert route_whatsapp_intent("go") == WhatsAppIntent.COORDINATOR
+    assert route_whatsapp_intent("Approve") == WhatsAppIntent.COORDINATOR
+
+
+def test_jira_routes_to_coordinator():
+    assert route_whatsapp_intent("list my jira projects") == WhatsAppIntent.COORDINATOR
+    assert route_whatsapp_intent("what is the status of ENG-42") == WhatsAppIntent.COORDINATOR
+
+
+def test_notion_routes_to_coordinator():
+    assert route_whatsapp_intent("show notion pages") == WhatsAppIntent.COORDINATOR
+
+
+def test_qa_routes_to_coordinator():
+    assert route_whatsapp_intent("ci failed on main branch") == WhatsAppIntent.COORDINATOR

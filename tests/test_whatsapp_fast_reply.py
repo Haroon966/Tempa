@@ -112,9 +112,9 @@ async def test_whatsapp_pc_task_uses_coordinator(monkeypatch):
     with (
         patch("tempa.channels.whatsapp.reply.is_auto_reply_paused", return_value=False),
         patch(
-            "tempa.agents.graph.run_coordinator",
+            "tempa.agents.graph.run_coordinator_full",
             new_callable=AsyncMock,
-            return_value="Opened VS Code for you.",
+            return_value={"response": "Opened VS Code for you."},
         ) as coordinator,
         patch(
             "tempa.channels.whatsapp.reply.send_whatsapp_message",
