@@ -59,6 +59,12 @@ export interface ConnectionInfo {
   owner_configured?: boolean
   owner_user_id?: string | null
   last_event_at?: string | null
+  base_url?: string
+  email?: string
+  default_project?: string
+  display_name?: string
+  site?: string
+  enabled?: boolean
 }
 
 export interface AgentInfo {

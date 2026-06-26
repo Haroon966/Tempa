@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     slack_app_token: str = ""
     slack_owner_user_id: str = ""
     slack_allowed_user_ids: str = ""
+    slack_allow_all: bool = False
     vector_db: str = "chroma"
     calendar_poll_seconds: int = 30
     meet_trigger_before_minutes: int = 2
@@ -49,6 +50,8 @@ class Settings(BaseSettings):
     github_app_id: str = ""
     github_private_key: str = ""
     github_webhook_secret: str = ""
+    github_token: str = ""
+    github_repos: str = ""
     tempa_qa_enabled: bool = True
     tempa_qa_scan_interval_minutes: int = 60
     tempa_qa_max_branches_per_repo: int = 50
@@ -65,6 +68,11 @@ class Settings(BaseSettings):
     notion_api_key: str = ""
     notion_harness_db_id: str = ""
     notion_enabled: bool = False
+    jira_base_url: str = ""
+    jira_email: str = ""
+    jira_api_token: str = ""
+    jira_enabled: bool = False
+    jira_default_project: str = ""
     claude_code_path: str = "claude"
     varys_claude_cli_only: bool = True
 
@@ -113,6 +121,7 @@ class Settings(BaseSettings):
             self.sessions_dir / "gmail",
             self.sessions_dir / "whatsapp",
             self.sessions_dir / "slack",
+            self.sessions_dir / "jira",
             self.sessions_dir / "qa",
             self.tempa_data_dir / "qa" / "worktrees",
             self.db_path.parent,

@@ -96,6 +96,45 @@ export async function fetchSlackStatus() {
   return request<SlackStatus>("/api/connections/slack")
 }
 
+export interface JiraStatus {
+  connected?: boolean
+  configured?: boolean
+  status?: string
+  detail?: string
+  base_url?: string
+  email?: string
+  default_project?: string
+  display_name?: string
+  enabled?: boolean
+}
+
+export async function fetchJiraStatus() {
+  return request<JiraStatus>("/api/connections/jira")
+}
+
+export async function connectJira(body: {
+  base_url: string
+  email: string
+  api_token?: string
+  default_project?: string
+  enabled?: boolean
+}) {
+  return request<{ status: string; connected: boolean; detail?: string; display_name?: string }>(
+    "/api/connections/jira",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  )
+}
+
+export async function disconnectJira() {
+  return request<{ status: string; connected: boolean }>("/api/connections/jira", {
+    method: "DELETE",
+  })
+}
+
 export async function restartWhatsApp() {
   return request<WhatsAppStatus>("/api/connections/whatsapp/restart", { method: "POST" })
 }
@@ -506,11 +545,18 @@ export async function* streamChat(
   }
 }
 
+export interface QaRepoEntry {
+  repo: string
+  source: "env" | "config" | "dashboard" | "github_app"
+  removable: boolean
+}
+
 export interface QaSummary {
   enabled: boolean
   configured: boolean
   groq_configured?: boolean
   github_configured?: boolean
+  github_auth_mode?: "pat" | "app" | null
   qa_engine?: string
   repos_monitored?: number
   branches_scanned?: number
@@ -562,6 +608,24 @@ export interface QaJob {
   error?: string
 }
 
+export async function fetchQaRepos() {
+  return request<{ repos: QaRepoEntry[] }>("/api/qa/repos")
+}
+
+export async function postQaRepo(repo: string) {
+  return request<{ status: string; repo: { repo: string } }>("/api/qa/repos", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo }),
+  })
+}
+
+export async function deleteQaRepo(repo: string) {
+  return request<{ status: string; repo: string }>(`/api/qa/repos/${encodeURIComponent(repo)}`, {
+    method: "DELETE",
+  })
+}
+
 export async function fetchQaSummary() {
   return request<QaSummary>("/api/qa/summary")
 }
@@ -579,11 +643,11 @@ export async function fetchQaJobs() {
   return request<{ jobs: QaJob[] }>("/api/qa/jobs")
 }
 
-export async function postQaScan(repo: string, branch?: string) {
-  return request<{ status: string; job_id: string }>("/api/qa/scan", {
+export async function postQaScan(repo: string, branch?: string, prNumber?: number) {
+  return request<{ status: string; job_id?: string; action_id?: string; message?: string }>("/api/qa/scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo, branch: branch ?? null }),
+    body: JSON.stringify({ repo, branch: branch ?? null, pr_number: prNumber ?? null }),
   })
 }
 

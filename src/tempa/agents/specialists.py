@@ -38,39 +38,47 @@ def _extract_meet_url(text: str) -> str | None:
 
 
 def _slack_read_query_from_context(user_message: str, context: dict[str, Any]) -> str:
+    from tempa.agents.intent import has_non_slack_tool_intent, is_follow_up
     from tempa.channels.slack.lookup import parse_slack_read_query, wants_slack_read_intent
 
     text = (user_message or "").strip()
-    now = parse_slack_read_query(text)
+    if has_non_slack_tool_intent(text):
+        return text
 
+    now = parse_slack_read_query(text)
     channel_id = str(context.get("slack_channel_id") or "")
     thread_ts = str(context.get("slack_thread_ts") or "")
     prior_user = ""
     prior_channel = ""
     prior_text = ""
-    if channel_id:
-        prior = get_slack_recent_messages(12, channel_id=channel_id, thread_ts=thread_ts)
-        for row in reversed(prior):
-            if row.get("role") != "user":
-                continue
-            candidate = str(row.get("text") or "").strip()
-            if candidate == text or not wants_slack_read_intent(candidate):
-                continue
-            prev = parse_slack_read_query(candidate)
-            prior_user = prev.get("user") or ""
-            prior_channel = prev.get("channel") or ""
-            prior_text = candidate
-            break
 
-    channel = now.get("channel") or prior_channel
-    user = now.get("user") or prior_user
-    if channel and user:
-        return f"latest message from {user} in {channel} channel"
-    if channel:
-        return f"latest message in {channel} channel"
+    if wants_slack_read_intent(text) or is_follow_up(text):
+        if channel_id:
+            prior = get_slack_recent_messages(12, channel_id=channel_id, thread_ts=thread_ts)
+            for row in reversed(prior):
+                if row.get("role") != "user":
+                    continue
+                candidate = str(row.get("text") or "").strip()
+                if candidate == text or not wants_slack_read_intent(candidate):
+                    continue
+                prev = parse_slack_read_query(candidate)
+                prior_user = prev.get("user") or ""
+                prior_channel = prev.get("channel") or ""
+                prior_text = candidate
+                break
+
     if wants_slack_read_intent(text):
+        channel = now.get("channel") or prior_channel
+        user = now.get("user") or prior_user
+        if channel and user:
+            return f"latest message from {user} in {channel} channel"
+        if channel:
+            return f"latest message in {channel} channel"
         return text
-    return prior_text or text
+
+    if is_follow_up(text) and prior_text:
+        return prior_text
+    return text
 
 
 async def run_channel_agent(task: str, context: dict[str, Any]) -> str:
@@ -83,6 +91,7 @@ async def run_channel_agent(task: str, context: dict[str, Any]) -> str:
     lower = f"{user_message} {task}".lower()
 
     if context.get("channel") == "slack" or context.get("inbound_slack"):
+        from tempa.agents.intent import has_non_slack_tool_intent
         from tempa.channels.slack.lookup import (
             lookup_latest_slack_message,
             parse_slack_read_query,
@@ -97,12 +106,13 @@ async def run_channel_agent(task: str, context: dict[str, Any]) -> str:
                 ensure_ascii=False,
             )
 
-        read_query = _slack_read_query_from_context(user_message, context)
-        if not wants_slack_read_intent(read_query):
-            read_query = _slack_read_query_from_context(task, context)
-        if wants_slack_read_intent(read_query):
-            result = await asyncio.to_thread(lookup_latest_slack_message, read_query)
-            return json.dumps(result, ensure_ascii=False)
+        if not has_non_slack_tool_intent(user_message) and not has_non_slack_tool_intent(task):
+            read_query = _slack_read_query_from_context(user_message, context)
+            if not wants_slack_read_intent(read_query):
+                read_query = _slack_read_query_from_context(task, context)
+            if wants_slack_read_intent(read_query):
+                result = await asyncio.to_thread(lookup_latest_slack_message, read_query)
+                return json.dumps(result, ensure_ascii=False)
 
     if context.get("channel") == "slack" or "slack" in lower:
         from tempa.channels.slack.outbound import open_dm_for_user, send_slack_message
@@ -670,9 +680,6 @@ async def run_plugin_agent(task: str, context: dict[str, Any]) -> str:
 async def run_qa_agent(task: str, context: dict[str, Any]) -> str:
     await event_bus.publish_json("qa", "start", task[:120])
     from tempa.qa.config import qa_enabled
-    from tempa.qa.deep_review.lite import parse_pr_from_text
-    from tempa.qa.installations import installation_id_for_repo, list_repos
-    from tempa.qa.job_store import enqueue_scan
     from tempa.qa.store import list_findings, summary_stats
 
     if not qa_enabled():
@@ -696,16 +703,13 @@ async def run_qa_agent(task: str, context: dict[str, Any]) -> str:
         )
 
     if any(k in lower for k in ("scan", "check branch", "run qa", "audit")):
-        repos = list_repos()
-        if not repos:
-            return json.dumps(
-                {"status": "error", "message": "No GitHub repos installed. Install the Tempa GitHub App."},
-                ensure_ascii=False,
-            )
-        jobs = []
-        for repo in repos:
-            jobs.append(enqueue_scan(repo, job_type="repo_scan"))
-        return json.dumps({"status": "queued", "jobs": jobs, "repos": repos}, ensure_ascii=False)
+        from tempa.qa.scan_request import handle_github_scan_request
+
+        channel = str(context.get("channel") or context.get("source_channel") or "coordinator")
+        combined = f"{task} {context.get('user_message', '')}"
+        result = handle_github_scan_request(combined, source_channel=channel)
+        await event_bus.publish_json("qa", "completed", str(result.get("status", "")))
+        return json.dumps(result, ensure_ascii=False)
 
     payload = {
         "status": "ok",
@@ -1389,7 +1393,7 @@ async def merge_results_stream(
                 await on_token(final)
             return final, sources
 
-    if channel == "slack" and "channel" in results:
+    if (channel == "slack" or context.get("inbound_slack")) and "channel" in results:
         short = _slack_read_reply(results["channel"])
         if not short:
             short = _slack_send_reply(results["channel"])

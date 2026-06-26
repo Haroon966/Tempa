@@ -37,14 +37,70 @@ def list_installations() -> list[dict[str, Any]]:
         return list(_read().get("installations") or [])
 
 
+def _repos_from_config() -> list[str]:
+    from tempa.qa.config import load_qa_config
+    from tempa.settings import get_settings
+
+    repos: set[str] = set()
+    env_repos = get_settings().github_repos.strip()
+    if env_repos:
+        for part in env_repos.split(","):
+            name = part.strip()
+            if name and "/" in name:
+                repos.add(name)
+    for entry in load_qa_config().get("repos") or []:
+        name = str(entry).strip()
+        if name and "/" in name:
+            repos.add(name)
+    return sorted(repos)
+
+
 def list_repos() -> list[str]:
-    repos: list[str] = []
+    from tempa.qa.allowed_repos import list_dynamic_repos
+
+    repos: set[str] = set(_repos_from_config())
+    repos.update(list_dynamic_repos())
     for inst in list_installations():
         for repo in inst.get("repos") or []:
             full = str(repo.get("full_name") or "")
             if full:
-                repos.append(full)
-    return sorted(set(repos))
+                repos.add(full)
+    return sorted(repos)
+
+
+def list_repos_detail() -> list[dict[str, Any]]:
+    from tempa.qa.allowed_repos import list_dynamic_repos
+    from tempa.qa.config import load_qa_config
+    from tempa.settings import get_settings
+
+    details: dict[str, dict[str, Any]] = {}
+
+    env_repos = get_settings().github_repos.strip()
+    if env_repos:
+        for part in env_repos.split(","):
+            name = part.strip()
+            if name and "/" in name:
+                details[name] = {"repo": name, "source": "env", "removable": False}
+
+    for entry in load_qa_config().get("repos") or []:
+        name = str(entry).strip()
+        if name and "/" in name:
+            details[name] = {"repo": name, "source": "config", "removable": False}
+
+    for name in list_dynamic_repos():
+        details[name] = {"repo": name, "source": "dashboard", "removable": True}
+
+    for inst in list_installations():
+        for repo in inst.get("repos") or []:
+            full = str(repo.get("full_name") or "")
+            if full:
+                details[full] = {
+                    "repo": full,
+                    "source": "github_app",
+                    "removable": False,
+                }
+
+    return [details[k] for k in sorted(details)]
 
 
 def upsert_installation(installation_id: int, account: str, repos: list[dict[str, Any]]) -> None:

@@ -480,6 +480,20 @@ async def run_whatsapp_reply(user_message: str, context: dict[str, Any] | None =
             result = await run_coordinator_full(user_message, merged_context)
             return str(result.get("response") or "")
 
+        from tempa.settings import get_settings
+
+        mode = (get_settings().tempa_coordinator or "langgraph").strip().lower()
+        if mode == "varys" and intent == WhatsAppIntent.CHAT and not _is_trivial_chat(user_message):
+            from tempa.agents.graph import run_coordinator_full
+
+            merged_context = {
+                **context,
+                "channel": "whatsapp",
+                "inbound_whatsapp": True,
+            }
+            result = await run_coordinator_full(user_message, merged_context)
+            return str(result.get("response") or "")
+
         if intent in (WhatsAppIntent.CHAT, WhatsAppIntent.CALENDAR):
             loop = asyncio.get_running_loop()
             return await asyncio.wait_for(

@@ -9,6 +9,7 @@ import {
 } from "@/lib/api"
 import { EmailPreview } from "@/components/pending/email-preview"
 import { WhatsAppPreview } from "@/components/pending/whatsapp-preview"
+import { QaRepoScanPreview } from "@/components/pending/qa-repo-scan-preview"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
@@ -95,6 +96,11 @@ export function PendingActionCard({
   }
 
   const isPlan = preview.type === "plan_preview"
+  const isVarysTicket = preview.type === "varys_ticket"
+  const isJiraAction =
+    preview.type === "jira_create_issue" ||
+    preview.type === "jira_comment" ||
+    preview.type === "jira_transition"
 
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-3 text-left sm:p-4">
@@ -103,7 +109,13 @@ export function PendingActionCard({
           <ShieldCheckIcon className="size-4 shrink-0 text-amber-700" />
           <div>
             <p className="text-sm font-medium text-amber-900">
-              {isPlan ? "Plan awaiting approval" : "Action awaiting approval"}
+              {isPlan
+                ? "Plan awaiting approval"
+                : isVarysTicket
+                  ? "Varys work ticket awaiting approval"
+                  : isJiraAction
+                    ? "Jira action awaiting approval"
+                    : "Action awaiting approval"}
             </p>
             <Badge variant="outline" className="mt-1 text-[10px] text-amber-800">
               {preview.type}
@@ -130,6 +142,38 @@ export function PendingActionCard({
         </div>
       )}
 
+      {fullAction && preview.type === "qa_repo_scan" && !editing && (
+        <div className="mt-3 rounded-lg border border-amber-200/80 bg-white/70 p-3">
+          <QaRepoScanPreview payload={fullAction} />
+        </div>
+      )}
+
+      {fullAction && isJiraAction && !editing && (
+        <div className="mt-3 space-y-1 rounded-lg border border-amber-200/80 bg-white/70 p-3 text-sm">
+          {preview.type === "jira_create_issue" && (
+            <>
+              <p className="font-medium">{String(fullAction.summary ?? "")}</p>
+              {fullAction.project && <p className="text-xs text-muted-foreground">Project: {String(fullAction.project)}</p>}
+              {fullAction.description && (
+                <p className="whitespace-pre-wrap text-muted-foreground">{String(fullAction.description)}</p>
+              )}
+            </>
+          )}
+          {preview.type === "jira_comment" && (
+            <>
+              <p className="font-mono text-xs">{String(fullAction.issue_key ?? "")}</p>
+              <p className="whitespace-pre-wrap">{String(fullAction.body ?? "")}</p>
+            </>
+          )}
+          {preview.type === "jira_transition" && (
+            <>
+              <p className="font-mono text-xs">{String(fullAction.issue_key ?? "")}</p>
+              <p>→ {String(fullAction.transition ?? "")}</p>
+            </>
+          )}
+        </div>
+      )}
+
       {editing && (
         <textarea
           value={editBody}
@@ -147,6 +191,16 @@ export function PendingActionCard({
             disabled={streaming || loading}
           >
             Continue plan
+          </Button>
+        ) : isVarysTicket ? (
+          <Button
+            size="sm"
+            className="h-9 cursor-pointer gap-1"
+            onClick={() => void handleApprove()}
+            disabled={loading || streaming}
+          >
+            <CheckIcon className="size-3.5" />
+            Approve work
           </Button>
         ) : (
           <>

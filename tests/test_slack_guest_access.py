@@ -17,12 +17,24 @@ from tempa.channels.slack.users import GUEST_PRIVATE_COMING_SOON, is_privileged_
 def test_is_privileged_slack_user(monkeypatch):
     monkeypatch.setenv("SLACK_OWNER_USER_ID", "U_OWNER")
     monkeypatch.setenv("SLACK_ALLOWED_USER_IDS", "U_FRIEND")
+    monkeypatch.setenv("SLACK_ALLOW_ALL", "false")
     from tempa.settings import get_settings
 
     get_settings.cache_clear()
     assert is_privileged_slack_user("U_OWNER") is True
     assert is_privileged_slack_user("U_FRIEND") is True
     assert is_privileged_slack_user("U_GUEST") is False
+    get_settings.cache_clear()
+
+
+def test_slack_allow_all_grants_privileged(monkeypatch):
+    monkeypatch.setenv("SLACK_OWNER_USER_ID", "")
+    monkeypatch.setenv("SLACK_ALLOWED_USER_IDS", "")
+    monkeypatch.setenv("SLACK_ALLOW_ALL", "true")
+    from tempa.settings import get_settings
+
+    get_settings.cache_clear()
+    assert is_privileged_slack_user("U_ANYONE") is True
     get_settings.cache_clear()
 
 

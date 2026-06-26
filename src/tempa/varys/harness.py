@@ -261,6 +261,72 @@ def finish_session(db: sqlite3.Connection, session_id: str, *, status: str = "do
         db.commit()
 
 
+def update_ticket_status(db: sqlite3.Connection, ticket_id: str, status: str) -> bool:
+    with _db_lock:
+        db.execute(
+            "UPDATE tickets SET status=?, updated_at=? WHERE id=?",
+            (status, datetime.now(timezone.utc).isoformat(), ticket_id),
+        )
+        db.commit()
+        return db.execute("SELECT changes()").fetchone()[0] > 0
+
+
+def get_ticket(db: sqlite3.Connection, ticket_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        "SELECT id, title, status, origin_channel, origin_thread, payload FROM tickets WHERE id=?",
+        (ticket_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "title": row[1],
+        "status": row[2],
+        "origin_channel": row[3],
+        "origin_thread": row[4],
+        "payload": json.loads(row[5] or "{}"),
+    }
+
+
+def approve_varys_ticket(ticket_id: str) -> dict[str, Any]:
+    """Owner approval from dashboard — enqueue go signal and mark ticket in progress."""
+    db = get_db()
+    try:
+        ticket = get_ticket(db, ticket_id)
+        if not ticket:
+            return {"status": "error", "reason": "ticket_not_found"}
+        if ticket["status"] not in {"open", "in_progress"}:
+            return {"status": "error", "reason": f"ticket_status_{ticket['status']}"}
+
+        channel = ticket.get("origin_channel") or "dashboard"
+        thread_ts = ticket.get("origin_thread") or "main"
+        origin = f"{channel}-{thread_ts}"
+        entity_id = register_entity(db, channel, origin, "thread")
+        inserted = insert_event(
+            db,
+            event_id=f"{channel}-go-{ticket_id}",
+            source=channel,
+            event_type="message.go_signal",
+            context_key=entity_id,
+            payload={
+                "ticket_id": ticket_id,
+                "thread_ts": thread_ts,
+                "channel": channel,
+                "title": ticket.get("title", ""),
+            },
+            priority="high",
+        )
+        update_ticket_status(db, ticket_id, "in_progress")
+        return {
+            "status": "approved",
+            "ticket_id": ticket_id,
+            "event_enqueued": inserted,
+            "message": "Approved — work will proceed on the next orchestrator tick.",
+        }
+    finally:
+        db.close()
+
+
 def create_ticket(
     db: sqlite3.Connection,
     *,

@@ -46,3 +46,86 @@ def fetch_page(page_id: str) -> dict[str, Any]:
         return json.loads(body)
     except (urllib.error.URLError, json.JSONDecodeError):
         return {}
+
+
+def _notion_headers() -> dict[str, str]:
+    settings = get_settings()
+    return {
+        "Authorization": f"Bearer {settings.notion_api_key.strip()}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+
+
+def _plain_text(prop: dict[str, Any]) -> str:
+    prop_type = prop.get("type", "")
+    if prop_type == "title":
+        parts = prop.get("title") or []
+    elif prop_type == "rich_text":
+        parts = prop.get("rich_text") or []
+    elif prop_type == "select":
+        sel = prop.get("select") or {}
+        return str(sel.get("name") or "")
+    elif prop_type == "status":
+        st = prop.get("status") or {}
+        return str(st.get("name") or "")
+    else:
+        return ""
+    return "".join(part.get("plain_text", "") for part in parts).strip()
+
+
+def _page_summary(page: dict[str, Any]) -> dict[str, Any]:
+    props = page.get("properties") or {}
+    title = ""
+    status = ""
+    for _key, prop in props.items():
+        if not isinstance(prop, dict):
+            continue
+        if prop.get("type") == "title" and not title:
+            title = _plain_text(prop)
+        elif prop.get("type") in {"status", "select"} and not status:
+            status = _plain_text(prop)
+    return {
+        "id": page.get("id", ""),
+        "title": title or "(untitled)",
+        "status": status,
+        "url": page.get("url", ""),
+        "last_edited_time": page.get("last_edited_time", ""),
+    }
+
+
+def query_harness_database(*, since_iso: str) -> list[dict[str, Any]]:
+    """Return harness DB pages edited after since_iso (ISO-8601)."""
+    import json
+
+    settings = get_settings()
+    db_id = settings.notion_harness_db_id.strip()
+    if not db_id:
+        return []
+
+    body = {
+        "filter": {
+            "timestamp": "last_edited_time",
+            "last_edited_time": {"after": since_iso},
+        },
+        "sorts": [{"timestamp": "last_edited_time", "direction": "ascending"}],
+        "page_size": 50,
+    }
+    req = urllib.request.Request(
+        f"https://api.notion.com/v1/databases/{db_id}/query",
+        data=json.dumps(body).encode("utf-8"),
+        headers=_notion_headers(),
+        method="POST",
+    )
+    try:
+        _, raw = notion_request(req)
+        data = json.loads(raw)
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        logging.getLogger(__name__).warning("Notion harness query failed: %s", exc)
+        return []
+
+    pages: list[dict[str, Any]] = []
+    for result in data.get("results") or []:
+        if result.get("object") == "page":
+            pages.append(_page_summary(result))
+    return pages

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ def _reset_slack_session(monkeypatch):
     monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
     monkeypatch.setenv("SLACK_OWNER_USER_ID", "U_OWNER")
     monkeypatch.setenv("SLACK_ALLOWED_USER_IDS", "")
+    monkeypatch.setenv("SLACK_ALLOW_ALL", "false")
     from tempa.settings import get_settings
 
     get_settings.cache_clear()
@@ -223,6 +225,43 @@ def test_slack_configured_requires_both_tokens(monkeypatch):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
     get_settings.cache_clear()
     assert slack_configured() is True
+
+
+@pytest.mark.asyncio
+async def test_varys_slack_read_direct_reply(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEMPA_DATA_DIR", str(tmp_path))
+    from tempa.settings import get_settings
+
+    get_settings.cache_clear()
+
+    ctx = {
+        "channel": "slack",
+        "inbound_slack": True,
+        "slack_user_id": "U_OWNER",
+        "slack_channel_id": "D123",
+    }
+    channel_json = json.dumps(
+        {
+            "status": "ok",
+            "channel": "regionpunjab-internal",
+            "user": "Varys",
+            "message": "Deploy is blocked until QA signs off.",
+            "timestamp": "2026-06-26 12:00 UTC",
+        }
+    )
+
+    with patch("tempa.agents.specialists.run_channel_agent", new_callable=AsyncMock) as mock_channel:
+        mock_channel.return_value = channel_json
+        from tempa.channels.slack.direct_reply import try_slack_direct_reply
+
+        reply = await try_slack_direct_reply(
+            "check latest message from varys in regionpunjab-internal channel",
+            ctx,
+        )
+
+    assert reply is not None
+    assert "Deploy is blocked" in reply
+    assert "Varys" in reply
 
 
 @pytest.mark.asyncio

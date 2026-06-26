@@ -30,7 +30,48 @@ def test_channel_match_score():
 
     assert _channel_match_score("regionpunjab-internal", "region-punjab") == 0
     assert _channel_match_score("region-punjab", "region-punjab") == 100
-    assert find_channel_by_hint("regionpunjab-internal")[0] == ""
+    assert _channel_match_score("regionpunjab-internal", "regionpunjab-internal") == 100
+
+
+def test_parse_slack_read_query_ignores_stop_words():
+    parsed = parse_slack_read_query("latest message from the in regionpunjab-internal channel")
+    assert parsed["user"] == ""
+    assert parsed["channel"] == "regionpunjab-internal"
+
+
+@patch("tempa.channels.slack.lookup.load_slack_client")
+@patch("tempa.channels.slack.lookup.find_channel_by_hint")
+@patch("tempa.channels.slack.lookup.resolve_slack_recipient")
+@patch("tempa.channels.slack.lookup.list_users")
+@patch("tempa.channels.slack.lookup.iter_conversation_messages")
+def test_lookup_bot_message_from_varys(
+    mock_history,
+    mock_users,
+    mock_resolve,
+    mock_find_channel,
+    mock_client,
+):
+    mock_client.return_value = MagicMock()
+    mock_find_channel.return_value = ("C123", "regionpunjab-internal")
+    mock_resolve.return_value = {}
+    mock_users.return_value = []
+    mock_history.return_value = [
+        {
+            "user": "UBOT",
+            "bot_id": "B1",
+            "username": "varys",
+            "text": "Deploy is blocked until QA signs off.",
+            "ts": "1782384000.0",
+        },
+        {"user": "U111", "text": "other", "ts": "1782383000.0"},
+    ]
+
+    result = lookup_latest_slack_message(
+        "check latest message from varys in regionpunjab-internal channel"
+    )
+
+    assert result["status"] == "ok"
+    assert "Deploy is blocked" in result["message"]
 
 
 @patch("tempa.channels.slack.lookup.load_slack_client")

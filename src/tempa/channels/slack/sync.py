@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from slack_sdk.errors import SlackApiError
+
 from tempa.channels.slack.client import (
     iter_conversation_messages,
     iter_thread_replies,
@@ -242,6 +244,14 @@ def sync_slack_once_blocking(*, full: bool = False) -> dict[str, Any]:
                 cursors[channel_id] = new_latest
             if channel_ingested or not oldest:
                 channels_synced += 1
+        except SlackApiError as exc:
+            err = ""
+            if exc.response is not None:
+                err = str(exc.response.get("error") or "")
+            if err == "not_in_channel":
+                logger.debug("Slack sync skipped channel %s (bot not in channel)", channel_id)
+            else:
+                logger.exception("Slack sync failed for channel %s", channel_id)
         except Exception:
             logger.exception("Slack sync failed for channel %s", channel_id)
 

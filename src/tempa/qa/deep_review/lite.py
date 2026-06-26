@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
 
-from tempa.qa.github.auth import get_installation_token
+from tempa.qa.github.parse import parse_pr_from_text  # noqa: F401 — re-export
+from tempa.qa.github.auth import get_github_token, github_uses_pat
 from tempa.qa.github.client import gh_get
 from tempa.qa.installations import installation_id_for_repo
 from tempa.qa.llm import deep_review_complete
@@ -24,9 +24,9 @@ async def run_deep_review(
     scan_job_id: str = "",
 ) -> dict[str, Any]:
     inst_id = installation_id or installation_id_for_repo(repo)
-    if not inst_id:
+    if not inst_id and not github_uses_pat():
         raise RuntimeError(f"No installation for {repo}")
-    token = get_installation_token(inst_id)
+    token = get_github_token(repo)
 
     pr = gh_get(f"/repos/{repo}/pulls/{pr_number}", token)
     branch = str((pr.get("head") or {}).get("ref") or "")
@@ -72,15 +72,6 @@ async def run_deep_review(
         "provider": provider,
     }
 
-
-def parse_pr_from_text(text: str) -> tuple[str, int] | None:
-    m = re.search(r"github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)", text, re.I)
-    if m:
-        return m.group(1), int(m.group(2))
-    m = re.search(r"\bpr\s*#?(\d+)\b", text, re.I)
-    if m:
-        return "", int(m.group(1))
-    return None
 
 
 def _parse_findings(text: str) -> list[dict[str, Any]]:

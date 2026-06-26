@@ -22,6 +22,8 @@ def get_allowed_slack_user_ids() -> set[str]:
 def is_allowed_slack_user(user_id: str) -> bool:
     if not user_id:
         return False
+    if get_settings().slack_allow_all:
+        return True
     owner = get_owner_slack_user_id()
     if owner and user_id == owner:
         return True

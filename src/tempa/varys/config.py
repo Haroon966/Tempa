@@ -16,6 +16,8 @@ class VarysConfig:
     owner_slack_user_id: str = ""
     orchestrator_tick_seconds: int = 270
     notion_enabled: bool = False
+    jira_enabled: bool = False
+    jira_projects: list[str] = field(default_factory=list)
     repos: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -29,6 +31,8 @@ def load_varys_config() -> VarysConfig:
             owner_slack_user_id=settings.slack_owner_user_id,
             orchestrator_tick_seconds=settings.varys_tick_seconds,
             notion_enabled=settings.notion_enabled,
+            jira_enabled=settings.jira_enabled,
+            jira_projects=[],
             repos=[],
         )
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -42,6 +46,8 @@ def load_varys_config() -> VarysConfig:
             raw.get("orchestrator_tick_seconds") or settings.varys_tick_seconds
         ),
         notion_enabled=bool(raw.get("notion_enabled", settings.notion_enabled)),
+        jira_enabled=bool(raw.get("jira_enabled", settings.jira_enabled)),
+        jira_projects=[str(p).strip() for p in (raw.get("jira_projects") or []) if str(p).strip()],
         repos=list(raw.get("repos") or []),
     )
 

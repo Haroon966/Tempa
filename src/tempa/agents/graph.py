@@ -178,60 +178,9 @@ async def plan_node(state: CoordinatorState) -> dict[str, Any]:
 
     maybe_capture_from_message(state["user_message"])
 
-    channel = str(context.get("channel") or "")
-    inbound_slack = bool(context.get("inbound_slack"))
-    mentions_whatsapp = "whatsapp" in state["user_message"].lower()
-    if channel != "slack" and not inbound_slack and (channel == "whatsapp" or mentions_whatsapp):
-        try:
-            from tempa.channels.whatsapp.context import build_whatsapp_context_pack
+    from tempa.core.cross_channel_conversation import enrich_conversation_context
 
-            wa_pack = build_whatsapp_context_pack(state["user_message"])
-            context["recent_conversation"] = wa_pack.get("recent_thread") or []
-            if "recent_user_messages" not in context:
-                context["recent_user_messages"] = wa_pack.get("recent_user_only") or []
-        except Exception:
-            if context.get("channel") == "whatsapp" and "recent_user_messages" not in context:
-                try:
-                    from tempa.channels.whatsapp.conversation import get_conversation_thread
-
-                    thread = get_conversation_thread(8, include_assistant=True)
-                    context["recent_conversation"] = thread
-                    context["recent_user_messages"] = [
-                        m.get("text", "") for m in thread if m.get("role") == "user"
-                    ]
-                except Exception:
-                    pass
-    elif inbound_slack or channel == "slack":
-        try:
-            from tempa.channels.slack.conversation import get_recent_messages as get_slack_thread
-
-            channel_id = str(context.get("slack_channel_id") or "")
-            slack_user = str(context.get("slack_user_id") or "")
-            thread_ts = str(context.get("slack_thread_ts") or "")
-            if channel_id:
-                context["recent_conversation"] = get_slack_thread(
-                    8,
-                    user_id=slack_user,
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
-                )
-        except Exception:
-            pass
-
-    session_id = context.get("session_id")
-    if session_id and "recent_user_messages" not in context:
-        try:
-            from tempa.core.chat_sessions import get_session
-
-            session = get_session(str(session_id))
-            if session:
-                context["recent_user_messages"] = [
-                    m.get("content", "")
-                    for m in (session.get("messages") or [])[-8:]
-                    if m.get("role") == "user"
-                ]
-        except Exception:
-            pass
+    context = enrich_conversation_context(context)
 
     subtasks = plan_subtasks(state["user_message"], context)
     from tempa.agents.tool_policy import filter_subtasks

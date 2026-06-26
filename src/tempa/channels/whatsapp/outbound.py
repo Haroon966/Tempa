@@ -80,7 +80,8 @@ async def send_whatsapp_message(
         return {"status": "blocked", "reason": reason}
     client = WhatsAppBridgeClient()
     result = await client.send_text(number, text)
-    record_conversation_turn(role="assistant", text=text, from_number=number, chat_id=number)
+    if source_channel != "whatsapp_auto_reply":
+        record_conversation_turn(role="assistant", text=text, from_number=number, chat_id=number)
     if not auto_reply:
         asyncio.create_task(
             asyncio.to_thread(

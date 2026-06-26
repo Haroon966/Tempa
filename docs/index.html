@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tempa — Architecture</title>
+  <link rel="canonical" href="https://haroon966.github.io/Tempa/" />
+  <meta name="description" content="How Tempa works: WhatsApp, Slack, and Dashboard all connect to one AI agent with unified memory and shared tools." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <style>
+    /* ── Design tokens ── */
+    :root {
+      --bg:         #0F172A;
+      --surface:    #1E293B;
+      --surface-2:  #0d1424;
+      --border:     rgba(255,255,255,0.07);
+      --border-hi:  rgba(255,255,255,0.14);
+      --text:       #F8FAFC;
+      --muted:      #94A3B8;
+      --accent:     #5b8def;
+      --green:      #22C55E;
+      --purple:     #a78bfa;
+      --pink:       #f472b6;
+      --teal:       #3dd6c3;
+      --wa:         #25d366;
+      --sl:         #e01e5a;
+      --db:         #f5a623;
+
+      --radius-sm:  8px;
+      --radius:     14px;
+      --radius-lg:  20px;
+
+      --glass-bg:   rgba(30, 41, 59, 0.55);
+      --glass-blur: blur(18px);
+    }
+
+    /* ── Reset ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'DM Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ── Background grid ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(91,141,239,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(91,141,239,0.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      z-index: 0;
+    }
+
+    /* ── Background orbs ── */
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      pointer-events: none;
+      filter: blur(100px);
+      opacity: 0.18;
+      z-index: 0;
+    }
+
+    .orb-1 { width: 600px; height: 600px; background: #5b8def; top: -200px; left: -150px; }
+    .orb-2 { width: 500px; height: 500px; background: #a78bfa; bottom: -150px; right: -100px; }
+    .orb-3 { width: 350px; height: 350px; background: #22C55E; top: 50%; left: 50%; transform: translate(-50%,-50%); opacity: 0.08; }
+
+    /* ── Utility ── */
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1020px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+    }
+
+    .glass {
+      background: var(--glass-bg);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border: 1px solid var(--border-hi);
+      border-radius: var(--radius);
+    }
+
+    /* ── Nav ── */
+    nav {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      width: calc(100% - 3rem);
+      max-width: 1020px;
+      padding: 0.6rem 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-hi);
+      border-radius: 999px;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 700;
+      font-size: 1rem;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .nav-logo .logo-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    .nav-links a {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 0.3rem 0.75rem;
+      border-radius: 999px;
+      transition: color 0.2s, background 0.2s;
+    }
+
+    .nav-links a:hover { color: var(--text); background: var(--border); cursor: pointer; }
+
+    .nav-links .btn-gh {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border-hi);
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 0.3rem 0.85rem;
+      border-radius: 999px;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .nav-links .btn-gh:hover { border-color: var(--accent); background: rgba(91,141,239,0.1); cursor: pointer; }
+
+    /* ── Hero ── */
+    .hero {
+      position: relative;
+      z-index: 1;
+      padding: 9rem 1.5rem 5rem;
+      text-align: center;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(91,141,239,0.12);
+      border: 1px solid rgba(91,141,239,0.3);
+      color: #93c5fd;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.3rem 0.9rem;
+      border-radius: 999px;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-badge .pulse {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.4); }
+    }
+
+    .hero h1 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: clamp(2.4rem, 6vw, 4rem);
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      margin-bottom: 1.25rem;
+    }
+
+    .hero h1 .grad {
+      background: linear-gradient(135deg, #fff 30%, var(--accent) 75%, var(--purple) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero p {
+      max-width: 38rem;
+      margin: 0 auto 2rem;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .hero p strong { color: var(--text); }
+
+    .channels-row {
+      display: flex;
+      justify-content: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }
+
+    .ch-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.45rem 1rem;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      border: 1px solid;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .ch-pill:hover { transform: translateY(-2px); cursor: pointer; }
+
+    .ch-wa { background: rgba(37,211,102,0.1); border-color: rgba(37,211,102,0.35); color: var(--wa); }
+    .ch-wa:hover { box-shadow: 0 6px 20px rgba(37,211,102,0.2); }
+
+    .ch-sl { background: rgba(224,30,90,0.1); border-color: rgba(224,30,90,0.35); color: var(--sl); }
+    .ch-sl:hover { box-shadow: 0 6px 20px rgba(224,30,90,0.2); }
+
+    .ch-db { background: rgba(245,166,35,0.1); border-color: rgba(245,166,35,0.35); color: var(--db); }
+    .ch-db:hover { box-shadow: 0 6px 20px rgba(245,166,35,0.2); }
+
+    .ch-agent { background: rgba(167,139,250,0.1); border-color: rgba(167,139,250,0.35); color: var(--purple); }
+    .ch-mem { background: rgba(244,114,182,0.1); border-color: rgba(244,114,182,0.35); color: var(--pink); }
+    .ch-tool { background: rgba(34,197,94,0.1); border-color: rgba(34,197,94,0.35); color: var(--green); }
+
+    /* ── Section headings ── */
+    .section-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.5rem;
+    }
+
+    .section-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: clamp(1.4rem, 3vw, 1.9rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.5rem;
+    }
+
+    .section-sub {
+      color: var(--muted);
+      font-size: 0.92rem;
+      margin-bottom: 2rem;
+    }
+
+    section.page-section {
+      position: relative;
+      z-index: 1;
+      padding: 4.5rem 0;
+    }
+
+    section.page-section + section.page-section {
+      border-top: 1px solid var(--border);
+    }
+
+    /* ── Divider ── */
+    .divider {
+      width: 40px;
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent), var(--purple));
+      border-radius: 2px;
+      margin-bottom: 1rem;
+    }
+
+    /* ── Diagram card ── */
+    .diagram-card {
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+
+    .arch-svg {
+      display: block;
+      width: 100%;
+      max-width: 860px;
+      margin: 0 auto;
+      height: auto;
+    }
+
+    .arch-svg text { font-family: 'DM Sans', system-ui, sans-serif; }
+
+    .t-title { font-size: 13px; font-weight: 600; fill: #F8FAFC; text-anchor: middle; }
+    .t-sub   { font-size: 10px; fill: #94A3B8; text-anchor: middle; }
+    .t-label { font-size: 9px; fill: #64748b; text-anchor: middle; letter-spacing: 0.06em; text-transform: uppercase; }
+
+    /* ── Access matrix ── */
+    .matrix-wrap {
+      overflow: hidden;
+      border-radius: var(--radius);
+      border: 1px solid var(--border-hi);
+    }
+
+    table.matrix {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+
+    table.matrix thead th {
+      background: rgba(30,41,59,0.8);
+      padding: 0.75rem 1rem;
+      text-align: center;
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid var(--border-hi);
+    }
+
+    table.matrix thead th.left { text-align: left; }
+
+    table.matrix tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+
+    table.matrix tbody tr:last-child { border-bottom: none; }
+    table.matrix tbody tr:hover { background: rgba(91,141,239,0.05); }
+
+    table.matrix tbody td {
+      padding: 0.9rem 1rem;
+      text-align: center;
+    }
+
+    table.matrix tbody td.left { text-align: left; }
+
+    .td-name {
+      font-weight: 600;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+
+    .td-desc {
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+
+    .ch-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      font-size: 0.72rem;
+      font-weight: 700;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+    }
+
+    .check-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: rgba(34,197,94,0.15);
+      border: 1px solid rgba(34,197,94,0.4);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto;
+    }
+
+    .check-icon svg { width: 10px; height: 10px; stroke: #22C55E; stroke-width: 2.5; fill: none; }
+
+    /* ── Flow steps ── */
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+    }
+
+    @media (max-width: 768px) {
+      .steps-grid { grid-template-columns: 1fr 1fr; }
+      nav { top: 10px; width: calc(100% - 2rem); }
+    }
+
+    @media (max-width: 480px) {
+      .steps-grid { grid-template-columns: 1fr; }
+    }
+
+    .step-card {
+      padding: 1.4rem;
+      border-radius: var(--radius);
+      background: var(--glass-bg);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border: 1px solid var(--border-hi);
+      transition: border-color 0.25s, transform 0.25s, box-shadow 0.25s;
+      cursor: default;
+    }
+
+    .step-card:hover {
+      border-color: rgba(91,141,239,0.4);
+      transform: translateY(-3px);
+      box-shadow: 0 12px 32px rgba(0,0,0,0.3);
+    }
+
+    .step-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.8rem;
+      height: 1.8rem;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--purple));
+      color: #fff;
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+
+    .step-card h3 {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 0.4rem;
+    }
+
+    .step-card p {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    /* ── Mermaid ── */
+    .mermaid-wrap {
+      padding: 1.75rem;
+    }
+
+    .mermaid { display: flex; justify-content: center; }
+
+    /* ── Callout box ── */
+    .callout {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.85rem;
+      padding: 1rem 1.25rem;
+      background: rgba(91,141,239,0.08);
+      border: 1px solid rgba(91,141,239,0.25);
+      border-radius: var(--radius-sm);
+      margin-top: 1.5rem;
+      font-size: 0.84rem;
+      color: var(--muted);
+    }
+
+    .callout svg { flex-shrink: 0; width: 16px; height: 16px; stroke: var(--accent); stroke-width: 2; fill: none; margin-top: 2px; }
+    .callout strong { color: var(--text); }
+
+    /* ── Legend ── */
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem 1rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .leg-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ── Footer ── */
+    footer {
+      position: relative;
+      z-index: 1;
+      border-top: 1px solid var(--border);
+      padding: 2rem 1.5rem;
+    }
+
+    .footer-inner {
+      max-width: 1020px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .footer-brand {
+      font-family: 'Space Grotesk', sans-serif;
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: var(--text);
+    }
+
+    .footer-brand span { color: var(--muted); font-weight: 400; font-size: 0.8rem; margin-left: 0.5rem; }
+
+    .footer-links {
+      display: flex;
+      gap: 1.25rem;
+    }
+
+    .footer-links a {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .footer-links a:hover { color: var(--text); }
+
+    /* ── Scroll fade-in ── */
+    .fade-in {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.5s ease, transform 0.5s ease;
+    }
+
+    .fade-in.visible {
+      opacity: 1;
+      transform: none;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .fade-in { opacity: 1; transform: none; transition: none; }
+      .ch-pill:hover, .step-card:hover { transform: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Background orbs -->
+  <div class="orb orb-1" aria-hidden="true"></div>
+  <div class="orb orb-2" aria-hidden="true"></div>
+  <div class="orb orb-3" aria-hidden="true"></div>
+
+  <!-- Nav -->
+  <nav aria-label="Site navigation">
+    <a href="#" class="nav-logo" aria-label="Tempa home">
+      <span class="logo-dot" aria-hidden="true"></span>
+      Tempa
+    </a>
+    <div class="nav-links">
+      <a href="#diagram">Diagram</a>
+      <a href="#tools">Tools</a>
+      <a href="#flow">Flow</a>
+      <a href="https://github.com/Haroon966/Tempa" class="btn-gh" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836a9.59 9.59 0 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.741 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/>
+        </svg>
+        GitHub
+      </a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="hero-badge">
+      <span class="pulse" aria-hidden="true"></span>
+      Architecture Diagram
+    </div>
+    <h1><span class="grad">One Agent.</span><br>Every Channel. Every Tool.</h1>
+    <p>
+      Message Tempa on <strong>WhatsApp</strong>, <strong>Slack</strong>, or the <strong>Dashboard</strong>
+      — it reaches the same tools, the same memory, and replies on the channel you used.
+    </p>
+    <div class="channels-row" aria-label="Supported channels and components">
+      <span class="ch-pill ch-wa">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.143.566 4.148 1.546 5.886L0 24l6.267-1.643C7.955 23.404 9.946 24 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22c-1.919 0-3.712-.542-5.233-1.476l-.374-.222-3.726.977 1.001-3.629-.245-.386C2.606 15.602 2 13.88 2 12 2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z"/></svg>
+        WhatsApp
+      </span>
+      <span class="ch-pill ch-sl">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></svg>
+        Slack
+      </span>
+      <span class="ch-pill ch-db">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+        Dashboard
+      </span>
+      <span class="ch-pill ch-agent">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+        Agent Brain
+      </span>
+      <span class="ch-pill ch-mem">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6"/></svg>
+        Unified Memory
+      </span>
+      <span class="ch-pill ch-tool">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        Shared Tools
+      </span>
+    </div>
+  </div>
+
+  <!-- Diagram -->
+  <section class="page-section" id="diagram">
+    <div class="container">
+      <div class="fade-in">
+        <div class="section-label">System Overview</div>
+        <div class="divider"></div>
+        <h2 class="section-title">How everything connects</h2>
+        <p class="section-sub">All channels share one daemon, one agent, one memory — your data stays local.</p>
+      </div>
+
+      <div class="legend fade-in">
+        <span class="legend-item"><span class="leg-dot" style="background:#25d366"></span>WhatsApp</span>
+        <span class="legend-item"><span class="leg-dot" style="background:#e01e5a"></span>Slack</span>
+        <span class="legend-item"><span class="leg-dot" style="background:#f5a623"></span>Dashboard</span>
+        <span class="legend-item"><span class="leg-dot" style="background:#a78bfa"></span>Agent Brain</span>
+        <span class="legend-item"><span class="leg-dot" style="background:#f472b6"></span>Unified Memory</span>
+        <span class="legend-item"><span class="leg-dot" style="background:#22C55E"></span>Shared Tools</span>
+      </div>
+
+      <div class="glass diagram-card fade-in">
+        <svg class="arch-svg" viewBox="0 0 860 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Tempa architecture diagram">
+          <title>Tempa System Architecture</title>
+          <defs>
+            <marker id="a-blue" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" fill="#5b8def"/>
+            </marker>
+            <marker id="a-green" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" fill="#22C55E"/>
+            </marker>
+            <marker id="a-pink" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" fill="#f472b6"/>
+            </marker>
+            <filter id="glow-blue">
+              <feGaussianBlur stdDeviation="3" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <filter id="glow-purple">
+              <feGaussianBlur stdDeviation="4" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+
+          <!-- ROW 1: Channels -->
+          <text x="430" y="18" class="t-label">You — use any channel</text>
+
+          <rect x="30"  y="28" width="240" height="74" rx="10" fill="rgba(37,211,102,0.08)" stroke="#25d366" stroke-width="1.5"/>
+          <text x="150" y="56"  class="t-title" fill="#25d366">WhatsApp</text>
+          <text x="150" y="74"  class="t-sub">DMs · groups · voice notes</text>
+          <text x="150" y="90"  class="t-sub" fill="#6ee7b7">Baileys bridge :8080</text>
+
+          <rect x="310" y="28" width="240" height="74" rx="10" fill="rgba(224,30,90,0.08)" stroke="#e01e5a" stroke-width="1.5"/>
+          <text x="430" y="56"  class="t-title" fill="#e01e5a">Slack</text>
+          <text x="430" y="74"  class="t-sub">DMs · @mentions · threads</text>
+          <text x="430" y="90"  class="t-sub" fill="#fca5a5">Socket Mode (Bolt)</text>
+
+          <rect x="590" y="28" width="240" height="74" rx="10" fill="rgba(245,166,35,0.08)" stroke="#f5a623" stroke-width="1.5"/>
+          <text x="710" y="56"  class="t-title" fill="#f5a623">Dashboard</text>
+          <text x="710" y="74"  class="t-sub">Chat · approvals · QA tab</text>
+          <text x="710" y="90"  class="t-sub" fill="#fcd34d">localhost:8787</text>
+
+          <!-- Channels → daemon funnel -->
+          <line x1="150" y1="102" x2="150" y2="142" stroke="#3d4f6f" stroke-width="1.5" marker-end="url(#a-blue)"/>
+          <line x1="430" y1="102" x2="430" y2="142" stroke="#3d4f6f" stroke-width="1.5" marker-end="url(#a-blue)"/>
+          <line x1="710" y1="102" x2="710" y2="142" stroke="#3d4f6f" stroke-width="1.5" marker-end="url(#a-blue)"/>
+          <line x1="150" y1="142" x2="710" y2="142" stroke="#3d4f6f" stroke-width="1.5"/>
+          <line x1="430" y1="142" x2="430" y2="156" stroke="#3d4f6f" stroke-width="1.5" marker-end="url(#a-blue)"/>
+
+          <!-- ROW 2: Daemon -->
+          <rect x="230" y="156" width="400" height="52" rx="10" fill="rgba(91,141,239,0.1)" stroke="#5b8def" stroke-width="1.8" filter="url(#glow-blue)"/>
+          <text x="430" y="180" class="t-title" fill="#5b8def">Tempa Daemon</text>
+          <text x="430" y="197" class="t-sub">FastAPI · REST + WebSocket · port 8787</text>
+
+          <line x1="430" y1="208" x2="430" y2="226" stroke="#3d4f6f" stroke-width="1.5" marker-end="url(#a-blue)"/>
+
+          <!-- ROW 3: Agent (left) + Memory (right) side by side -->
+          <rect x="20" y="226" width="490" height="96" rx="12" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="2" filter="url(#glow-purple)"/>
+          <text x="265" y="252" class="t-title" fill="#a78bfa">Tempa Agent Brain</text>
+          <text x="265" y="270" class="t-sub">Coordinator → Varys (Claude CLI) or LangGraph (Groq)</text>
+          <text x="265" y="286" class="t-sub" fill="#6ee7b7">reads + writes memory on every request</text>
+          <text x="265" y="302" class="t-sub">Channel-agnostic — same tools regardless of where you asked</text>
+
+          <!-- Bidirectional Agent ↔ Memory arrows -->
+          <line x1="510" y1="268" x2="536" y2="268" stroke="#f472b6" stroke-width="2" marker-end="url(#a-pink)"/>
+          <line x1="536" y1="278" x2="510" y2="278" stroke="#f472b6" stroke-width="2" marker-end="url(#a-pink)"/>
+          <text x="523" y="262" class="t-sub" fill="#f9a8d4" font-size="8px">read/write</text>
+
+          <!-- Memory block -->
+          <rect x="538" y="226" width="302" height="96" rx="12" fill="rgba(244,114,182,0.08)" stroke="#f472b6" stroke-width="1.8"/>
+          <text x="689" y="248" class="t-title" fill="#f472b6" font-size="12px">Unified Memory</text>
+
+          <rect x="550" y="258" width="130" height="24" rx="5" fill="rgba(244,114,182,0.1)" stroke="rgba(244,114,182,0.3)" stroke-width="1"/>
+          <text x="615" y="274" class="t-sub" fill="#f9a8d4">ChromaDB · RAG</text>
+
+          <rect x="698" y="258" width="130" height="24" rx="5" fill="rgba(244,114,182,0.1)" stroke="rgba(244,114,182,0.3)" stroke-width="1"/>
+          <text x="763" y="274" class="t-sub" fill="#f9a8d4">harness.db · tickets</text>
+
+          <rect x="550" y="290" width="130" height="24" rx="5" fill="rgba(244,114,182,0.1)" stroke="rgba(244,114,182,0.3)" stroke-width="1"/>
+          <text x="615" y="306" class="t-sub" fill="#f9a8d4">data/vault · rules</text>
+
+          <rect x="698" y="290" width="130" height="24" rx="5" fill="rgba(244,114,182,0.1)" stroke="rgba(244,114,182,0.3)" stroke-width="1"/>
+          <text x="763" y="306" class="t-sub" fill="#f9a8d4">local stores</text>
+
+          <!-- Agent → Tools -->
+          <line x1="265" y1="322" x2="265" y2="350" stroke="#22C55E" stroke-width="1.5" marker-end="url(#a-green)"/>
+          <line x1="265" y1="350" x2="430" y2="350" stroke="#22C55E" stroke-width="1.5"/>
+          <line x1="430" y1="350" x2="430" y2="362" stroke="#22C55E" stroke-width="1.5" marker-end="url(#a-green)"/>
+
+          <!-- Tools ingest back to memory (dashed) -->
+          <path d="M840,432 C870,432 870,274 830,274" fill="none" stroke="#f472b6" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.5" marker-end="url(#a-pink)"/>
+          <text x="864" y="354" class="t-sub" fill="#f9a8d4" font-size="8px" transform="rotate(90 864 354)">ingest</text>
+
+          <!-- ROW 4: Shared Tools -->
+          <text x="430" y="378" class="t-label" fill="#22C55E">Shared tools — accessible from every channel</text>
+          <rect x="20" y="386" width="820" height="78" rx="12" fill="rgba(34,197,94,0.05)" stroke="rgba(34,197,94,0.3)" stroke-width="1.5"/>
+
+          <rect x="36"  y="398" width="144" height="52" rx="8" fill="rgba(34,197,94,0.08)" stroke="rgba(34,197,94,0.3)" stroke-width="1"/>
+          <text x="108" y="420" class="t-title" fill="#22C55E" font-size="12px">Gmail</text>
+          <text x="108" y="436" class="t-sub">read · send · search</text>
+
+          <rect x="196" y="398" width="144" height="52" rx="8" fill="rgba(34,197,94,0.08)" stroke="rgba(34,197,94,0.3)" stroke-width="1"/>
+          <text x="268" y="420" class="t-title" fill="#22C55E" font-size="12px">Calendar</text>
+          <text x="268" y="436" class="t-sub">events · reminders</text>
+
+          <rect x="356" y="398" width="144" height="52" rx="8" fill="rgba(34,197,94,0.08)" stroke="rgba(34,197,94,0.3)" stroke-width="1"/>
+          <text x="428" y="420" class="t-title" fill="#22C55E" font-size="12px">Google Meet</text>
+          <text x="428" y="436" class="t-sub">join · record · minutes</text>
+
+          <rect x="516" y="398" width="144" height="52" rx="8" fill="rgba(34,197,94,0.08)" stroke="rgba(34,197,94,0.3)" stroke-width="1"/>
+          <text x="588" y="420" class="t-title" fill="#22C55E" font-size="12px">GitHub / QA</text>
+          <text x="588" y="436" class="t-sub">CI · scans · fixes</text>
+
+          <rect x="676" y="398" width="144" height="52" rx="8" fill="rgba(34,197,94,0.08)" stroke="rgba(34,197,94,0.3)" stroke-width="1"/>
+          <text x="748" y="420" class="t-title" fill="#22C55E" font-size="12px">Jira · Notion</text>
+          <text x="748" y="436" class="t-sub">tickets · docs</text>
+
+          <!-- Reply paths (dashed, colored) -->
+          <path d="M150,102 C80,102 80,464 150,464 L20,464" fill="none" stroke="#25d366" stroke-width="1" stroke-dasharray="5 4" opacity="0"/>
+          <!-- Simplified reply arrows back up -->
+          <path d="M60,208 C30,208 30,90 150,102" fill="none" stroke="#25d366" stroke-width="1.2" stroke-dasharray="5 4" opacity="0.45"/>
+          <path d="M230,224 C200,224 200,90 430,102" fill="none" stroke="#e01e5a" stroke-width="1.2" stroke-dasharray="5 4" opacity="0.45"/>
+          <path d="M510,208 C790,208 790,90 710,102" fill="none" stroke="#f5a623" stroke-width="1.2" stroke-dasharray="5 4" opacity="0.45"/>
+
+          <text x="430" y="510" class="t-sub" fill="#475569">
+            solid = request path · dashed = reply on same channel · read/write = agent syncs memory each turn
+          </text>
+        </svg>
+      </div>
+
+      <div class="callout fade-in" role="note">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <span><strong>Local-first:</strong> audio files, transcripts, embeddings, and session tokens are stored on your machine. Inference goes through Groq API and Claude CLI — no data leaves without your approval.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tool Access Matrix -->
+  <section class="page-section" id="tools">
+    <div class="container">
+      <div class="fade-in">
+        <div class="section-label">Universal Access</div>
+        <div class="divider"></div>
+        <h2 class="section-title">Same tools from every channel</h2>
+        <p class="section-sub">The channel you use only decides where the reply lands — never which tools are available.</p>
+      </div>
+
+      <div class="matrix-wrap fade-in">
+        <table class="matrix" aria-label="Tool access by channel">
+          <thead>
+            <tr>
+              <th class="left">Tool</th>
+              <th class="left">Capabilities</th>
+              <th>
+                <span style="display:inline-flex;align-items:center;gap:0.3rem;color:var(--wa)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.143.566 4.148 1.546 5.886L0 24l6.267-1.643C7.955 23.404 9.946 24 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22c-1.919 0-3.712-.542-5.233-1.476l-.374-.222-3.726.977 1.001-3.629-.245-.386C2.606 15.602 2 13.88 2 12 2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10z"/></svg>
+                  WhatsApp
+                </span>
+              </th>
+              <th>
+                <span style="display:inline-flex;align-items:center;gap:0.3rem;color:var(--sl)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></svg>
+                  Slack
+                </span>
+              </th>
+              <th>
+                <span style="display:inline-flex;align-items:center;gap:0.3rem;color:var(--db)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+                  Dashboard
+                </span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="left td-name">Gmail</td>
+              <td class="left td-desc">read · send · search</td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+            </tr>
+            <tr>
+              <td class="left td-name">Calendar</td>
+              <td class="left td-desc">events · reminders</td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+            </tr>
+            <tr>
+              <td class="left td-name">Google Meet</td>
+              <td class="left td-desc">join · record · minutes</td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+            </tr>
+            <tr>
+              <td class="left td-name">GitHub / QA</td>
+              <td class="left td-desc">CI · scans · fixes</td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+            </tr>
+            <tr>
+              <td class="left td-name">Jira · Notion</td>
+              <td class="left td-desc">tickets · docs</td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+              <td><div class="check-icon"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Message flow -->
+  <section class="page-section" id="flow">
+    <div class="container">
+      <div class="fade-in">
+        <div class="section-label">Message Flow</div>
+        <div class="divider"></div>
+        <h2 class="section-title">From message to answer in four steps</h2>
+        <p class="section-sub">Every request — whether from WhatsApp, Slack, or Dashboard — follows the same pipeline.</p>
+      </div>
+
+      <div class="steps-grid fade-in">
+        <div class="step-card">
+          <div class="step-num">1</div>
+          <h3>You message</h3>
+          <p>WhatsApp DM, Slack @mention, or Dashboard chat. The channel only decides where the reply lands.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">2</div>
+          <h3>Daemon ingests</h3>
+          <p>Message hits the FastAPI daemon at :8787. It's indexed to ChromaDB instantly so Tempa has context.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">3</div>
+          <h3>Agent + tools</h3>
+          <p>Coordinator reads memory, picks Varys or LangGraph, and calls Gmail, Calendar, Meet, QA, or Jira as needed.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">4</div>
+          <h3>Reply back</h3>
+          <p>Answer streams to the same channel. Risky actions queue for approval — say <em>go</em> to confirm.</p>
+        </div>
+      </div>
+
+      <!-- Sequence diagram -->
+      <div class="glass mermaid-wrap fade-in" style="margin-top: 1.5rem;">
+        <pre class="mermaid">
+sequenceDiagram
+    actor User
+    participant Ch as WhatsApp / Slack / Dashboard
+    participant Daemon as Daemon :8787
+    participant Mem as Unified Memory
+    participant Agent as Agent Brain
+    participant Tool as Gmail · Calendar · Meet · QA · Jira
+    participant AI as Claude / Groq
+
+    User->>Ch: "What's on my calendar tomorrow?"
+    Ch->>Daemon: inbound message + channel context
+    Daemon->>Mem: ingest message to ChromaDB
+    Daemon->>Agent: run_coordinator_full()
+    Agent->>Mem: read vault rules + search RAG
+    Mem-->>Agent: relevant context + rules
+    Agent->>Tool: calendar specialist — fetch events
+    Tool-->>Agent: live event data
+    Tool->>Mem: ingest result to ChromaDB
+    Agent->>AI: prompt + context + tool results
+    AI-->>Agent: natural language reply
+    Agent-->>Daemon: response
+    Daemon-->>Ch: post / stream answer
+    Ch-->>User: "You have 2 meetings tomorrow..."
+        </pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-brand">
+        Tempa
+        <span>· always on, always connected</span>
+      </div>
+      <nav class="footer-links" aria-label="Footer links">
+        <a href="http://localhost:8787" target="_blank" rel="noopener">Open Dashboard</a>
+        <a href="https://github.com/Haroon966/Tempa" target="_blank" rel="noopener">GitHub</a>
+        <a href="README.md">README</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script>
+    /* Mermaid */
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        primaryColor: '#1E293B',
+        primaryTextColor: '#F8FAFC',
+        primaryBorderColor: '#5b8def',
+        lineColor: '#3d4f6f',
+        secondaryColor: '#1e1830',
+        tertiaryColor: '#0F172A',
+        fontFamily: "'DM Sans', system-ui, sans-serif",
+        fontSize: '13px',
+      },
+      sequence: { actorMargin: 36, messageMargin: 24, mirrorActors: false },
+    });
+
+    /* Scroll fade-in */
+    const obs = new IntersectionObserver(
+      (entries) => entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('visible'); obs.unobserve(e.target); } }),
+      { threshold: 0.1 }
+    );
+    document.querySelectorAll('.fade-in').forEach((el) => obs.observe(el));
+  </script>
+</body>
+</html>

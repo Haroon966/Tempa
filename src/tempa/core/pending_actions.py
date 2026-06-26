@@ -21,6 +21,11 @@ PendingActionType = Literal[
     "file_transfer",
     "plan_preview",
     "qa_autofix",
+    "qa_repo_scan",
+    "varys_ticket",
+    "jira_create_issue",
+    "jira_comment",
+    "jira_transition",
 ]
 PendingActionStatus = Literal["pending", "approved", "rejected", "expired", "failed", "executed"]
 
@@ -36,6 +41,11 @@ ACTION_TYPES: set[str] = {
     "file_transfer",
     "plan_preview",
     "qa_autofix",
+    "qa_repo_scan",
+    "varys_ticket",
+    "jira_create_issue",
+    "jira_comment",
+    "jira_transition",
 }
 
 
@@ -148,6 +158,25 @@ def _default_title(action_type: str, payload: dict[str, Any]) -> str:
         return "Review coordinator execution plan"
     if action_type == "qa_autofix":
         return f"QA fix: {payload.get('title', payload.get('file', 'patch'))}"
+    if action_type == "qa_repo_scan":
+        repo = payload.get("repo", "unknown")
+        branch = payload.get("branch")
+        pr_number = payload.get("pr_number")
+        if pr_number:
+            return f"QA scan PR #{pr_number} on {repo}"
+        if branch:
+            return f"QA scan {repo} @ {branch}"
+        return f"QA scan {repo}"
+    if action_type == "varys_ticket":
+        return f"Varys work ticket: {payload.get('title', payload.get('ticket_id', 'ticket'))}"
+    if action_type == "jira_create_issue":
+        project = payload.get("project", "")
+        summary = payload.get("summary", "")
+        return f"Create Jira issue{f' in {project}' if project else ''}: {summary}"
+    if action_type == "jira_comment":
+        return f"Comment on Jira {payload.get('issue_key', 'issue')}"
+    if action_type == "jira_transition":
+        return f"Transition Jira {payload.get('issue_key', 'issue')} → {payload.get('transition', '')}"
     return action_type
 
 
@@ -305,18 +334,60 @@ async def _run_executor(action_type: str, payload: dict[str, Any]) -> dict[str, 
         return await run_coordinator_full(payload.get("user_message", ""), context)
     if action_type == "qa_autofix":
         from tempa.qa.fix.autofix import apply_autofix
-        from tempa.qa.github.auth import get_installation_token
-        from tempa.qa.installations import installation_id_for_repo
+        from tempa.qa.github.auth import get_github_token
         from tempa.qa.store import update_finding
 
         repo = str(payload.get("repo") or "")
-        inst_id = installation_id_for_repo(repo)
-        if not inst_id:
-            raise RuntimeError(f"No GitHub installation for {repo}")
-        token = get_installation_token(inst_id)
+        token = get_github_token(repo)
         result = apply_autofix({**payload, "token": token})
         finding_id = str(payload.get("finding_id") or "")
         if finding_id:
             update_finding(finding_id, status="fix_applied", github_comment_url=result.get("pr_url"))
         return result
+    if action_type == "qa_repo_scan":
+        from tempa.qa.allowed_repos import add_repo
+        from tempa.qa.github.parse import GitHubTarget
+        from tempa.qa.scan_request import enqueue_target_scan
+
+        repo = str(payload.get("repo") or "")
+        if payload.get("add_to_allowlist"):
+            add_repo(repo, source=str(payload.get("source_channel") or "chat"))
+        target = GitHubTarget(
+            repo=repo,
+            branch=payload.get("branch"),
+            pr_number=int(payload["pr_number"]) if payload.get("pr_number") else None,
+        )
+        job_id = enqueue_target_scan(target)
+        return {"status": "queued", "job_id": job_id, "repo": repo}
+    if action_type == "varys_ticket":
+        from tempa.varys.harness import approve_varys_ticket
+
+        ticket_id = str(payload.get("ticket_id") or "")
+        if not ticket_id:
+            raise ValueError("varys_ticket missing ticket_id")
+        return approve_varys_ticket(ticket_id)
+    if action_type == "jira_create_issue":
+        from tempa.channels.jira.client import create_issue
+
+        return create_issue(
+            project=str(payload.get("project") or ""),
+            summary=str(payload.get("summary") or ""),
+            description=str(payload.get("description") or ""),
+            issue_type=str(payload.get("issue_type") or "Task"),
+        )
+    if action_type == "jira_comment":
+        from tempa.channels.jira.client import add_comment
+
+        issue_key = str(payload.get("issue_key") or "")
+        if not issue_key:
+            raise ValueError("jira_comment missing issue_key")
+        return add_comment(issue_key, str(payload.get("body") or ""))
+    if action_type == "jira_transition":
+        from tempa.channels.jira.client import transition_issue
+
+        issue_key = str(payload.get("issue_key") or "")
+        transition = str(payload.get("transition") or "")
+        if not issue_key or not transition:
+            raise ValueError("jira_transition missing issue_key or transition")
+        return transition_issue(issue_key, transition)
     raise ValueError(f"No executor for action type: {action_type}")

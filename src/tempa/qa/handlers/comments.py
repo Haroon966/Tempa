@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from tempa.qa.github.auth import get_installation_token
+from tempa.qa.github.auth import get_github_token, github_uses_pat, get_installation_token
 from tempa.qa.github.client import gh_post
 from tempa.qa.job_store import enqueue_scan
 
@@ -41,7 +41,10 @@ def handle_comment(payload: dict[str, Any]) -> None:
         return
 
     try:
-        token = get_installation_token(installation_id)
+        if github_uses_pat():
+            token = get_github_token(repo)
+        else:
+            token = get_installation_token(installation_id)
     except Exception as exc:
         log.error("comment handler auth failed: %s", exc)
         return

@@ -6,6 +6,7 @@ import {
   MailIcon,
   MessageCircleIcon,
   ServerIcon,
+  TicketIcon,
 } from "lucide-react"
 import { Link } from "react-router-dom"
 import type { DashboardPayload } from "@/types/dashboard"
@@ -19,6 +20,7 @@ const ITEMS = [
   { key: "gmail",    label: "Gmail",    icon: MailIcon },
   { key: "whatsapp", label: "WhatsApp", icon: MessageCircleIcon },
   { key: "slack",    label: "Slack",    icon: HashIcon },
+  { key: "jira",     label: "Jira",     icon: TicketIcon },
   { key: "rag",      label: "RAG",      icon: DatabaseIcon },
 ] as const
 

@@ -6,6 +6,7 @@ import { EmailPreview } from "@/components/pending/email-preview"
 import { WhatsAppPreview } from "@/components/pending/whatsapp-preview"
 import { FileOpPreview } from "@/components/pending/file-op-preview"
 import { TransferPreview } from "@/components/pending/transfer-preview"
+import { QaRepoScanPreview } from "@/components/pending/qa-repo-scan-preview"
 import { Skeleton } from "@/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 
@@ -17,6 +18,12 @@ const TYPE_COLORS: Record<string, string> = {
   pc_mkdir:      "border-amber-200 bg-amber-50 text-amber-700",
   file_transfer: "border-purple-200 bg-purple-50 text-purple-700",
   qa_autofix:    "border-indigo-200 bg-indigo-50 text-indigo-700",
+  qa_repo_scan:  "border-sky-200 bg-sky-50 text-sky-700",
+  varys_ticket:  "border-violet-200 bg-violet-50 text-violet-700",
+  jira_create_issue: "border-blue-200 bg-blue-50 text-blue-700",
+  jira_comment:  "border-blue-200 bg-blue-50 text-blue-700",
+  jira_transition: "border-blue-200 bg-blue-50 text-blue-700",
+  plan_preview:  "border-amber-200 bg-amber-50 text-amber-700",
 }
 
 export function PendingTab() {
@@ -124,6 +131,52 @@ export function PendingTab() {
                 <FileOpPreview type={action.type} payload={action.payload} />
               )}
               {action.type === "file_transfer" && <TransferPreview payload={action.payload} />}
+              {action.type === "qa_repo_scan" && <QaRepoScanPreview payload={action.payload} />}
+              {action.type === "varys_ticket" && (
+                <div className="space-y-2 text-sm text-muted-foreground">
+                  <p className="font-medium text-foreground">
+                    {String(action.payload?.title ?? action.title ?? "Work ticket")}
+                  </p>
+                  {action.payload?.ticket_id != null && (
+                    <p className="font-mono text-xs">{String(action.payload.ticket_id)}</p>
+                  )}
+                  {action.payload?.message != null && String(action.payload.message) !== "" && (
+                    <p className="whitespace-pre-wrap break-words">{String(action.payload.message)}</p>
+                  )}
+                  <p className="text-xs">Approve to enqueue implementation on the next orchestrator tick.</p>
+                </div>
+              )}
+              {(action.type === "jira_create_issue" ||
+                action.type === "jira_comment" ||
+                action.type === "jira_transition") && (
+                <div className="space-y-2 text-sm text-muted-foreground">
+                  {action.type === "jira_create_issue" && (
+                    <>
+                      <p className="font-medium text-foreground">
+                        {String(action.payload?.summary ?? action.title)}
+                      </p>
+                      {action.payload?.project != null && String(action.payload.project) !== "" && (
+                        <p className="text-xs">Project: {String(action.payload.project)}</p>
+                      )}
+                      {action.payload?.description != null && String(action.payload.description) !== "" && (
+                        <p className="whitespace-pre-wrap break-words">{String(action.payload.description)}</p>
+                      )}
+                    </>
+                  )}
+                  {action.type === "jira_comment" && (
+                    <>
+                      <p className="font-mono text-xs">{String(action.payload?.issue_key ?? "")}</p>
+                      <p className="whitespace-pre-wrap break-words">{String(action.payload?.body ?? "")}</p>
+                    </>
+                  )}
+                  {action.type === "jira_transition" && (
+                    <>
+                      <p className="font-mono text-xs">{String(action.payload?.issue_key ?? "")}</p>
+                      <p>Transition to: {String(action.payload?.transition ?? "")}</p>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )

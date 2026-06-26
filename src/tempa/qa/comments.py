@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from tempa.qa.github.auth import get_installation_token
+from tempa.qa.github.auth import get_github_token
 from tempa.qa.github.client import gh_post
-from tempa.qa.installations import installation_id_for_repo
 from tempa.qa.store import get_finding, update_finding
 
 log = logging.getLogger(__name__)
@@ -18,11 +17,7 @@ def post_finding_comment(finding_id: str) -> dict:
         raise ValueError("finding not found")
 
     repo = str(finding.get("repo") or "")
-    inst_id = installation_id_for_repo(repo)
-    if not inst_id:
-        raise RuntimeError(f"No installation for repo {repo}")
-
-    token = get_installation_token(inst_id)
+    token = get_github_token(repo)
     pr_number = finding.get("pr_number")
     body = _format_comment(finding)
 

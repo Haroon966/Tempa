@@ -66,7 +66,9 @@ def build_context(
     user_message: str,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    ctx = dict(context or {})
+    from tempa.core.cross_channel_conversation import enrich_conversation_context
+
+    ctx = enrich_conversation_context(dict(context or {}))
     cfg = load_varys_config()
     wing = str(ctx.get("varys_wing") or detect_project_wing())
     rules = load_rules_text()
@@ -87,11 +89,9 @@ def build_context(
     recent = ctx.get("recent_conversation") or []
     convo_lines = []
     if isinstance(recent, list):
-        for turn in recent[-8:]:
-            if isinstance(turn, dict):
-                role = turn.get("role", "user")
-                text = str(turn.get("text") or turn.get("content") or "")[:500]
-                convo_lines.append(f"{role}: {text}")
+        from tempa.core.cross_channel_conversation import format_conversation_lines
+
+        convo_lines = format_conversation_lines(recent, limit=16)
 
     system_parts = [
         f"You are {cfg.agent_name}, a personal AI assistant integrated with Tempa.",
@@ -110,7 +110,7 @@ def build_context(
 
     user_parts = []
     if convo_lines:
-        user_parts.append("## Recent conversation\n" + "\n".join(convo_lines))
+        user_parts.append("## Recent conversation (all channels)\n" + "\n".join(convo_lines))
     user_parts.append("## Current message\n" + user_message)
 
     return {

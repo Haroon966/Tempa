@@ -233,11 +233,12 @@ def compute_grade(
 def summary_stats() -> dict[str, Any]:
     branches = list_branch_statuses()
     findings = list_findings(status="open", limit=10000)
-    repos = sorted({b.get("repo") for b in branches if b.get("repo")})
-    failing = [b for b in branches if b.get("grade") in ("D", "F") or b.get("ci_status") == "failure"]
-    critical = [f for f in findings if f.get("severity") in ("critical", "high")]
+    from tempa.qa.installations import list_repos
     from tempa.qa.job_store import queue_depth
 
+    repos = list_repos()
+    failing = [b for b in branches if b.get("grade") in ("D", "F") or b.get("ci_status") == "failure"]
+    critical = [f for f in findings if f.get("severity") in ("critical", "high")]
     last_scan = max((b.get("last_scan_at") or "" for b in branches), default="")
     return {
         "repos_monitored": len(repos),

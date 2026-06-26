@@ -8,6 +8,7 @@ import {
   MessageCircleIcon,
   RefreshCwIcon,
   ServerIcon,
+  TicketIcon,
   VideoIcon,
   type LucideIcon,
 } from "lucide-react"
@@ -31,6 +32,8 @@ import {
   revokeMeetConsent,
   saveGoogleCredentials,
   saveGroqKey,
+  connectJira,
+  disconnectJira,
   startGmailOAuth,
   startGoogleOAuth,
   type WhatsAppStatus,
@@ -94,6 +97,7 @@ export function ConnectionsTab({
   const gmail    = data.connections.gmail
   const whatsapp = data.connections.whatsapp
   const slack = data.connections.slack
+  const jira = data.connections.jira
   const bridge = data.connections.whatsapp_bridge ?? data.connections.evolution_api
   const meetAutoJoin = data.connections.meet_auto_join
 
@@ -120,6 +124,12 @@ export function ConnectionsTab({
   const [meetReadiness, setMeetReadiness] = useState<Awaited<
     ReturnType<typeof fetchMeetReadiness>
   > | null>(null)
+
+  const [jiraBaseUrl, setJiraBaseUrl] = useState("")
+  const [jiraEmail, setJiraEmail] = useState("")
+  const [jiraToken, setJiraToken] = useState("")
+  const [jiraProject, setJiraProject] = useState("")
+  const [jiraBusy, setJiraBusy] = useState(false)
 
   const googleCredsConfigured =
     "credentials_configured" in google && google.credentials_configured === true
@@ -231,6 +241,12 @@ export function ConnectionsTab({
   useEffect(() => {
     void loadMeetStatus()
   }, [loadMeetStatus])
+
+  useEffect(() => {
+    if (jira?.base_url) setJiraBaseUrl(String(jira.base_url))
+    if (jira?.email) setJiraEmail(String(jira.email))
+    if (jira?.default_project) setJiraProject(String(jira.default_project))
+  }, [jira?.base_url, jira?.email, jira?.default_project])
 
   useEffect(() => {
     if (groq?.connected) {
@@ -372,6 +388,52 @@ export function ConnectionsTab({
       toast.error(e instanceof Error ? e.message : "Failed to revoke consent")
     } finally {
       setConsentBusy(false)
+    }
+  }
+
+  async function handleSaveJira() {
+    if (!jiraBaseUrl.trim() || !jiraEmail.trim()) {
+      toast.error("Enter Jira base URL and email")
+      return
+    }
+    if (!jira?.connected && !jiraToken.trim()) {
+      toast.error("Enter a Jira API token")
+      return
+    }
+    setJiraBusy(true)
+    try {
+      const result = await connectJira({
+        base_url: jiraBaseUrl.trim(),
+        email: jiraEmail.trim(),
+        api_token: jiraToken.trim() || undefined,
+        default_project: jiraProject.trim(),
+        enabled: true,
+      })
+      if (result.connected) {
+        toast.success(`Jira connected${result.display_name ? ` (${result.display_name})` : ""}`)
+        setJiraToken("")
+        onRefresh()
+      } else {
+        toast.error(result.detail ?? "Jira connection failed")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Jira connection failed")
+    } finally {
+      setJiraBusy(false)
+    }
+  }
+
+  async function handleJiraDisconnect() {
+    setJiraBusy(true)
+    try {
+      await disconnectJira()
+      toast.success("Jira disconnected")
+      setJiraToken("")
+      onRefresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to disconnect Jira")
+    } finally {
+      setJiraBusy(false)
     }
   }
 
@@ -642,6 +704,82 @@ export function ConnectionsTab({
             , enable Socket Mode, subscribe to <code>message.im</code> and{" "}
             <code>app_mention</code>, then set <code>SLACK_BOT_TOKEN</code> and{" "}
             <code>SLACK_APP_TOKEN</code> in <code>.env</code> and restart the daemon.
+          </p>
+        </PanelCard>
+
+        {/* Jira */}
+        <PanelCard
+          title="Jira"
+          description="Jira Cloud — issue search, sync, and approved writes"
+          icon={TicketIcon}
+          action={
+            <StatusBadge
+              status={
+                jira?.connected
+                  ? "connected"
+                  : jira?.configured
+                    ? "degraded"
+                    : (jira?.status ?? "disconnected")
+              }
+            />
+          }
+          contentClassName="flex flex-col gap-3"
+        >
+          {"detail" in (jira ?? {}) && typeof jira?.detail === "string" && jira.detail && (
+            <p className="text-sm text-muted-foreground">{jira.detail}</p>
+          )}
+          <Input
+            placeholder="https://yourorg.atlassian.net"
+            value={jiraBaseUrl}
+            onChange={(e) => setJiraBaseUrl(e.target.value)}
+            autoComplete="off"
+            aria-label="Jira base URL"
+            className="focus:border-primary/40"
+          />
+          <Input
+            placeholder="you@company.com"
+            value={jiraEmail}
+            onChange={(e) => setJiraEmail(e.target.value)}
+            autoComplete="off"
+            aria-label="Jira email"
+            className="focus:border-primary/40"
+          />
+          <Input
+            type="password"
+            placeholder={jira?.connected ? "API token (leave blank to keep)" : "JIRA API token"}
+            value={jiraToken}
+            onChange={(e) => setJiraToken(e.target.value)}
+            autoComplete="off"
+            aria-label="Jira API token"
+            className="focus:border-primary/40"
+          />
+          <Input
+            placeholder="Default project key (e.g. ENG)"
+            value={jiraProject}
+            onChange={(e) => setJiraProject(e.target.value)}
+            autoComplete="off"
+            aria-label="Jira default project"
+            className="focus:border-primary/40"
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button className="cursor-pointer" onClick={() => void handleSaveJira()} disabled={jiraBusy}>
+              {jiraBusy ? "Testing…" : "Save & test"}
+            </Button>
+            {jira?.connected && (
+              <Button
+                variant="outline"
+                className="cursor-pointer"
+                onClick={() => void handleJiraDisconnect()}
+                disabled={jiraBusy}
+              >
+                Disconnect
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Create an API token at Atlassian account settings → Security → API tokens. Enable polling
+            in <code>config/varys.yaml</code> with <code>jira_enabled: true</code> and{" "}
+            <code>jira_projects</code>.
           </p>
         </PanelCard>
 

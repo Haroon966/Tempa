@@ -32,7 +32,6 @@ _GMAIL_HINTS = (
     "forward",
     "draft",
     "subject",
-    "from ",
     "mail",
 )
 
@@ -117,6 +116,8 @@ def wants_gmail_full(user_message: str) -> bool:
     lower = user_message.lower()
     if re.search(r"\b(gmail|email|e-mail|inbox)\b", lower):
         return True
+    if re.search(r"\b(?:emails?|mail|inbox|gmail)\s+from\b", lower):
+        return True
     if any(h in lower for h in _GMAIL_HINTS if h not in {"mail"}):
         return True
     if re.search(r"\bmail\b", lower) and "message" not in lower:
@@ -136,6 +137,53 @@ def wants_meeting_archive(user_message: str) -> bool:
 def wants_repo_qa(user_message: str) -> bool:
     lower = user_message.lower()
     return any(h in lower for h in _REPO_QA_HINTS)
+
+
+_JIRA_HINTS = (
+    "jira",
+    "jql",
+    "backlog",
+    "sprint",
+    "story point",
+)
+
+_JIRA_ISSUE_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
+
+
+def wants_jira(user_message: str) -> bool:
+    lower = user_message.lower()
+    if any(h in lower for h in _JIRA_HINTS):
+        return True
+    if extract_jira_issue_key(user_message):
+        return True
+    if is_follow_up(user_message) and any(k in lower for k in ("jira", "issue", "ticket", "bug")):
+        return True
+    return False
+
+
+def extract_jira_issue_key(text: str) -> str:
+    match = _JIRA_ISSUE_KEY_RE.search(text or "")
+    return match.group(0) if match else ""
+
+
+def has_non_slack_tool_intent(user_message: str) -> bool:
+    """True when the message targets another integration, not Slack channel lookup."""
+    from tempa.channels.slack.lookup import wants_slack_read_intent
+
+    if wants_slack_read_intent(user_message):
+        return False
+
+    if wants_jira(user_message):
+        return True
+    if wants_gmail_full(user_message):
+        return True
+    if wants_calendar_full(user_message):
+        return True
+    if wants_meeting_archive(user_message):
+        return True
+    if wants_repo_qa(user_message):
+        return True
+    return False
 
 
 def wants_calendar(user_message: str) -> bool:

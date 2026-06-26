@@ -1,22 +1,27 @@
 import { useCallback, useEffect, useState } from "react"
 import {
+  deleteQaRepo,
   fetchQaAgentPlaybook,
   fetchQaBranches,
   fetchQaFindings,
   fetchQaJobs,
+  fetchQaRepos,
   fetchQaSummary,
   postQaComment,
   postQaFix,
+  postQaRepo,
   postQaScan,
   type QaAgentPlaybook,
   type QaBranchStatus,
   type QaFinding,
   type QaJob,
+  type QaRepoEntry,
   type QaSummary,
 } from "@/lib/api"
 
 export function useQa(pollMs = 12000) {
   const [summary, setSummary] = useState<QaSummary | null>(null)
+  const [repos, setRepos] = useState<QaRepoEntry[]>([])
   const [branches, setBranches] = useState<QaBranchStatus[]>([])
   const [findings, setFindings] = useState<QaFinding[]>([])
   const [jobs, setJobs] = useState<QaJob[]>([])
@@ -26,17 +31,19 @@ export function useQa(pollMs = 12000) {
   const refresh = useCallback(async () => {
     const results = await Promise.allSettled([
       fetchQaSummary(),
+      fetchQaRepos(),
       fetchQaBranches(),
       fetchQaFindings(),
       fetchQaJobs(),
     ])
-    const [s, b, f, j] = results
+    const [s, r, b, f, j] = results
     if (s.status === "fulfilled") setSummary(s.value)
+    if (r.status === "fulfilled") setRepos(r.value.repos)
     if (b.status === "fulfilled") setBranches(b.value.branches)
     if (f.status === "fulfilled") setFindings(f.value.findings)
     if (j.status === "fulfilled") setJobs(j.value.jobs)
 
-    const failed = results.find((r) => r.status === "rejected")
+    const failed = results.find((res) => res.status === "rejected")
     if (failed && failed.status === "rejected") {
       setError(failed.reason instanceof Error ? failed.reason.message : String(failed.reason))
     } else {
@@ -52,8 +59,24 @@ export function useQa(pollMs = 12000) {
   }, [refresh, pollMs])
 
   const scanRepo = useCallback(
-    async (repo: string, branch?: string) => {
-      await postQaScan(repo, branch)
+    async (repo: string, branch?: string, prNumber?: number) => {
+      await postQaScan(repo, branch, prNumber)
+      await refresh()
+    },
+    [refresh],
+  )
+
+  const addRepo = useCallback(
+    async (repo: string) => {
+      await postQaRepo(repo)
+      await refresh()
+    },
+    [refresh],
+  )
+
+  const removeRepo = useCallback(
+    async (repo: string) => {
+      await deleteQaRepo(repo)
       await refresh()
     },
     [refresh],
@@ -84,6 +107,7 @@ export function useQa(pollMs = 12000) {
 
   return {
     summary,
+    repos,
     branches,
     findings,
     jobs,
@@ -91,6 +115,8 @@ export function useQa(pollMs = 12000) {
     error,
     refresh,
     scanRepo,
+    addRepo,
+    removeRepo,
     commentFinding,
     requestFix,
     loadAgentPlaybook,

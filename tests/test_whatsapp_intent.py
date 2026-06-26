@@ -26,3 +26,8 @@ def test_route_pc_coordinator():
 
 def test_route_chat_default():
     assert route_whatsapp_intent("hello there") == WhatsAppIntent.CHAT
+
+
+def test_github_url_routes_to_coordinator():
+    text = "https://github.com/Haroon966/Wavo scan this repo"
+    assert route_whatsapp_intent(text) == WhatsAppIntent.COORDINATOR

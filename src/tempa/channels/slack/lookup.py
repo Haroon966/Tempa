@@ -28,6 +28,10 @@ _USER_FROM_RE = re.compile(
     r"\b(?:message\s+)?(?:from|by|of)\s+([A-Za-z][\w.-]*)",
     re.I,
 )
+_USER_STOP_WORDS = frozenset(
+    {"the", "a", "an", "this", "that", "in", "it", "what", "my", "your", "our"}
+)
+_KNOWN_BOT_HINTS = frozenset({"varys", "tempa", "bot", "chatgpt"})
 _INVITE_HELP_RE = re.compile(
     r"\b(?:how\s+(?:to|do\s+i)|add\s+you|invite\s+you|join\s+)(?:\s+\w+){0,4}\s*(?:channel|slack)\b",
     re.I,
@@ -77,7 +81,9 @@ def parse_slack_read_query(text: str) -> dict[str, str]:
     user = ""
     match = _USER_FROM_RE.search(text)
     if match:
-        user = match.group(1).strip()
+        candidate = match.group(1).strip()
+        if candidate.lower() not in _USER_STOP_WORDS:
+            user = candidate
     return {"channel": channel, "user": user}
 
 
@@ -181,6 +187,11 @@ def _build_user_names(client) -> dict[str, str]:
     return names
 
 
+def _is_bot_hint(hint: str) -> bool:
+    key = _normalize_name(hint)
+    return key in {_normalize_name(name) for name in _KNOWN_BOT_HINTS}
+
+
 def _message_matches_user(
     msg: dict[str, Any],
     *,
@@ -188,17 +199,25 @@ def _message_matches_user(
     user_hint: str,
     user_names: dict[str, str],
 ) -> bool:
-    if msg.get("bot_id") or msg.get("subtype"):
+    subtype = str(msg.get("subtype") or "")
+    if subtype and subtype not in ("", "bot_message"):
         return False
+
     uid = str(msg.get("user") or "")
-    if not uid:
-        return False
+    bot_id = msg.get("bot_id")
     if user_id:
-        return uid == user_id
+        return bool(uid) and uid == user_id
     if user_hint:
         display = user_names.get(uid, "")
-        return _name_matches(user_hint, display) or _name_matches(user_hint, uid)
-    return True
+        username = str(msg.get("username") or "")
+        if _name_matches(user_hint, display) or _name_matches(user_hint, username):
+            return True
+        if bot_id and _is_bot_hint(user_hint):
+            return True
+        return False
+    if bot_id:
+        return False
+    return bool(uid)
 
 
 def lookup_latest_slack_message(text: str) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""GitHub App authentication."""
+"""GitHub authentication — PAT or GitHub App."""
 
 from __future__ import annotations
 
@@ -24,8 +24,35 @@ def _private_key() -> str:
     return get_settings().github_private_key.replace("\\n", "\n").strip()
 
 
+def _pat_token() -> str:
+    return get_settings().github_token.strip()
+
+
+def github_uses_pat() -> bool:
+    return bool(_pat_token())
+
+
 def github_configured() -> bool:
-    return bool(_app_id() and _private_key())
+    return bool(_pat_token() or (_app_id() and _private_key()))
+
+
+def github_auth_mode() -> str | None:
+    if github_uses_pat():
+        return "pat"
+    if _app_id() and _private_key():
+        return "app"
+    return None
+
+
+def get_github_token(repo: str | None = None) -> str:
+    if pat := _pat_token():
+        return pat
+    from tempa.qa.installations import installation_id_for_repo
+
+    inst_id = installation_id_for_repo(repo) if repo else None
+    if inst_id:
+        return get_installation_token(inst_id)
+    raise RuntimeError("No GitHub token configured")
 
 
 def get_jwt() -> str:

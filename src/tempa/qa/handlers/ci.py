@@ -8,7 +8,7 @@ import logging
 from typing import Any
 
 from tempa.qa.config import load_qa_config
-from tempa.qa.github.auth import get_installation_token
+from tempa.qa.github.auth import get_github_token, github_uses_pat, get_installation_token
 from tempa.qa.github.client import gh_post
 from tempa.qa.store import add_finding
 
@@ -50,7 +50,10 @@ def handle_ci_failure(payload: dict[str, Any]) -> None:
     )
 
     try:
-        token = get_installation_token(installation_id)
+        if github_uses_pat():
+            token = get_github_token(repo)
+        else:
+            token = get_installation_token(installation_id)
     except Exception as exc:
         log.error("CI handler auth failed: %s", exc)
         return

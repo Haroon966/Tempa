@@ -30,6 +30,7 @@ _PC_HINTS = (
     "write file",
     "read file",
 )
+_GITHUB_HINTS = ("github.com", "scan repo", "scan this", "any fixes", "fix it", "pull request", "pr ")
 _STATUS_FOLLOWUPS = {
     "why",
     "reason",
@@ -118,6 +119,9 @@ def route_whatsapp_intent(text: str, context: dict[str, Any] | None = None) -> W
         return WhatsAppIntent.GMAIL
 
     if any(hint in lower for hint in _PC_HINTS):
+        return WhatsAppIntent.COORDINATOR
+
+    if "github.com" in lower or any(h in lower for h in _GITHUB_HINTS):
         return WhatsAppIntent.COORDINATOR
 
     if context.get("meet_url"):

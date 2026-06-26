@@ -1,4 +1,7 @@
 enabled: true
+# Optional repo list when using GITHUB_TOKEN (merged with GITHUB_REPOS env)
+# repos:
+#   - owner/repo-a
 scan_on_push: true
 scan_on_pr: true
 local_checks:

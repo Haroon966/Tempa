@@ -334,6 +334,9 @@ cp .env.example .env</code></pre>
 | `CLAUDE_CODE_PATH` | Path to Claude Code CLI (`claude`) |
 | `VARYS_VAULT_DIR` | Vault memory directory (default `data/vault`) |
 | `NOTION_API_KEY` | Optional Notion brain for Varys harness |
+| `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | Jira Cloud (Connections tab or env) |
+| `JIRA_ENABLED` | Enable Jira poller + chat tools |
+| `JIRA_DEFAULT_PROJECT` | Default Jira project key (e.g. `ENG`) |
 
 📄 [`.env.example`](.env.example) · [`services/whatsapp-bridge/.env.example`](services/whatsapp-bridge/.env.example)
 

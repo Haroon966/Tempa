@@ -12,8 +12,8 @@ from pydantic import BaseModel
 from tempa.qa.comments import post_finding_comment
 from tempa.qa.config import qa_enabled
 from tempa.qa.dispatch import dispatch_event
-from tempa.qa.github.auth import github_configured
-from tempa.qa.job_store import enqueue_scan, list_jobs
+from tempa.qa.github.auth import github_auth_mode, github_configured
+from tempa.qa.job_store import list_jobs
 from tempa.qa.store import get_finding, list_branch_statuses, list_findings, summary_stats
 from tempa.qa.webhook import verify_webhook_request, webhook_configured
 
@@ -22,9 +22,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+class RepoRequest(BaseModel):
+    repo: str
+
+
 class ScanRequest(BaseModel):
     repo: str
     branch: str | None = None
+    pr_number: int | None = None
 
 
 class DeepReviewRequest(BaseModel):
@@ -65,18 +70,21 @@ async def api_qa_summary():
     settings = get_settings()
     groq_ok = bool(settings.load_groq_api_key())
     gh_ok = github_configured()
+    auth_mode = github_auth_mode()
     if not qa_enabled():
         return {
             "enabled": False,
             "configured": gh_ok,
             "groq_configured": groq_ok,
             "github_configured": gh_ok,
+            "github_auth_mode": auth_mode,
         }
     return {
         "enabled": True,
         "configured": gh_ok,
         "groq_configured": groq_ok,
         "github_configured": gh_ok,
+        "github_auth_mode": auth_mode,
         "qa_engine": "groq",
         **summary_stats(),
     }
@@ -102,20 +110,51 @@ async def api_qa_jobs(limit: int = 50):
     return {"jobs": list_jobs(limit=limit)}
 
 
+@router.get("/qa/repos")
+async def api_qa_repos():
+    from tempa.qa.installations import list_repos_detail
+
+    return {"repos": list_repos_detail()}
+
+
+@router.post("/qa/repos")
+async def api_qa_add_repo(body: RepoRequest):
+    from tempa.qa.allowed_repos import add_repo, normalize_repo
+
+    name = normalize_repo(body.repo)
+    if not name:
+        raise HTTPException(status_code=400, detail="invalid_repo")
+    try:
+        record = add_repo(name, source="qa_dashboard")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_repo")
+    return {"status": "added", "repo": record}
+
+
+@router.delete("/qa/repos/{repo:path}")
+async def api_qa_remove_repo(repo: str):
+    from tempa.qa.allowed_repos import is_dynamic_repo, remove_repo
+
+    name = repo.strip()
+    if not is_dynamic_repo(name):
+        raise HTTPException(status_code=400, detail="not_removable")
+    if not remove_repo(name):
+        raise HTTPException(status_code=404, detail="not_found")
+    return {"status": "removed", "repo": name}
+
+
 @router.post("/qa/scan")
 async def api_qa_scan(body: ScanRequest):
     if not qa_enabled():
         raise HTTPException(status_code=503, detail="qa_disabled")
-    from tempa.qa.installations import installation_id_for_repo
+    from tempa.qa.github.parse import GitHubTarget
+    from tempa.qa.scan_request import handle_github_scan_request
 
-    inst_id = installation_id_for_repo(body.repo)
-    job_id = enqueue_scan(
-        body.repo,
-        branch=body.branch,
-        installation_id=inst_id,
-        job_type="branch_scan" if body.branch else "repo_scan",
-    )
-    return {"status": "queued", "job_id": job_id}
+    target = GitHubTarget(repo=body.repo, branch=body.branch, pr_number=body.pr_number)
+    result = handle_github_scan_request("", source_channel="qa_dashboard", target=target)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("message", "scan_failed"))
+    return result
 
 
 @router.post("/qa/findings/{finding_id}/comment")

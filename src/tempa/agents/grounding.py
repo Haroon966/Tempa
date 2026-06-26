@@ -154,6 +154,7 @@ def build_grounding_pack(
     pack: dict[str, Any] = {
         "whatsapp_thread": "",
         "dashboard_thread": "",
+        "cross_channel_thread": "",
         "gmail_compact": "",
         "gmail_full": "",
         "calendar_today": "",
@@ -171,6 +172,21 @@ def build_grounding_pack(
         "slack_context": "",
         "slack_last_sync_at": "",
     }
+
+    try:
+        from tempa.core.cross_channel_conversation import (
+            collect_cross_channel_conversation,
+            format_conversation_lines,
+        )
+
+        turns = collect_cross_channel_conversation(context)
+        lines = format_conversation_lines(turns, limit=16)
+        if lines:
+            pack["cross_channel_thread"] = "Recent conversation (all channels):\n" + "\n".join(
+                f"- {line}" for line in lines
+            )
+    except Exception as exc:
+        logger.warning("Cross-channel conversation build failed: %s", exc)
 
     if private_ok and not inbound_slack and channel != "slack" and (channel == "whatsapp" or mentions_whatsapp):
         try:
@@ -318,6 +334,8 @@ def format_grounding_for_prompt(pack: dict[str, Any], *, owner: str = "owner") -
     if pack.get("local_time"):
         parts.append(f"Owner's local time: {pack['local_time']}")
 
+    if pack.get("cross_channel_thread"):
+        parts.append(pack["cross_channel_thread"])
     if pack.get("whatsapp_thread"):
         parts.append(pack["whatsapp_thread"])
     if pack.get("dashboard_thread"):

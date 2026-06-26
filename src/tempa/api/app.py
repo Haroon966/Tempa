@@ -58,6 +58,14 @@ class GroqConnectionRequest(BaseModel):
     api_key: str
 
 
+class JiraConnectionRequest(BaseModel):
+    base_url: str
+    email: str
+    api_token: str = ""
+    default_project: str = ""
+    enabled: bool = True
+
+
 class GoogleCredentialsRequest(BaseModel):
     client_id: str
     client_secret: str
@@ -937,6 +945,59 @@ if (window.opener) {{
         from tempa.channels.slack.session import connection_status
 
         return await connection_status()
+
+    @app.get("/api/connections/jira")
+    async def jira_status():
+        from tempa.channels.jira.status import jira_connection_status
+
+        return await asyncio.to_thread(jira_connection_status)
+
+    @app.post("/api/connections/jira")
+    async def connect_jira(body: JiraConnectionRequest):
+        from tempa.channels.jira.client import test_connection
+        from tempa.channels.jira.session import load_jira_api_token, save_jira_session_config
+
+        token = body.api_token.strip() or load_jira_api_token()
+        if not body.base_url.strip() or not body.email.strip() or not token:
+            return {
+                "status": "error",
+                "detail": "Base URL, email, and API token are required",
+                "connected": False,
+            }
+        save_jira_session_config(
+            base_url=body.base_url,
+            email=body.email,
+            default_project=body.default_project,
+            api_token=token if body.api_token.strip() else None,
+        )
+        settings.jira_base_url = body.base_url.strip().rstrip("/")
+        settings.jira_email = body.email.strip()
+        settings.jira_default_project = body.default_project.strip()
+        settings.jira_enabled = body.enabled
+        if body.api_token.strip():
+            settings.jira_api_token = body.api_token.strip()
+        try:
+            result = await asyncio.to_thread(test_connection)
+            return {
+                "status": "connected",
+                "connected": True,
+                "display_name": result.get("display_name"),
+                "detail": result.get("display_name") or "Connected",
+            }
+        except Exception as exc:
+            return {"status": "error", "connected": False, "detail": str(exc)[:200]}
+
+    @app.delete("/api/connections/jira")
+    async def disconnect_jira():
+        from tempa.channels.jira.session import clear_jira_session
+
+        clear_jira_session()
+        settings.jira_base_url = ""
+        settings.jira_email = ""
+        settings.jira_api_token = ""
+        settings.jira_default_project = ""
+        settings.jira_enabled = False
+        return {"status": "disconnected", "connected": False}
 
     @app.post("/api/chat/runs/{run_id}/cancel")
     async def cancel_chat_run(run_id: str):

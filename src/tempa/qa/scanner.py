@@ -11,7 +11,7 @@ from typing import Any
 
 from tempa.qa.checks.local import parse_pytest_summary, parse_ruff_findings, run_pytest, run_ruff
 from tempa.qa.config import load_qa_config, qa_worktrees_dir
-from tempa.qa.github.auth import get_installation_token
+from tempa.qa.github.auth import get_github_token, github_uses_pat
 from tempa.qa.github.client import gh_get, gh_get_all
 from tempa.qa.installations import installation_id_for_repo
 from tempa.qa.security.scanner import run_security_scan
@@ -124,10 +124,11 @@ def scan_branch(
     scan_job_id: str = "",
 ) -> dict[str, Any]:
     inst_id = installation_id or installation_id_for_repo(repo)
-    if not token and inst_id:
-        token = get_installation_token(inst_id)
     if not token:
-        raise RuntimeError(f"No GitHub token for repo {repo}")
+        try:
+            token = get_github_token(repo)
+        except RuntimeError as exc:
+            raise RuntimeError(f"No GitHub token for repo {repo}") from exc
 
     cfg = load_qa_config()
     checks = cfg.get("local_checks") or ["ruff", "pytest"]
@@ -245,9 +246,12 @@ def scan_branch(
 
 def scan_all_branches_for_repo(repo: str, *, installation_id: int | None = None) -> list[str]:
     inst_id = installation_id or installation_id_for_repo(repo)
-    if not inst_id:
+    if not inst_id and not github_uses_pat():
         return []
-    token = get_installation_token(inst_id)
+    try:
+        token = get_github_token(repo)
+    except RuntimeError:
+        return []
     job_ids: list[str] = []
     from tempa.qa.job_store import enqueue_scan
 

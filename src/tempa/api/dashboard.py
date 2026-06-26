@@ -257,6 +257,47 @@ def _calendar_reminders_component(
     }
 
 
+def _jira_component(jira: dict[str, Any]) -> dict[str, Any]:
+    connected = jira.get("connected", False)
+    configured = jira.get("configured", False)
+    enabled = jira.get("enabled", False)
+    if connected and enabled:
+        return {
+            "id": "jira",
+            "name": "Jira",
+            "category": "integrations",
+            "status": "healthy",
+            "message": jira.get("detail") or "Jira Cloud connected",
+            "action": None,
+        }
+    if connected and not enabled:
+        return {
+            "id": "jira",
+            "name": "Jira",
+            "category": "integrations",
+            "status": "degraded",
+            "message": "Connected — set JIRA_ENABLED=true to poll issues",
+            "action": "/connections",
+        }
+    if configured:
+        return {
+            "id": "jira",
+            "name": "Jira",
+            "category": "integrations",
+            "status": "degraded",
+            "message": jira.get("detail") or "Jira credentials saved — connection test failed",
+            "action": "/connections",
+        }
+    return {
+        "id": "jira",
+        "name": "Jira",
+        "category": "integrations",
+        "status": "unhealthy",
+        "message": "Optional — connect Jira on Connections for issue sync",
+        "action": "/connections",
+    }
+
+
 def _component_checks(
     *,
     groq: dict[str, Any],
@@ -264,6 +305,7 @@ def _component_checks(
     bridge: dict[str, Any],
     whatsapp: dict[str, Any],
     slack: dict[str, Any],
+    jira: dict[str, Any],
     rag_connected: bool = True,
     rag_error: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -328,6 +370,7 @@ def _component_checks(
         },
         _whatsapp_bridge_component(bridge, whatsapp),
         _slack_component(slack, groq),
+        _jira_component(jira),
         {
             "id": "whatsapp_autoreply",
             "name": "WhatsApp Auto-Reply",
@@ -533,6 +576,10 @@ async def build_dashboard_payload() -> dict[str, Any]:
 
     slack_detail = await connection_status()
 
+    from tempa.channels.jira.status import jira_connection_status
+
+    jira_detail = await asyncio.to_thread(jira_connection_status)
+
     meetings = await list_meetings()
 
     upcoming_meets: list[dict[str, Any]] = []
@@ -626,6 +673,7 @@ async def build_dashboard_payload() -> dict[str, Any]:
         bridge=bridge,
         whatsapp=wa_detail,
         slack=slack_detail,
+        jira=jira_detail,
         rag_connected=rag_connected,
         rag_error=rag_error,
     )
@@ -651,6 +699,7 @@ async def build_dashboard_payload() -> dict[str, Any]:
         "whatsapp": wa_detail,
         "whatsapp_bridge": bridge,
         "slack": slack_detail,
+        "jira": jira_detail,
         "evolution_api": bridge,
         "meet_auto_join": {
             "ready": meet_ready.ready,

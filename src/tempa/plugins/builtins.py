@@ -160,6 +160,64 @@ def _register_preference_tools() -> None:
     )
 
 
+def _register_jira_tools() -> None:
+    from tempa.channels.jira.client import get_issue, jira_configured, list_projects, search_issues
+
+    def jira_search(jql: str = "", max_results: int = 25) -> dict[str, Any]:
+        if not jira_configured():
+            return {"status": "error", "reason": "Jira not connected"}
+        if not jql.strip():
+            from tempa.channels.jira.session import load_jira_session_config
+
+            project = load_jira_session_config().get("default_project", "")
+            jql = f"project = {project} ORDER BY updated DESC" if project else "ORDER BY updated DESC"
+        issues = search_issues(jql, max_results=max_results)
+        return {"status": "ok", "count": len(issues), "issues": issues}
+
+    def jira_get_issue(issue_key: str = "") -> dict[str, Any]:
+        if not jira_configured():
+            return {"status": "error", "reason": "Jira not connected"}
+        if not issue_key.strip():
+            return {"status": "error", "reason": "issue_key required"}
+        issue = get_issue(issue_key.strip().upper())
+        return {"status": "ok", "issue": issue}
+
+    def jira_list_projects() -> dict[str, Any]:
+        if not jira_configured():
+            return {"status": "error", "reason": "Jira not connected"}
+        projects = list_projects()
+        return {"status": "ok", "count": len(projects), "projects": projects}
+
+    register_tool(
+        "jira.search",
+        "Search Jira issues with JQL",
+        jira_search,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "jql": {"type": "string"},
+                "max_results": {"type": "integer", "default": 25},
+            },
+        },
+    )
+    register_tool(
+        "jira.get_issue",
+        "Get a Jira issue by key (e.g. ENG-123)",
+        jira_get_issue,
+        input_schema={
+            "type": "object",
+            "properties": {"issue_key": {"type": "string"}},
+            "required": ["issue_key"],
+        },
+    )
+    register_tool(
+        "jira.list_projects",
+        "List Jira projects visible to the connected account",
+        jira_list_projects,
+        input_schema={"type": "object", "properties": {}},
+    )
+
+
 def register_builtin_tools() -> None:
     """Register first-party plugin tools (FR-PLUGIN-01/02)."""
     _register_memory_tools()
@@ -167,6 +225,7 @@ def register_builtin_tools() -> None:
     _register_calendar_tools()
     _register_meet_tools()
     _register_preference_tools()
+    _register_jira_tools()
 
     from tempa.pc import tools as pc_tools
 

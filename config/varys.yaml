@@ -5,4 +5,6 @@ orchestrator_tick_seconds: 270
 harness_db: data/harness/harness.db
 vault_dir: data/vault
 notion_enabled: false
+jira_enabled: false
+jira_projects: []
 repos: []
