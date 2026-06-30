@@ -288,7 +288,18 @@ export async function fetchContacts(q = "") {
 }
 
 export async function syncContacts() {
-  return request<{ status: string; count?: number }>("/api/contacts/sync", { method: "POST" })
+  return request<{ status: string; count?: number; identity_link_count?: number }>(
+    "/api/contacts/sync",
+    { method: "POST" },
+  )
+}
+
+export async function syncAll(maxEmails = 500) {
+  return request<{
+    status: string
+    jira_users?: { status: string; user_count?: number }
+    identity_link_count?: number
+  }>(`/api/sync/all?max_emails=${maxEmails}`, { method: "POST" })
 }
 
 export interface Contact {
@@ -678,4 +689,8 @@ export async function fetchQaAgentPlaybook(findingId: string, target: "claude" |
   return request<QaAgentPlaybook>(
     `/api/qa/findings/${findingId}/agent-playbook?target=${encodeURIComponent(target)}`,
   )
+}
+
+export async function fetchOrchestrator() {
+  return request<import("@/types/dashboard").OrchestratorManifest>("/api/orchestrator")
 }

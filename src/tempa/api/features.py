@@ -183,7 +183,16 @@ async def api_contacts(q: str = "", limit: int = 50):
 async def api_contacts_sync():
     from tempa.channels.contacts.sync import sync_contacts
 
-    return await sync_contacts()
+    result = await sync_contacts()
+    try:
+        from tempa.channels.contacts.linker import identity_link_count
+        from tempa.channels.jira.sync import sync_jira_users
+
+        result["jira_users"] = await sync_jira_users()
+        result["identity_link_count"] = identity_link_count()
+    except Exception as exc:
+        result["jira_users"] = {"status": "error", "reason": str(exc)}
+    return result
 
 
 @router.post("/sync/all")

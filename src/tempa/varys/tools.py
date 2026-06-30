@@ -20,8 +20,86 @@ def _format_agent_block(label: str, payload: str) -> str:
         return f"## {label}\n{payload[:4000]}"
 
 
+async def _invoke_worker(agent: str, user_message: str, ctx: dict[str, Any], label: str) -> str | None:
+    from tempa.agents.specialists import (
+        run_calendar_agent,
+        run_channel_agent,
+        run_gmail_agent,
+        run_meet_agent,
+        run_pc_agent,
+        run_plugin_agent,
+        run_qa_agent,
+    )
+
+    runners = {
+        "gmail": run_gmail_agent,
+        "calendar": run_calendar_agent,
+        "meet": run_meet_agent,
+        "qa": run_qa_agent,
+        "plugin": run_plugin_agent,
+        "channel": run_channel_agent,
+        "pc": run_pc_agent,
+    }
+    runner = runners.get(agent)
+    if runner is None:
+        return None
+    try:
+        result = await runner(user_message, ctx)
+        return _format_agent_block(label, result)
+    except Exception as exc:
+        logger.warning("Varys %s worker failed: %s", label, exc)
+        return None
+
+
+async def invoke_skill_workers(user_message: str, context: dict[str, Any] | None = None) -> str:
+    """Prefetch workers implied by matched skills."""
+    from tempa.orchestrator.registry import filter_workers_for_context
+    from tempa.skills.matcher import match_skills
+    from tempa.skills.routing import workers_from_skills
+
+    ctx = dict(context or {})
+    skills = match_skills(user_message, ctx)
+    if not skills:
+        return ""
+    worker_ids = workers_from_skills(skills)
+    allowed = filter_workers_for_context(set(worker_ids), ctx)
+    labels = {
+        "gmail": "Gmail",
+        "calendar": "Calendar",
+        "meet": "Meetings",
+        "qa": "QA",
+        "plugin": "Jira",
+        "channel": "Slack",
+        "pc": "PC",
+    }
+    parts: list[str] = []
+    for wid in worker_ids:
+        if wid not in allowed or wid == "rag":
+            continue
+        block = await _invoke_worker(wid, user_message, ctx, labels.get(wid, wid.title()))
+        if block:
+            parts.append(block)
+    return "\n\n".join(parts)
+
+
 async def invoke_runtime_tools(user_message: str, context: dict[str, Any] | None = None) -> str:
     """Run Tempa specialists/plugins when the user message needs live tool data."""
+    ctx = dict(context or {})
+    ctx["user_message"] = user_message
+
+    from tempa.agents.specialists import _extract_meet_url, run_meet_agent
+
+    if _extract_meet_url(user_message):
+        try:
+            result = await run_meet_agent(user_message, ctx)
+            return _format_agent_block("Meetings", result)
+        except Exception as exc:
+            logger.warning("Varys meet join failed: %s", exc)
+
+    skill_blocks = await invoke_skill_workers(user_message, ctx)
+    if skill_blocks:
+        return skill_blocks
+
     from tempa.agents.intent import (
         wants_calendar_full,
         wants_gmail_full,

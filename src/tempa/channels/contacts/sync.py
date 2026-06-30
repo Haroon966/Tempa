@@ -140,7 +140,15 @@ async def sync_contacts() -> dict[str, Any]:
     creds = _load_google_creds()
     if creds is None:
         if results.get("slack", {}).get("status") == "ok":
-            return {"status": "ok", **results, "count": results["slack"].get("count", 0)}
+            from tempa.channels.contacts.linker import link_identities
+
+            link_result = link_identities()
+            return {
+                "status": "ok",
+                **results,
+                "count": results["slack"].get("count", 0),
+                "identity_link_count": link_result.get("identity_link_count", 0),
+            }
         return {"status": "skipped", "reason": "Google not connected", **results}
 
     if not _has_contacts_scope(creds):
@@ -158,7 +166,10 @@ async def sync_contacts() -> dict[str, Any]:
         return {"status": "error", "reason": err, **results}
 
     count = await upsert_contacts(contacts)
-    return {"status": "ok", "count": count, "google": count, **results}
+    from tempa.channels.contacts.linker import link_identities
+
+    link_result = link_identities()
+    return {"status": "ok", "count": count, "google": count, "identity_link_count": link_result.get("identity_link_count", 0), **results}
 
 
 def resolve_recipient(query: str) -> dict[str, str]:

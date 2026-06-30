@@ -157,7 +157,7 @@ async def run_channel_agent(task: str, context: dict[str, Any]) -> str:
             owner_send = bool(context.get("slack_privileged") and context.get("inbound_slack"))
             result = await send_slack_message(
                 target_channel,
-                body or "Hello from Tempa.",
+                body or "Hi — what should the message say?",
                 source_channel="slack_owner_send" if owner_send else "coordinator",
                 require_user_confirmation=not owner_send,
             )
@@ -170,7 +170,7 @@ async def run_channel_agent(task: str, context: dict[str, Any]) -> str:
             return json.dumps(payload, ensure_ascii=False)
 
     if "send" in lower and slack_channel and ("slack" in lower or context.get("channel") == "slack"):
-        reply = context.get("draft_reply") or context.get("coordinator_reply", "Tempa acknowledgement.")
+        reply = context.get("draft_reply") or context.get("coordinator_reply", "On it.")
         if context.get("inbound_slack"):
             return json.dumps({"draft": reply}, ensure_ascii=False)
         result = await send_slack_message(
@@ -181,7 +181,7 @@ async def run_channel_agent(task: str, context: dict[str, Any]) -> str:
         )
         return json.dumps(result, ensure_ascii=False)
     if "send" in lower and number:
-        reply = context.get("draft_reply") or context.get("coordinator_reply", "Tempa acknowledgement.")
+        reply = context.get("draft_reply") or context.get("coordinator_reply", "On it.")
         if context.get("inbound_whatsapp"):
             return json.dumps({"draft": reply}, ensure_ascii=False)
         from tempa.channels.contacts.sync import resolve_recipient
@@ -196,12 +196,12 @@ async def run_channel_agent(task: str, context: dict[str, Any]) -> str:
         pack = build_slack_context_pack()
         user_id = str(context.get("slack_user_id") or "")
         channel_id = str(context.get("slack_channel_id") or "")
-        thread_ts = str(context.get("slack_thread_ts") or "")
+        conv_key = str(context.get("slack_conversation_key") or context.get("slack_thread_ts") or "")
         recent = get_slack_recent_messages(
             8,
             user_id=user_id,
             channel_id=channel_id,
-            thread_ts=thread_ts,
+            conversation_key=conv_key,
         )
         return json.dumps(
             {
@@ -508,7 +508,7 @@ async def run_calendar_agent(task: str, context: dict[str, Any]) -> str:
 
     from tempa.channels.calendar.context import build_meeting_context_pack
     from tempa.channels.calendar.events import apply_calendar_actions_from_message
-    from tempa.channels.calendar.sync import load_calendar_snapshot
+    from tempa.channels.calendar.sync import load_calendar_snapshot, sync_calendar_snapshot
 
     try:
         await asyncio.to_thread(sync_calendar_snapshot)
@@ -1217,8 +1217,8 @@ def _slack_send_reply(channel_result: str) -> str | None:
         return f"Slack message sent to {recipient}."
     if status == "pending":
         return (
-            f"Slack message to {recipient} is waiting for your approval in Tempa "
-            f"(pending id: {str(payload.get('pending_action_id', ''))[:8]}…)."
+            f"Slack message to {recipient} is waiting for your approval. "
+            f"Reply *go* here or approve in the dashboard to send it."
         )
     if status == "error":
         reason = str(payload.get("reason") or payload.get("error") or "unknown error")
@@ -1261,20 +1261,23 @@ async def _build_merge_prompt_async(
                 + "\n"
             )
 
+    from tempa.channels.slack.messages import SLACK_MERGE_STYLE
+
     style = (
-        "Reply in 1–4 short sentences, warm and direct — this is WhatsApp.\n"
+        "Reply on WhatsApp — warm and direct.\n"
         if channel == "whatsapp"
         else (
-            "Answer the user's Slack message directly in 1–3 short paragraphs. "
-            "Do not mention merging specialists or internal tools. "
-            "Do not bring up unrelated WhatsApp, email, or calendar unless they asked.\n"
+            SLACK_MERGE_STYLE
             if channel == "slack" or context.get("inbound_slack")
-            else "Merge specialist outputs into one concise user-facing reply.\n"
+            else "Merge specialist outputs into one clear user-facing reply.\n"
         )
     )
     guest_note = guest_merge_instruction(context)
+    from tempa.agents.clarification import CLARIFICATION_INSTRUCTION
+
     prompt = (
         f"{guest_note}"
+        f"{CLARIFICATION_INSTRUCTION}\n"
         f"{style}"
         f"{citation_block}"
         f"Grounding facts:\n{grounding_block}\n\n"
@@ -1282,6 +1285,8 @@ async def _build_merge_prompt_async(
     )
     if context.get("procedural_memory"):
         prompt = f"{context['procedural_memory']}\n\n{prompt}"
+    if context.get("active_skills_prompt"):
+        prompt = f"## Active skills\n{context['active_skills_prompt']}\n\n{prompt}"
     return prompt, pack, sources
 
 
@@ -1334,20 +1339,23 @@ def _build_merge_prompt(
                 + "\n"
             )
 
+    from tempa.channels.slack.messages import SLACK_MERGE_STYLE
+
     style = (
-        "Reply in 1–4 short sentences, warm and direct — this is WhatsApp.\n"
+        "Reply on WhatsApp — warm and direct.\n"
         if channel == "whatsapp"
         else (
-            "Answer the user's Slack message directly in 1–3 short paragraphs. "
-            "Do not mention merging specialists or internal tools. "
-            "Do not bring up unrelated WhatsApp, email, or calendar unless they asked.\n"
+            SLACK_MERGE_STYLE
             if channel == "slack" or context.get("inbound_slack")
-            else "Merge specialist outputs into one concise user-facing reply.\n"
+            else "Merge specialist outputs into one clear user-facing reply.\n"
         )
     )
     guest_note = guest_merge_instruction(context)
+    from tempa.agents.clarification import CLARIFICATION_INSTRUCTION
+
     prompt = (
         f"{guest_note}"
+        f"{CLARIFICATION_INSTRUCTION}\n"
         f"{style}"
         f"{citation_block}"
         f"Grounding facts:\n{grounding_block}\n\n"
@@ -1355,7 +1363,16 @@ def _build_merge_prompt(
     )
     if context.get("procedural_memory"):
         prompt = f"{context['procedural_memory']}\n\n{prompt}"
+    if context.get("active_skills_prompt"):
+        prompt = f"## Active skills\n{context['active_skills_prompt']}\n\n{prompt}"
     return prompt, pack, sources
+
+
+def _merge_max_tokens(context: dict[str, Any]) -> int:
+    channel = str(context.get("channel") or "")
+    if channel == "whatsapp" or context.get("inbound_whatsapp"):
+        return 2048
+    return 4096
 
 
 async def merge_results_stream(
@@ -1374,7 +1391,9 @@ async def merge_results_stream(
     from tempa.agents.intent import is_casual_greeting
 
     if (channel == "slack" or context.get("inbound_slack")) and is_casual_greeting(user_message):
-        greeting = "Hi — I'm Tempa. How can I help?"
+        from tempa.channels.slack.messages import greeting_for_slack
+
+        greeting = greeting_for_slack(context)
         if on_token:
             await on_token(greeting)
         return greeting, sources
@@ -1416,7 +1435,7 @@ async def merge_results_stream(
     async for delta in router.chat_completion_stream(
         category=model_category_for_agent("channel", "text"),
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=400 if channel == "whatsapp" else 1024,
+        max_tokens=_merge_max_tokens(context),
         temperature=0.2 if channel == "whatsapp" else 0.3,
     ):
         parts.append(delta)

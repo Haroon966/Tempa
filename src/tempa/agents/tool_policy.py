@@ -5,7 +5,6 @@ from typing import Any
 PRIVATE_RAG_TOOLS = frozenset({"gmail", "whatsapp", "calendar", "meet"})
 PRIVATE_AGENTS = frozenset({"gmail", "calendar", "meet", "pc"})
 GUEST_RAG_TOOLS = frozenset({"slack"})
-GUEST_AGENTS = frozenset({"rag", "channel"})
 
 
 def is_slack_guest(context: dict[str, Any] | None) -> bool:
@@ -19,7 +18,9 @@ def include_private_grounding(context: dict[str, Any] | None) -> bool:
 
 def allowed_agents(context: dict[str, Any] | None) -> frozenset[str] | None:
     if is_slack_guest(context):
-        return GUEST_AGENTS
+        from tempa.orchestrator.config import load_orchestrator_config
+
+        return load_orchestrator_config().guest_slack_workers
     return None
 
 
@@ -56,6 +57,6 @@ def guest_merge_instruction(context: dict[str, Any] | None) -> str:
         return ""
     return (
         "You are replying to a Slack guest user. Do NOT share email, WhatsApp, calendar, "
-        "or meeting information. If they ask about those integrations, say they are coming "
-        "soon on Slack. Keep replies friendly and limited to general help on Slack.\n"
+        "or meeting information. If they ask about those integrations, briefly say they "
+        "are not available on Slack yet. Keep replies friendly and limited to general help.\n"
     )

@@ -38,6 +38,8 @@ async def test_jira_create_issue_pending_action_executes(pending_store):
         summary="Fix OAuth redirect",
         description="Update callback URL",
         issue_type="Task",
+        assignee_account_id="",
+        priority="",
     )
 
 

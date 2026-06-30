@@ -1,0 +1,5 @@
+enabled: true
+directories:
+  - config/skills
+disabled: []
+max_active: 3

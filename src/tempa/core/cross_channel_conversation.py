@@ -35,11 +35,21 @@ def _normalize_turn(
     }
 
 
-def _slack_turns(limit: int) -> list[dict[str, Any]]:
+def _slack_turns(limit: int, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     from tempa.channels.slack.conversation import get_recent_messages
 
+    ctx = dict(context or {})
+    channel_id = str(ctx.get("slack_channel_id") or "") if ctx.get("inbound_slack") else ""
+    conv_key = str(ctx.get("slack_conversation_key") or ctx.get("slack_thread_ts") or "")
+
+    kwargs: dict[str, Any] = {"limit": limit}
+    if channel_id:
+        kwargs["channel_id"] = channel_id
+    if conv_key:
+        kwargs["conversation_key"] = conv_key
+
     turns: list[dict[str, Any]] = []
-    for row in get_recent_messages(limit):
+    for row in get_recent_messages(**kwargs):
         turn = _normalize_turn(
             role=str(row.get("role") or "user"),
             text=str(row.get("text") or ""),
@@ -106,7 +116,7 @@ def collect_cross_channel_conversation(
     ctx = dict(context or {})
     merged: list[dict[str, Any]] = []
     merged.extend(_dashboard_turns(ctx, per_channel_limit))
-    merged.extend(_slack_turns(per_channel_limit))
+    merged.extend(_slack_turns(per_channel_limit, ctx))
     merged.extend(_whatsapp_turns(per_channel_limit))
 
     merged.sort(key=lambda row: _parse_ts(str(row.get("timestamp") or "")))

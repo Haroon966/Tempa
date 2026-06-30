@@ -1,0 +1,27 @@
+# Tempa orchestrator — channel×actor worker matrix and runtime settings
+merge_backend: groq
+max_parallel_workers: 4
+max_active_skills: 3
+pre_hooks_enabled: true
+skill_body_max_chars: 1500
+
+channel_matrix:
+  guest_slack:
+    allowed_workers:
+      - rag
+      - channel
+      - plugin
+  owner:
+    allowed_workers: all
+
+invariants:
+  - memory_worker_first
+  - workers_never_reply_directly
+  - guest_slack_private_workers_blocked
+  - destructive_actions_require_pending
+  - stateful_flows_bypass_planning
+  - tool_outputs_ingest_rag
+  - channel_specific_merge_format
+  - parallel_when_independent
+  - owner_only_approval
+  - fast_paths_skip_llm

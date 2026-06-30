@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
     jira_enabled: bool = False
     jira_default_project: str = ""
+    jira_ticket_enabled: bool = True
+    jira_ticket_rate_limit: int = 10
     claude_code_path: str = "claude"
     varys_claude_cli_only: bool = True
 

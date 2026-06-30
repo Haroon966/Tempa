@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 
 from tempa.channels.slack.conversation import record_conversation_turn
+from tempa.channels.slack.formatting import prepare_slack_reply
 from tempa.channels.slack.session import set_error, slack_configured
 from tempa.core.events import event_bus
 from tempa.rag.ingest import ingest_text
@@ -99,12 +101,13 @@ async def send_slack_message(
         await event_bus.publish_json("channel", "blocked", reason[:120])
         return {"status": "blocked", "reason": reason}
 
+    formatted = prepare_slack_reply(text)
     client = await _get_client()
-    chunks = _split_text(text)
+    chunks = _split_text(formatted)
     last: dict[str, Any] = {}
     try:
         for chunk in chunks:
-            kwargs: dict[str, Any] = {"channel": channel, "text": chunk}
+            kwargs: dict[str, Any] = {"channel": channel, "text": chunk, "mrkdwn": True}
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
             response = await client.chat_postMessage(**kwargs)
@@ -116,16 +119,17 @@ async def send_slack_message(
             thread_ts=thread_ts,
         )
         if not auto_reply:
-            asyncio.create_task(
-                asyncio.to_thread(
-                    ingest_text,
-                    text,
-                    tool="slack",
-                    source=channel,
-                    participants=[channel],
-                    tags=["outbound"],
-                )
-            )
+            threading.Thread(
+                target=ingest_text,
+                kwargs={
+                    "text": text,
+                    "tool": "slack",
+                    "source": channel,
+                    "participants": [channel],
+                    "tags": ["outbound"],
+                },
+                daemon=True,
+            ).start()
         await event_bus.publish_json("channel", "slack_sent", channel)
         set_error(None)
         return {"status": "sent", "result": last}

@@ -684,12 +684,20 @@ async def build_dashboard_payload() -> dict[str, Any]:
     gmail_sync = get_sync_status("gmail")
     calendar_sync = get_sync_status("calendar")
     slack_sync = get_sync_status("slack")
+    jira_users_sync = get_sync_status("jira_users")
     if gmail_sync:
         gmail = {**gmail, **gmail_sync}
     if calendar_sync:
         google = {**google, "calendar_sync": calendar_sync}
     if slack_sync:
         slack_detail = {**slack_detail, **slack_sync}
+    if jira_users_sync:
+        jira_detail = {
+            **jira_detail,
+            "user_sync": jira_users_sync,
+            "jira_users": jira_users_sync.get("details", {}).get("user_count"),
+            "identity_links": jira_users_sync.get("details", {}).get("identity_link_count"),
+        }
 
     connections = {
         "daemon": {"status": "connected", "connected": True, "port": settings.tempa_daemon_port},

@@ -57,7 +57,7 @@ Rules:
 - Answer the user's latest message first. Follow-ups like "what meeting name?" need a direct specific answer.
 - Never repeat your previous reply verbatim. If they ask again, give the detail they asked for.
 - Lead with the answer or what you did; skip filler ("Sure!", "Great question!").
-- Keep replies short (1–4 sentences) unless they ask for detail.
+- Use as much detail as the user needs; do not artificially shorten thorough answers.
 - Use the conversation thread, calendar block, inbox block, and memory when relevant — cite specifics (event titles, times, email subjects).
 - Distinguish canceled vs active calendar events; only reference meeting minutes when archive data confirms them.
 - Use conversation thread for follow-ups; do not ask the user to repeat what was just discussed.
@@ -68,8 +68,8 @@ Rules:
 - If the user asks why an email failed, explain using the last email action result — do not guess.
 - NEVER claim a calendar change succeeded if "Actions just taken" says it failed or is empty.
 - If calendar data is available, use real event names and times for meeting questions.
-- If you lack information, say so honestly instead of guessing.
-- Match the user's language when they write in Urdu/Hinglish; stay natural and concise."""
+- If you lack information needed to complete the request, ask one clear question about what is missing — do not guess.
+- Match the user's language when they write in Urdu/Hinglish; stay natural."""
 
 
 def _is_gmail_task(text: str) -> bool:
@@ -369,7 +369,7 @@ def _run_whatsapp_reply_sync(user_message: str, context: dict[str, Any]) -> str:
                 {"role": "system", "content": _WHATSAPP_SYSTEM},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=400,
+            max_tokens=2048,
             temperature=0.2,
         )
         content = (response.choices[0].message.content or "").strip()
@@ -465,6 +465,12 @@ async def run_whatsapp_reply(user_message: str, context: dict[str, Any] | None =
             explanation = explain_last_action()
             if explanation:
                 return explanation
+
+        from tempa.agents.clarification import detect_missing_context
+
+        missing = detect_missing_context(user_message, context)
+        if missing:
+            return missing
 
         if intent == WhatsAppIntent.GMAIL:
             return await _run_gmail_whatsapp_reply(user_message, context)

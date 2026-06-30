@@ -8,7 +8,7 @@ import pytest
 from tempa.channels.slack import users
 from tempa.channels.slack.outbound import _split_text, send_slack_message
 from tempa.channels.slack.reply import handle_inbound_slack
-from tempa.channels.slack.session import mark_event_seen, slack_configured
+from tempa.channels.slack.session import mark_event_seen, mark_inbound_seen, slack_configured
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +52,12 @@ def test_is_allowed_slack_user_extra(monkeypatch):
 def test_mark_event_seen_dedupes():
     assert mark_event_seen("Ev001") is True
     assert mark_event_seen("Ev001") is False
+
+
+def test_mark_inbound_seen_dedupes_by_message_ts():
+    assert mark_inbound_seen(channel_id="D1", message_ts="1.0") is True
+    assert mark_inbound_seen(channel_id="D1", message_ts="1.0") is False
+    assert mark_inbound_seen(event_id="Ev002", channel_id="D1", message_ts="2.0") is True
 
 
 @pytest.mark.asyncio
@@ -136,7 +142,7 @@ async def test_guest_private_integration_gets_coming_soon(monkeypatch, tmp_path)
 
     assert result["handled"] == 1
     assert result.get("skipped_coordinator") is True
-    assert "coming soon" in result["reply"].lower()
+    assert "slack yet" in result["reply"].lower()
     mock_coord.assert_not_called()
     say.assert_awaited_once()
 

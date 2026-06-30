@@ -65,6 +65,9 @@ export interface ConnectionInfo {
   display_name?: string
   site?: string
   enabled?: boolean
+  jira_users?: number
+  identity_links?: number
+  user_sync?: { last_sync_at?: string; sync_status?: string }
 }
 
 export interface AgentInfo {
@@ -73,6 +76,33 @@ export interface AgentInfo {
   role: string
   model_category: string
   status: HealthStatus
+}
+
+export interface OrchestratorManifest {
+  orchestrator: {
+    name: string
+    role: string
+    model_category?: string
+  }
+  workers: {
+    id: string
+    name: string
+    role: string
+    runner: string
+    tools: string[]
+    skill: string
+    always_run: boolean
+  }[]
+  skills: {
+    name: string
+    description: string
+    triggers: string[]
+    workers: string[]
+    tools: string[]
+    channels: string[]
+    enabled: boolean
+  }[]
+  tools: { name: string; description: string }[]
 }
 
 export interface ComponentInfo {

@@ -34,6 +34,7 @@ import {
   saveGroqKey,
   connectJira,
   disconnectJira,
+  syncAll,
   startGmailOAuth,
   startGoogleOAuth,
   type WhatsAppStatus,
@@ -130,6 +131,7 @@ export function ConnectionsTab({
   const [jiraToken, setJiraToken] = useState("")
   const [jiraProject, setJiraProject] = useState("")
   const [jiraBusy, setJiraBusy] = useState(false)
+  const [identitySyncBusy, setIdentitySyncBusy] = useState(false)
 
   const googleCredsConfigured =
     "credentials_configured" in google && google.credentials_configured === true
@@ -434,6 +436,25 @@ export function ConnectionsTab({
       toast.error(e instanceof Error ? e.message : "Failed to disconnect Jira")
     } finally {
       setJiraBusy(false)
+    }
+  }
+
+  async function handleIdentitySync() {
+    setIdentitySyncBusy(true)
+    try {
+      const result = await syncAll()
+      const links = result.identity_link_count ?? 0
+      const users = result.jira_users?.user_count
+      toast.success(
+        users != null
+          ? `Identity directory synced — ${users} Jira users, ${links} linked emails`
+          : `Identity directory synced — ${links} linked emails`,
+      )
+      onRefresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Identity sync failed")
+    } finally {
+      setIdentitySyncBusy(false)
     }
   }
 
@@ -766,20 +787,42 @@ export function ConnectionsTab({
               {jiraBusy ? "Testing…" : "Save & test"}
             </Button>
             {jira?.connected && (
-              <Button
-                variant="outline"
-                className="cursor-pointer"
-                onClick={() => void handleJiraDisconnect()}
-                disabled={jiraBusy}
-              >
-                Disconnect
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  className="cursor-pointer"
+                  onClick={() => void handleIdentitySync()}
+                  disabled={identitySyncBusy}
+                >
+                  <RefreshCwIcon className={cn("mr-1.5 size-3.5", identitySyncBusy && "animate-spin")} />
+                  {identitySyncBusy ? "Syncing…" : "Sync identity directory"}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="cursor-pointer"
+                  onClick={() => void handleJiraDisconnect()}
+                  disabled={jiraBusy}
+                >
+                  Disconnect
+                </Button>
+              </>
             )}
           </div>
+          {jira?.connected && (jira.jira_users != null || jira.identity_links != null) && (
+            <p className="text-xs text-muted-foreground">
+              {jira.jira_users != null && <span>{jira.jira_users} Jira users synced</span>}
+              {jira.jira_users != null && jira.identity_links != null && " · "}
+              {jira.identity_links != null && <span>{jira.identity_links} identity links</span>}
+              {jira.user_sync?.last_sync_at && (
+                <span> · last sync {new Date(jira.user_sync.last_sync_at).toLocaleString()}</span>
+              )}
+            </p>
+          )}
           <p className="text-xs text-muted-foreground">
             Create an API token at Atlassian account settings → Security → API tokens. Enable polling
             in <code>config/varys.yaml</code> with <code>jira_enabled: true</code> and{" "}
-            <code>jira_projects</code>.
+            <code>jira_projects</code>. When connected, all Slack users can create and assign tickets
+            via DM (in-thread confirmation — no owner approval required).
           </p>
         </PanelCard>
 

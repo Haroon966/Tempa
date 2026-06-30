@@ -173,12 +173,85 @@ def poll_updated_issues(projects: list[str], since_iso: str) -> list[dict[str, A
     return search_issues(jql, max_results=50)
 
 
+def _user_summary(user: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "account_id": str(user.get("accountId") or ""),
+        "display_name": str(user.get("displayName") or ""),
+        "email": str(user.get("emailAddress") or ""),
+        "active": bool(user.get("active", True)),
+    }
+
+
+def search_users(query: str, *, max_results: int = 10) -> list[dict[str, Any]]:
+    _, data = jira_request(
+        "GET",
+        "/rest/api/3/user/search",
+        params={"query": query.strip(), "maxResults": max_results},
+    )
+    if not isinstance(data, list):
+        return []
+    return [_user_summary(u) for u in data if isinstance(u, dict) and u.get("accountId")]
+
+
+def list_assignable_users(project_key: str, *, max_results: int = 100) -> list[dict[str, Any]]:
+    _, data = jira_request(
+        "GET",
+        "/rest/api/3/user/assignable/search",
+        params={"project": project_key, "maxResults": max_results},
+    )
+    if not isinstance(data, list):
+        return []
+    return [_user_summary(u) for u in data if isinstance(u, dict) and u.get("accountId")]
+
+
+def get_user_by_account_id(account_id: str) -> dict[str, Any] | None:
+    if not account_id.strip():
+        return None
+    try:
+        _, data = jira_request("GET", f"/rest/api/3/user", params={"accountId": account_id.strip()})
+    except RuntimeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _user_summary(data)
+
+
+def _adf_paragraph(text: str) -> dict[str, Any]:
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": text.strip()}],
+            }
+        ],
+    }
+
+
+def find_similar_issues(project: str, summary: str, *, max_results: int = 5) -> list[dict[str, Any]]:
+    words = [w for w in summary.split() if len(w) > 3][:4]
+    if not words:
+        return []
+    term = " ".join(words).replace('"', "")
+    jql = f'project = {project} AND summary ~ "{term}" ORDER BY updated DESC'
+    try:
+        return search_issues(jql, max_results=max_results)
+    except RuntimeError:
+        return []
+
+
 def create_issue(
     *,
     project: str,
     summary: str,
     description: str = "",
     issue_type: str = "Task",
+    assignee_account_id: str = "",
+    reporter_account_id: str = "",
+    priority: str = "",
+    labels: list[str] | None = None,
+    components: list[str] | None = None,
 ) -> dict[str, Any]:
     project_key = project.strip() or load_jira_session_config().get("default_project", "")
     if not project_key:
@@ -189,16 +262,17 @@ def create_issue(
         "issuetype": {"name": issue_type},
     }
     if description.strip():
-        fields["description"] = {
-            "type": "doc",
-            "version": 1,
-            "content": [
-                {
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": description.strip()}],
-                }
-            ],
-        }
+        fields["description"] = _adf_paragraph(description)
+    if assignee_account_id.strip():
+        fields["assignee"] = {"id": assignee_account_id.strip()}
+    if reporter_account_id.strip():
+        fields["reporter"] = {"id": reporter_account_id.strip()}
+    if priority.strip():
+        fields["priority"] = {"name": priority.strip()}
+    if labels:
+        fields["labels"] = [label for label in labels if label]
+    if components:
+        fields["components"] = [{"name": c} for c in components if c]
     _, data = jira_request("POST", "/rest/api/3/issue", json_body={"fields": fields})
     if not isinstance(data, dict):
         return {"status": "error", "reason": "Unexpected create response"}
@@ -209,6 +283,19 @@ def create_issue(
         "id": str(data.get("id") or ""),
         "url": f"{_base_url()}/browse/{key}" if key else "",
     }
+
+
+def update_issue(issue_key: str, fields: dict[str, Any]) -> dict[str, Any]:
+    jira_request("PUT", f"/rest/api/3/issue/{issue_key}", json_body={"fields": fields})
+    return {"status": "ok", "issue_key": issue_key}
+
+
+def assign_issue(issue_key: str, account_id: str) -> dict[str, Any]:
+    return update_issue(issue_key, {"assignee": {"id": account_id.strip()}})
+
+
+def update_issue_summary(issue_key: str, summary: str) -> dict[str, Any]:
+    return update_issue(issue_key, {"summary": summary.strip()})
 
 
 def add_comment(issue_key: str, body: str) -> dict[str, Any]:

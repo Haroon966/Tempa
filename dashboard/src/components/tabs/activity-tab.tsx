@@ -41,7 +41,7 @@ export function ActivityTab({ data }: { data: DashboardPayload }) {
   return (
     <PanelCard
       title="Agent activity stream"
-      description="Live events from coordinator and specialists"
+      description="Live orchestrator plan, delegate, merge, and worker events"
       icon={RadioIcon}
       action={
         <Badge
@@ -94,7 +94,7 @@ export function ActivityTab({ data }: { data: DashboardPayload }) {
                 <div className="min-w-0 flex-1 rounded-lg border border-border bg-muted/30 p-3 transition-colors duration-200 hover:border-primary/25 hover:bg-muted/60">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="outline" className="border-border bg-muted text-xs text-primary">
-                      {event.agent}
+                      {event.agent === "orchestrator" ? "Orchestrator" : event.agent}
                     </Badge>
                     <span className="text-sm font-medium text-foreground">{event.action}</span>
                     <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/70">
