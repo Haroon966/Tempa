@@ -374,6 +374,8 @@ async def _run_executor(action_type: str, payload: dict[str, Any]) -> dict[str, 
             summary=str(payload.get("summary") or ""),
             description=str(payload.get("description") or ""),
             issue_type=str(payload.get("issue_type") or "Task"),
+            assignee_account_id=str(payload.get("assignee_account_id") or ""),
+            priority=str(payload.get("priority") or ""),
         )
     if action_type == "jira_comment":
         from tempa.channels.jira.client import add_comment

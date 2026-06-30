@@ -67,6 +67,7 @@ def build_context(
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from tempa.core.cross_channel_conversation import enrich_conversation_context
+    from tempa.skills import match_skills
 
     ctx = enrich_conversation_context(dict(context or {}))
     cfg = load_varys_config()
@@ -97,8 +98,21 @@ def build_context(
         f"You are {cfg.agent_name}, a personal AI assistant integrated with Tempa.",
         f"Active memory wing: {wing}.",
     ]
+    from tempa.agents.clarification import CLARIFICATION_INSTRUCTION
+
+    system_parts.append(CLARIFICATION_INSTRUCTION)
+    if str(ctx.get("channel") or "") == "slack" or ctx.get("inbound_slack"):
+        from tempa.channels.slack.messages import SLACK_MERGE_STYLE
+
+        system_parts.append("## Slack reply format\n" + SLACK_MERGE_STYLE.strip())
     if rules:
         system_parts.append("## Rules\n" + rules)
+    matched = match_skills(user_message, ctx)
+    if matched:
+        from tempa.skills import format_skills_for_prompt
+
+        system_parts.append("## Active skills\n" + format_skills_for_prompt(matched))
+        ctx["matched_skills"] = [s.name for s in matched]
     if vault_text:
         system_parts.append("## Vault context\n" + vault_text)
     if memory_lines:

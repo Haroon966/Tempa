@@ -229,7 +229,7 @@ async def plan_preview_node(state: CoordinatorState) -> dict[str, Any]:
     response = (
         "I've prepared an execution plan that includes actions requiring your approval. "
         f"Review the plan below or open Approvals (id: {action['id'][:8]}…).\n\n"
-        f"Plan:\n{plan_summary}"
+        f"Plan:\n```\n{plan_summary}\n```"
     )
     return {
         "response": response,
@@ -394,7 +394,7 @@ async def channel_followup_node(state: CoordinatorState) -> dict[str, Any]:
             from tempa.channels.whatsapp.outbound import send_whatsapp_message
 
             draft = state.get("response") or meet_result
-            await send_whatsapp_message(number, draft[:3500], source_channel="whatsapp_auto_reply")
+            await send_whatsapp_message(number, draft, source_channel="whatsapp_auto_reply")
             await event_bus.publish_json("channel", "meet_followup", meet_result[:120])
     return {}
 
@@ -557,40 +557,50 @@ async def _try_go_signal_approval(
 
 
 def _should_use_varys(user_message: str, context: dict[str, Any] | None) -> bool:
-    from tempa.settings import get_settings
-    from tempa.varys.manager import is_go_signal, is_work_request
+    from tempa.orchestrator.routing import should_use_claude_merge
 
-    mode = (get_settings().tempa_coordinator or "langgraph").strip().lower()
-    if mode == "langgraph":
-        return False
-    if mode == "varys":
-        return True
-    # hybrid
-    ctx = context or {}
-    if is_go_signal(user_message) or is_work_request(user_message):
-        return True
-    if ctx.get("varys_dispatch") or ctx.get("force_varys"):
-        return True
-    lowered = user_message.lower()
-    coding_hints = ("fix ", "implement", "refactor", "pr ", "github", "code", "repo", "ticket")
-    if any(h in lowered for h in coding_hints):
-        return True
-    from tempa.agents.intent import wants_calendar, wants_gmail_full
-
-    if wants_gmail_full(user_message) or wants_calendar(user_message):
-        return False
-    return False
+    return should_use_claude_merge(user_message, context)
 
 
 async def run_coordinator_full(user_message: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    go_result = await _try_go_signal_approval(user_message, context)
-    if go_result is not None:
-        return go_result
-    if _should_use_varys(user_message, context):
-        from tempa.varys.coordinator import run_varys_coordinator
+    from tempa.orchestrator.hooks import run_pre_hooks
+    from tempa.orchestrator.hooks_impl import register_all_hooks
 
-        return await run_varys_coordinator(user_message, context)
-    return await _run_langgraph_coordinator_full(user_message, context)
+    register_all_hooks()
+    hook_result = await run_pre_hooks(user_message, context)
+    if hook_result is not None:
+        return hook_result
+
+    from tempa.core.cross_channel_conversation import enrich_conversation_context
+
+    ctx = enrich_conversation_context(dict(context or {}))
+
+    from tempa.orchestrator.agent import run_orchestrator
+
+    merge_backend = None
+    if _should_use_varys(user_message, ctx):
+        merge_backend = "claude"
+        ctx["force_varys"] = True
+
+    runtime_prefetch = ""
+    if merge_backend == "claude":
+        from tempa.varys.prefetch import prefetch_tool_context
+        from tempa.varys.tools import invoke_runtime_tools
+        from tempa.varys.vault_sync import append_session_log, ensure_vault_initialized
+
+        ensure_vault_initialized()
+        prefetch = await prefetch_tool_context(user_message, ctx)
+        runtime = await invoke_runtime_tools(user_message, ctx)
+        runtime_prefetch = "\n\n".join(block for block in (prefetch, runtime) if block)
+        channel = str(ctx.get("channel") or "dashboard")
+        append_session_log(f"[{channel}] Q: {user_message[:80]}")
+
+    return await run_orchestrator(
+        user_message,
+        ctx,
+        merge_backend=merge_backend,
+        runtime_prefetch=runtime_prefetch,
+    )
 
 
 async def run_coordinator_streaming(

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react"
 import {
   ActivityIcon,
   ArrowRightIcon,
@@ -8,9 +9,11 @@ import {
   ShieldCheckIcon,
   SparklesIcon,
   VideoIcon,
+  WorkflowIcon,
 } from "lucide-react"
 import tempaVideo from "@/assets/animated_tempa.mp4"
-import type { DashboardPayload } from "@/types/dashboard"
+import type { DashboardPayload, OrchestratorManifest } from "@/types/dashboard"
+import { fetchOrchestrator } from "@/lib/api"
 import { useNavigateSection } from "@/hooks/use-navigate-section"
 import { StatCard } from "@/components/dashboard/stat-card"
 import { PanelCard } from "@/components/dashboard/panel-card"
@@ -22,6 +25,23 @@ import { cn } from "@/lib/utils"
 export function OverviewTab({ data }: { data: DashboardPayload }) {
   const navigateSection = useNavigateSection()
   const { overall, agents, calendar, whatsapp, data: stats } = data
+  const [orchestrator, setOrchestrator] = useState<OrchestratorManifest | null>(null)
+
+  useEffect(() => {
+    fetchOrchestrator()
+      .then(setOrchestrator)
+      .catch(() => setOrchestrator(null))
+  }, [])
+
+  const workerCards = orchestrator?.workers ?? agents.map((a) => ({
+    id: a.id,
+    name: a.name,
+    role: a.role,
+    runner: a.id,
+    tools: [] as string[],
+    skill: "",
+    always_run: a.id === "rag",
+  }))
   const readyPct = overall.total_components > 0
     ? Math.round((overall.healthy / overall.total_components) * 100)
     : 0
@@ -225,10 +245,10 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
         </div>
       </section>
 
-      {/* ══ Specialist agents ═════════════════════════════ */}
+      {/* ══ Orchestrator + workers ═════════════════════════════ */}
       <section>
         <SectionHeader
-          label="Specialist agents"
+          label={orchestrator ? "Orchestrator & workers" : "Specialist agents"}
           action={
             <button
               type="button"
@@ -239,30 +259,59 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
             </button>
           }
         />
-        <div className="mt-3">
+        <div className="mt-3 space-y-3">
+          {orchestrator ? (
+            <PanelCard
+              title={orchestrator.orchestrator.name}
+              description={orchestrator.orchestrator.role}
+              icon={WorkflowIcon}
+            >
+              <p className="text-xs text-muted-foreground">
+                {orchestrator.skills.length} skills · {orchestrator.workers.length} workers ·{" "}
+                {orchestrator.tools.length} tools
+              </p>
+            </PanelCard>
+          ) : null}
           <PanelCard
-            title="Agents"
-            description="Model-backed agents and their live status"
+            title="Workers"
+            description="Domain agents and bound tools"
             icon={ServerIcon}
           >
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {agents.map((agent) => (
-                <div key={agent.id} className="list-row flex flex-col gap-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate font-semibold text-foreground">{agent.name}</div>
-                      <div className="line-clamp-2 text-xs text-muted-foreground">{agent.role}</div>
+              {workerCards.map((worker) => {
+                const agentStatus = agents.find((a) => a.id === worker.id)?.status ?? "healthy"
+                return (
+                  <div key={worker.id} className="list-row flex flex-col gap-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate font-semibold text-foreground">{worker.name}</div>
+                        <div className="line-clamp-2 text-xs text-muted-foreground">{worker.role}</div>
+                      </div>
+                      <StatusBadge status={agentStatus} />
                     </div>
-                    <StatusBadge status={agent.status} />
+                    {worker.tools.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {worker.tools.slice(0, 3).map((tool) => (
+                          <Badge
+                            key={tool}
+                            variant="outline"
+                            className="border-border bg-muted text-[10px] font-medium text-muted-foreground"
+                          >
+                            {tool}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        className="w-fit border-border bg-muted text-xs font-medium text-primary"
+                      >
+                        {agents.find((a) => a.id === worker.id)?.model_category ?? worker.runner}
+                      </Badge>
+                    )}
                   </div>
-                  <Badge
-                    variant="outline"
-                    className="w-fit border-border bg-muted text-xs font-medium text-primary"
-                  >
-                    {agent.model_category}
-                  </Badge>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </PanelCard>
         </div>

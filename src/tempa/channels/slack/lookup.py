@@ -240,8 +240,7 @@ def lookup_latest_slack_message(text: str) -> dict[str, Any]:
             "status": "error",
             "reason": (
                 f"Could not find Slack channel '{query['channel']}'. "
-                "It may be private — invite Tempa with `/invite @Tempa` in that channel, "
-                "and ensure the app has private-channel scopes (groups:read, groups:history)."
+                "It may be private — invite Tempa with `/invite @Tempa` in that channel, then try again."
             ),
         }
 

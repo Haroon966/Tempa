@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from tempa.channels.slack.conversation import conversation_thread_key
 from tempa.varys.manager import is_go_signal, is_work_request
 
 
@@ -14,13 +15,21 @@ def classify_slack_message(text: str, *, user_id: str, owner_user_id: str) -> st
 
 
 def enrich_slack_context(event: dict, base: dict[str, Any]) -> dict[str, Any]:
+    from tempa.channels.slack.context import is_dm_event, thread_root
+
     ctx = dict(base)
     ctx["channel"] = "slack"
     ctx["slack_user_id"] = str(event.get("user") or "")
     ctx["slack_channel_id"] = str(event.get("channel") or "")
-    message_ts = str(event.get("ts") or "")
-    thread_ts = str(event.get("thread_ts") or message_ts)
-    ctx["slack_thread_ts"] = thread_ts if event.get("thread_ts") or event.get("channel_type") == "im" else ""
-    ctx["thread_ts"] = thread_ts
+    is_dm = is_dm_event(event)
+    root = thread_root(event)
+    ctx["slack_is_dm"] = is_dm
+    ctx["slack_thread_ts"] = root
+    ctx["thread_ts"] = root
+    ctx["slack_conversation_key"] = conversation_thread_key(
+        channel_id=ctx["slack_channel_id"],
+        thread_ts=root,
+        is_dm=is_dm,
+    )
     ctx["inbound_slack"] = True
     return ctx

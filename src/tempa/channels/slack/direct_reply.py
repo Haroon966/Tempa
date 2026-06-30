@@ -5,6 +5,7 @@ from typing import Any
 
 from tempa.agents.intent import is_casual_greeting, has_non_slack_tool_intent
 from tempa.channels.slack.lookup import wants_slack_invite_help, wants_slack_read_intent
+from tempa.channels.slack.messages import greeting_for_slack
 from tempa.channels.slack.recipients import wants_slack_send_intent
 
 
@@ -23,7 +24,7 @@ async def try_slack_direct_reply(user_message: str, context: dict[str, Any]) -> 
         return None
 
     if is_casual_greeting(user_message):
-        return "Hi — I'm Tempa. How can I help?"
+        return greeting_for_slack(context)
 
     if has_non_slack_tool_intent(user_message):
         return None
@@ -52,5 +53,5 @@ async def try_slack_direct_reply(user_message: str, context: dict[str, Any]) -> 
     except (json.JSONDecodeError, TypeError):
         return None
     if isinstance(payload, dict) and payload.get("status") == "error":
-        return str(payload.get("reason") or "Could not complete that Slack request.")
+        return str(payload.get("reason") or "I couldn't complete that Slack request — try rephrasing.")
     return None

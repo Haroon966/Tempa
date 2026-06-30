@@ -46,7 +46,7 @@ def test_tool_policy_guest_vs_owner():
     assert is_slack_guest(owner_ctx) is False
     assert include_private_grounding(guest_ctx) is False
     assert include_private_grounding(owner_ctx) is True
-    assert allowed_agents(guest_ctx) == frozenset({"rag", "channel"})
+    assert allowed_agents(guest_ctx) == frozenset({"rag", "channel", "plugin"})
     assert allowed_agents(owner_ctx) is None
     assert allowed_rag_tools(guest_ctx) == frozenset({"slack"})
     assert allowed_rag_tools(owner_ctx) is None
@@ -103,7 +103,7 @@ def test_wants_private_integrations():
 
 
 def test_coming_soon_message():
-    assert "coming soon" in GUEST_PRIVATE_COMING_SOON.lower()
+    assert "slack yet" in GUEST_PRIVATE_COMING_SOON.lower()
 
 
 def test_plan_subtasks_guest_filters(monkeypatch):

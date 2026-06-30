@@ -7,20 +7,26 @@ from tempa.agents.graph import _should_use_varys
 
 def test_should_use_varys_modes(monkeypatch):
     from tempa.settings import get_settings
+    from tempa.orchestrator.config import load_orchestrator_config
 
     monkeypatch.setenv("TEMPA_COORDINATOR", "langgraph")
     get_settings.cache_clear()
+    load_orchestrator_config.cache_clear()
     assert _should_use_varys("fix the bug", {}) is False
 
     monkeypatch.setenv("TEMPA_COORDINATOR", "varys")
     get_settings.cache_clear()
+    load_orchestrator_config.cache_clear()
     assert _should_use_varys("hello", {}) is True
 
     monkeypatch.setenv("TEMPA_COORDINATOR", "hybrid")
     get_settings.cache_clear()
+    load_orchestrator_config.cache_clear()
     assert _should_use_varys("fix login in repo", {}) is True
     assert _should_use_varys("what meetings today", {}) is False
+    assert _should_use_varys("fix my calendar tomorrow", {}) is False
     get_settings.cache_clear()
+    load_orchestrator_config.cache_clear()
 
 
 @pytest.mark.asyncio

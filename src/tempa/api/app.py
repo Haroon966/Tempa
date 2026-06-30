@@ -127,6 +127,7 @@ _reminder_task: asyncio.Task | None = None
 _gmail_sync_task: asyncio.Task | None = None
 _calendar_sync_task: asyncio.Task | None = None
 _slack_sync_task: asyncio.Task | None = None
+_jira_user_sync_task: asyncio.Task | None = None
 _consolidation_task: asyncio.Task | None = None
 _retention_task: asyncio.Task | None = None
 _shutdown_requested = False
@@ -292,6 +293,50 @@ async def _slack_sync_loop() -> None:
         await _run_sync(full=False)
 
 
+async def _jira_user_sync_loop() -> None:
+    import logging
+
+    from tempa.channels.jira.client import jira_configured
+    from tempa.channels.jira.sync import sync_jira_users
+    from tempa.core.sync_status import record_sync
+
+    logger = logging.getLogger(__name__)
+    if not jira_configured():
+        return
+
+    interval = 6 * 3600
+    backoff = interval
+    syncing = False
+
+    async def _run_sync() -> None:
+        nonlocal syncing, backoff
+        if syncing:
+            return
+        syncing = True
+        try:
+            result = await sync_jira_users()
+            status = str(result.get("status", "ok"))
+            if status in {"ok", "skipped"}:
+                record_sync("jira_users", status=status, details=result)
+                backoff = interval
+            else:
+                err = str(result.get("reason") or status)
+                record_sync("jira_users", status="error", error=err, details=result)
+                backoff = min(backoff * 2, interval * 4)
+        except Exception as exc:
+            logger.exception("Jira user sync loop failed")
+            record_sync("jira_users", status="error", error=str(exc))
+            backoff = min(backoff * 2, interval * 4)
+        finally:
+            syncing = False
+
+    asyncio.create_task(_run_sync())
+
+    while True:
+        await asyncio.sleep(backoff)
+        await _run_sync()
+
+
 async def _calendar_loop() -> None:
     import logging
 
@@ -349,7 +394,7 @@ async def _consolidation_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _consolidation_task, _retention_task
+    global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
     from tempa.channels.contacts.store import init_contacts_db
     from tempa.channels.whatsapp.inbound_queue import stop_inbound_worker
     from tempa.channels.whatsapp.webhook import ensure_webhook_worker
@@ -420,19 +465,28 @@ async def lifespan(app: FastAPI):
             logging.getLogger(__name__).warning("Slack startup failed: %s", exc)
 
     async def _deferred_background() -> None:
-        global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _consolidation_task, _retention_task
+        global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
         await asyncio.sleep(2)
         _scheduler_task = asyncio.create_task(_calendar_loop())
         _reminder_task = asyncio.create_task(_reminder_loop())
         _gmail_sync_task = asyncio.create_task(_gmail_sync_loop())
         _calendar_sync_task = asyncio.create_task(_calendar_sync_loop())
         _slack_sync_task = asyncio.create_task(_slack_sync_loop())
+        _jira_user_sync_task = asyncio.create_task(_jira_user_sync_loop())
         _consolidation_task = asyncio.create_task(_consolidation_loop())
         _retention_task = asyncio.create_task(_retention_loop())
         try:
             from tempa.channels.contacts.sync import sync_contacts
 
             asyncio.create_task(sync_contacts())
+        except Exception:
+            pass
+        try:
+            from tempa.channels.jira.client import jira_configured
+            from tempa.channels.jira.sync import sync_jira_users
+
+            if jira_configured():
+                asyncio.create_task(sync_jira_users())
         except Exception:
             pass
         try:
@@ -468,6 +522,8 @@ async def lifespan(app: FastAPI):
         _calendar_sync_task.cancel()
     if _slack_sync_task:
         _slack_sync_task.cancel()
+    if _jira_user_sync_task:
+        _jira_user_sync_task.cancel()
     try:
         from tempa.pc.transfer.server import stop_transfer_server
 
@@ -630,6 +686,31 @@ def create_app() -> FastAPI:
         from tempa.plugins.registry import list_tools
 
         return {"tools": list_tools()}
+
+    @app.get("/api/skills")
+    async def list_skills():
+        from tempa.skills import load_all_skills
+
+        return {
+            "skills": [
+                {
+                    "name": s.name,
+                    "description": s.description,
+                    "triggers": s.triggers,
+                    "workers": s.workers,
+                    "tools": s.tools,
+                    "channels": s.channels,
+                    "enabled": True,
+                }
+                for s in load_all_skills()
+            ]
+        }
+
+    @app.get("/api/orchestrator")
+    async def orchestrator_manifest():
+        from tempa.orchestrator.registry import orchestrator_manifest
+
+        return orchestrator_manifest()
 
     @app.post("/api/connections/google/credentials")
     async def save_google_oauth_credentials(body: GoogleCredentialsRequest):
@@ -978,6 +1059,12 @@ if (window.opener) {{
             settings.jira_api_token = body.api_token.strip()
         try:
             result = await asyncio.to_thread(test_connection)
+            try:
+                from tempa.channels.jira.sync import sync_jira_users
+
+                asyncio.create_task(sync_jira_users())
+            except Exception:
+                pass
             return {
                 "status": "connected",
                 "connected": True,

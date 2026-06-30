@@ -1,39 +1,69 @@
 coordinator:
-  name: Coordinator
-  role: Decompose user requests into parallel sub-tasks and merge results
+  name: Tempa Orchestrator
+  role: Master agent — plan tasks, delegate to workers, merge results
   model_category: reasoning
   plan_preview: false
 
 specialists:
   meet:
-    name: Meet Agent
+    name: Meet Worker
     role: Join Google Meet, record, transcribe, produce minutes
     model_category: tool_use
+    worker: meet
+    tools:
+      - meet.join
+      - memory.search
+    skill: meet-copilot
   channel:
-    name: Channel Agent
+    name: Slack Worker
     role: WhatsApp and Slack messaging and inbound handling
     model_category: text
+    worker: channel
+    skill: slack-messaging
   gmail:
-    name: Gmail Agent
+    name: Gmail Worker
     role: Read, search, compose, and send email via Gmail API
     model_category: tool_use
+    worker: gmail
+    tools:
+      - gmail.search
+    skill: gmail-calendar
   calendar:
-    name: Calendar Agent
+    name: Calendar Worker
     role: Google Calendar polling, Meet link detection, reminders
     model_category: tool_use
+    worker: calendar
+    tools:
+      - calendar.list_events
+    skill: gmail-calendar
   rag:
-    name: RAG Agent
+    name: Memory Worker
     role: Unified memory retrieval and agentic grading
     model_category: reasoning
+    worker: rag
+    tools:
+      - memory.search
+    always_run: true
   pc:
-    name: PC Agent
+    name: PC Worker
     role: Shell, files, apps, browser control with allowlist
     model_category: tool_use
+    worker: pc
+    tools:
+      - pc.run_shell
   plugin:
-    name: Plugin Agent
-    role: Execute registered plugin tools via function calling
+    name: Jira Worker
+    role: Execute Jira and plugin tools via function calling
     model_category: tool_use
+    worker: plugin
+    tools:
+      - jira.search
+      - jira.get_issue
+      - jira.list_projects
+    skill: jira-tickets
   qa:
-    name: QA Agent
+    name: QA Worker
     role: Monitor repos, explain failures, propose fixes, trigger scans
     model_category: reasoning
+    worker: qa
+    skill: qa-repos

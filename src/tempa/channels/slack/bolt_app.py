@@ -10,6 +10,9 @@ from slack_bolt.authorization import AuthorizeResult
 from slack_bolt.middleware.assistant.async_assistant import AsyncAssistant
 from slack_sdk.web.async_client import AsyncWebClient
 
+from tempa.channels.slack.context import is_dm_event, should_handle_channel_thread
+from tempa.channels.slack.conversation import conversation_thread_key, record_conversation_turn
+from tempa.channels.slack.messages import GREETING_NEW
 from tempa.channels.slack.reply import handle_inbound_slack
 from tempa.channels.slack.session import set_handler, slack_configured
 from tempa.settings import get_settings
@@ -122,7 +125,7 @@ def _build_app() -> AsyncApp:
     assistant = AsyncAssistant()
 
     @assistant.thread_started
-    async def on_assistant_thread_started(say, set_suggested_prompts):
+    async def on_assistant_thread_started(say, set_suggested_prompts, event):
         await set_suggested_prompts(
             prompts=[
                 {"title": "Hello", "message": "hi"},
@@ -130,7 +133,22 @@ def _build_app() -> AsyncApp:
                 {"title": "Question", "message": "I have a question"},
             ]
         )
-        await say("Hi — I'm Tempa. How can I help?")
+        await say(GREETING_NEW)
+        channel_id = str(event.get("channel") or "")
+        if channel_id:
+            thread_ts = str(event.get("thread_ts") or event.get("ts") or "")
+            conv_key = conversation_thread_key(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                is_dm=True,
+            )
+            record_conversation_turn(
+                role="assistant",
+                text=GREETING_NEW,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                conversation_key=conv_key,
+            )
 
     @assistant.user_message
     async def on_assistant_user_message(event, say, body, set_status):
@@ -165,17 +183,26 @@ def _build_app() -> AsyncApp:
         if event.get("bot_id") or event.get("subtype"):
             await ack()
             return
+        text = str(event.get("text") or "")
         if not _is_dm_event(event):
-            await ack()
+            if should_handle_channel_thread(event, text):
+                await ack()
+                logger.info(
+                    "Slack channel thread follow-up from %s in %s",
+                    event.get("user"),
+                    event.get("channel"),
+                )
+                _schedule_inbound(
+                    event,
+                    event_type="message",
+                    event_id=str(body.get("event_id") or ""),
+                    say=say,
+                )
+            else:
+                await ack()
             return
+        # DMs are handled by AsyncAssistant.user_message — skip to avoid duplicate replies.
         await ack()
-        logger.info("Slack DM from %s: %s", event.get("user"), (event.get("text") or "")[:80])
-        _schedule_inbound(
-            event,
-            event_type="message",
-            event_id=str(body.get("event_id") or ""),
-            say=say,
-        )
 
     return app
 

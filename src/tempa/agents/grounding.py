@@ -247,9 +247,16 @@ def build_grounding_pack(
             thread_lines: list[str] = []
             channel_id = str(context.get("slack_channel_id") or "")
             slack_user = str(context.get("slack_user_id") or "")
-            thread_ts = str(context.get("slack_thread_ts") or "")
+            conv_key = str(
+                context.get("slack_conversation_key") or context.get("slack_thread_ts") or ""
+            )
             if channel_id:
-                for row in get_slack_thread(8, user_id=slack_user, channel_id=channel_id, thread_ts=thread_ts):
+                for row in get_slack_thread(
+                    8,
+                    user_id=slack_user,
+                    channel_id=channel_id,
+                    conversation_key=conv_key,
+                ):
                     speaker = "You" if row.get("role") == "user" else "Tempa"
                     thread_lines.append(f"- {speaker}: {str(row.get('text') or '')[:300]}")
             if thread_lines:

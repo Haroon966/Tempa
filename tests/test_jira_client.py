@@ -6,10 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tempa.channels.jira.client import (
+    assign_issue,
     build_updated_jql,
     create_issue,
     jira_configured,
     search_issues,
+    search_users,
     since_iso_to_jql_datetime,
     test_connection as verify_jira_connection,
 )
@@ -123,3 +125,59 @@ def test_create_issue(jira_env):
 
     assert result["status"] == "ok"
     assert result["key"] == "ENG-99"
+
+
+def test_search_users(jira_env):
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.content = b"[]"
+    mock_response.json.return_value = [
+        {"accountId": "abc", "displayName": "Haroon", "emailAddress": "h@co.com", "active": True}
+    ]
+
+    with patch("httpx.Client") as mock_client:
+        instance = mock_client.return_value.__enter__.return_value
+        instance.request.return_value = mock_response
+        users = search_users("Haroon")
+
+    assert len(users) == 1
+    assert users[0]["account_id"] == "abc"
+
+
+def test_create_issue_with_assignee(jira_env):
+    mock_response = MagicMock()
+    mock_response.status_code = 201
+    mock_response.content = b'{"id":"10001","key":"ENG-99"}'
+    mock_response.json.return_value = {"id": "10001", "key": "ENG-99"}
+
+    with patch("httpx.Client") as mock_client:
+        instance = mock_client.return_value.__enter__.return_value
+        instance.request.return_value = mock_response
+        result = create_issue(
+            project="ENG",
+            summary="New task",
+            description="Details",
+            assignee_account_id="abc123",
+            priority="High",
+        )
+        body = instance.request.call_args.kwargs.get("json") or instance.request.call_args[1].get("json")
+        fields = body["fields"]
+        assert fields["assignee"] == {"id": "abc123"}
+        assert fields["priority"] == {"name": "High"}
+
+    assert result["status"] == "ok"
+    assert result["key"] == "ENG-99"
+
+
+def test_assign_issue(jira_env):
+    mock_response = MagicMock()
+    mock_response.status_code = 204
+    mock_response.content = b""
+
+    with patch("httpx.Client") as mock_client:
+        instance = mock_client.return_value.__enter__.return_value
+        instance.request.return_value = mock_response
+        result = assign_issue("ENG-1", "abc123")
+
+    assert result["status"] == "ok"
+    assert result["issue_key"] == "ENG-1"

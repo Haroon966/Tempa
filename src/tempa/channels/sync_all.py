@@ -94,6 +94,20 @@ async def sync_all(
     if contacts.get("status") != "ok" and extract_gmail_contacts:
         results["gmail_contacts"] = await extract_contacts_from_gmail(max_messages=max_emails)
 
+    try:
+        from tempa.channels.jira.sync import sync_jira_users
+
+        results["jira_users"] = await sync_jira_users()
+    except Exception as exc:
+        results["jira_users"] = {"status": "error", "reason": str(exc)}
+
+    try:
+        from tempa.channels.contacts.linker import identity_link_count
+
+        results["identity_link_count"] = identity_link_count()
+    except Exception:
+        results["identity_link_count"] = None
+
     results["gmail_incremental"] = await sync_once(full=True)
     results["gmail_backfill"] = await sync_gmail_backfill(max_messages=max_emails, query=email_query)
     results["calendar"] = await sync_calendar_to_memory()

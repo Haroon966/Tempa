@@ -160,7 +160,7 @@ async def copilot_loop(
                     number = load_default_whatsapp_number()
                     if number:
                         msg = f"*Suggested reply* ({title}):\n{sug['text']}"
-                        await send_whatsapp_message(number, msg[:3500], source_channel="whatsapp_auto_reply")
+                        await send_whatsapp_message(number, msg, source_channel="whatsapp_auto_reply")
                 except Exception:
                     logger.debug("Copilot WhatsApp notify failed", exc_info=True)
 

@@ -54,7 +54,9 @@ def test_collect_cross_channel_conversation_merges_channels(sessions_dir):
     from tempa.channels.whatsapp import conversation as wa_conv
 
     slack_conv._loaded = False
+    slack_conv._recent_messages.clear()
     wa_conv._loaded = False
+    wa_conv._recent_messages.clear()
 
     turns = collect_cross_channel_conversation({})
     texts = [t["text"] for t in turns]
@@ -88,3 +90,39 @@ def test_format_conversation_lines_includes_channel_labels():
         ]
     )
     assert lines == ["[slack] user: hi", "[dashboard] assistant: hey"]
+
+
+def test_slack_turns_scoped_to_inbound_channel(sessions_dir):
+    _write_jsonl(
+        sessions_dir / "slack" / "conversation.jsonl",
+        [
+            {
+                "role": "user",
+                "text": "in C1",
+                "timestamp": "2026-06-26T10:00:00+00:00",
+                "channel_id": "C1",
+                "conversation_key": "C1",
+            },
+            {
+                "role": "user",
+                "text": "in C2",
+                "timestamp": "2026-06-26T10:01:00+00:00",
+                "channel_id": "C2",
+                "conversation_key": "C2",
+            },
+        ],
+    )
+    from tempa.channels.slack import conversation as slack_conv
+
+    slack_conv._loaded = False
+    slack_conv._recent_messages.clear()
+
+    turns = collect_cross_channel_conversation(
+        {
+            "inbound_slack": True,
+            "slack_channel_id": "C1",
+            "slack_conversation_key": "C1",
+        }
+    )
+    texts = [t["text"] for t in turns if t.get("channel") == "slack"]
+    assert texts == ["in C1"]

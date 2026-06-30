@@ -154,15 +154,14 @@ def verify_reply(reply: str, grounding_pack: dict[str, Any]) -> tuple[bool, str]
             "If the reply falsely claims an email was sent, calendar invite sent, "
             "meeting joined, event created, or wrong unread count without supporting facts, "
             "rewrite it to be accurate using the grounding blocks. "
-            "If facts are empty, say the action was not confirmed. "
-            "Keep the rewrite to 1–4 short sentences.\n\n"
+            "If facts are empty, say the action was not confirmed.\n\n"
             f"Known facts:\n" + "\n\n".join(facts_parts) + "\n\n"
             f"Reply to verify:\n{reply}"
         )
         response = router.chat_completion(
             category="text",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
+            max_tokens=1024,
             temperature=0,
         )
         rewritten = (response.choices[0].message.content or "").strip()

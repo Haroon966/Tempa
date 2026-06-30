@@ -9,6 +9,7 @@ _handler: Any = None
 _last_event_at: str | None = None
 _last_error: str | None = None
 _seen_event_ids: set[str] = set()
+_seen_message_keys: set[str] = set()
 
 
 def set_handler(handler: Any) -> None:
@@ -31,6 +32,28 @@ def mark_event_seen(event_id: str) -> bool:
         drop = list(_seen_event_ids)[:100]
         for item in drop:
             _seen_event_ids.discard(item)
+    return True
+
+
+def mark_inbound_seen(
+    *,
+    event_id: str = "",
+    channel_id: str = "",
+    message_ts: str = "",
+) -> bool:
+    """Return True when this Slack inbound message has not been processed yet."""
+    if event_id and not mark_event_seen(event_id):
+        return False
+    if not channel_id or not message_ts:
+        return True
+    key = f"{channel_id}:{message_ts}"
+    if key in _seen_message_keys:
+        return False
+    _seen_message_keys.add(key)
+    if len(_seen_message_keys) > 500:
+        drop = list(_seen_message_keys)[:100]
+        for item in drop:
+            _seen_message_keys.discard(item)
     return True
 
 
