@@ -79,7 +79,12 @@ async def send_whatsapp_message(
         await event_bus.publish_json("channel", "blocked", reason[:120])
         return {"status": "blocked", "reason": reason}
     client = WhatsAppBridgeClient()
-    result = await client.send_text(number, text)
+    if not await client.ensure_live_connection():
+        return {"status": "paused", "reason": "WhatsApp disconnected — scan QR to reconnect"}
+    from tempa.channels.whatsapp.numbers import owner_delivery_for_number
+
+    delivery = owner_delivery_for_number(number)
+    result = await client.send_text(delivery, text)
     if source_channel != "whatsapp_auto_reply":
         record_conversation_turn(role="assistant", text=text, from_number=number, chat_id=number)
     if not auto_reply:
@@ -125,4 +130,6 @@ async def send_whatsapp_media(
         return {"status": "pending", "pending_action_id": action["id"]}
 
     client = WhatsAppBridgeClient()
+    if not await client.ensure_live_connection():
+        return {"status": "paused", "reason": "WhatsApp disconnected — scan QR to reconnect"}
     return await client.send_media(number, file_path, caption=caption, mediatype=mediatype)

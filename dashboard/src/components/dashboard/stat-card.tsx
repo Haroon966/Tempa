@@ -4,16 +4,16 @@ import { StatusBadge } from "@/components/status-badge"
 
 const ACCENT_STYLES = {
   teal: {
-    icon: "border-border bg-muted text-primary group-hover:shadow-[0_4px_20px_rgba(15,23,42,0.08)]",
-    glow: "bg-muted",
+    icon: "border-border bg-muted text-primary",
+    glow: "bg-primary/5",
   },
   orange: {
-    icon: "border-cta/25 bg-gradient-to-br from-cta/15 to-cta/5 text-cta group-hover:shadow-[0_4px_20px_rgba(249,115,22,0.18)]",
-    glow: "bg-cta/8",
+    icon: "border-cta/25 bg-cta/10 text-cta",
+    glow: "bg-cta/5",
   },
   sky: {
-    icon: "border-sky-200 bg-gradient-to-br from-sky-100 to-sky-50 text-sky-700 group-hover:shadow-[0_4px_20px_rgba(14,165,233,0.15)]",
-    glow: "bg-sky-400/8",
+    icon: "border-primary/20 bg-primary/5 text-primary",
+    glow: "bg-primary/5",
   },
 } as const
 
@@ -41,8 +41,8 @@ export function StatCard({
   return (
     <div
       className={cn(
-        "bento-tile group relative flex flex-col gap-4 p-5",
-        onClick && "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+        "surface-card group relative flex flex-col gap-4 p-5",
+        onClick && "surface-card-interactive",
         className,
       )}
       onClick={onClick}
@@ -55,7 +55,7 @@ export function StatCard({
       <div className="flex items-start justify-between gap-2">
         <div
           className={cn(
-            "flex size-11 items-center justify-center rounded-xl border transition-all duration-200",
+            "flex size-11 items-center justify-center rounded-xl border transition-colors duration-200",
             styles.icon,
           )}
         >
@@ -81,7 +81,7 @@ export function StatCard({
 
       <span
         className={cn(
-          "pointer-events-none absolute -right-8 -top-8 size-28 rounded-full opacity-0 blur-2xl transition-opacity duration-300 group-hover:opacity-100",
+          "pointer-events-none absolute -right-8 -top-8 size-28 rounded-full opacity-0 blur-2xl transition-opacity duration-200 group-hover:opacity-100",
           styles.glow,
         )}
         aria-hidden

@@ -7,8 +7,9 @@ import time
 from typing import Optional
 
 from tempa.meet.config import WorkerConfig
-from tempa.meet.lifecycle import MeetingEndTracker, check_meeting_ended
-from tempa.meet.joiner import join_meet, wait_for_admission
+from tempa.meet.lifecycle import MeetingEndTracker, calendar_start_timestamp, check_meeting_ended
+from tempa.meet.admission import wait_for_meet_admission
+from tempa.meet.joiner import join_meet
 from tempa.meet.pipeline import setup_pipeline
 from tempa.meet.state import InMemoryMeetingLifecycleStore
 from tempa.meet.state_base import MeetingLifecycleStore
@@ -48,6 +49,12 @@ async def run_meeting_worker(
     if not screenshot_dir:
         screenshot_dir = os.path.join(meeting_base_dir, "screenshots")
 
+    video_save_path: str | None = None
+    if config.video.record_enabled:
+        video_dir = os.path.join(meeting_base_dir, "video")
+        os.makedirs(video_dir, exist_ok=True)
+        video_save_path = os.path.join(video_dir, f"{safe_id}.webm")
+
     try:
         session = await join_meet(
             config.meet_url,
@@ -59,6 +66,9 @@ async def run_meeting_worker(
             join_timeout_ms=config.join.join_timeout_ms,
             screenshot_dir=screenshot_dir,
             storage_adapter=storage_adapter,
+            video_save_path=video_save_path,
+            record_video_size=(config.video.width, config.video.height) if video_save_path else None,
+            virtual_camera_path=config.join.virtual_camera_path,
         )
     except Exception:
         _logger.exception("GMEET JOB: failed to join meeting %s", config.meeting_id)
@@ -73,22 +83,11 @@ async def run_meeting_worker(
         config.meeting_id,
         status=MeetingLifecycleStatus.WAITING_FOR_ADMISSION.value,
     )
-    try:
-        from tempa.channels.whatsapp.outbound import send_whatsapp_message
-        from tempa.channels.whatsapp.reply import load_default_whatsapp_number
-
-        owner = load_default_whatsapp_number()
-        if owner:
-            await send_whatsapp_message(
-                owner,
-                f"Tempa is waiting to join *{config.meet_url.split('/')[-1]}*. "
-                "If Meet shows *Ask to join*, please admit Tempa from the participant list.",
-                source_channel="whatsapp_auto_reply",
-            )
-    except Exception:
-        _logger.debug("WhatsApp admission-wait notify skipped", exc_info=True)
-
-    admitted = await wait_for_admission(session.page, timeout_s=admission_timeout_seconds)
+    admitted = await wait_for_meet_admission(
+        session.page,
+        meet_url=config.meet_url,
+        timeout_s=admission_timeout_seconds,
+    )
     if not admitted:
         _logger.error("GMEET JOB: timed out waiting for admission to %s", config.meeting_id)
         state_store.update_status(
@@ -124,12 +123,15 @@ async def run_meeting_worker(
     from tempa.settings import get_settings
 
     end_tracker = MeetingEndTracker(alone_grace_seconds=float(get_settings().meet_alone_grace_seconds))
+    event_start_ts = calendar_start_timestamp(config.calendar_event_start)
     try:
         while True:
             await asyncio.sleep(heartbeat_interval_seconds)
             state_store.heartbeat(config.meeting_id)
 
-            if await check_meeting_ended(session.page, tracker=end_tracker):
+            if await check_meeting_ended(
+                session.page, tracker=end_tracker, event_start_ts=event_start_ts
+            ):
                 _logger.info("GMEET JOB: meeting ended signal for %s", config.meeting_id)
                 break
 

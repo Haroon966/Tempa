@@ -8,6 +8,7 @@ import httpx
 
 from tempa.settings import get_settings
 
+from tempa.channels.whatsapp.numbers import resolve_whatsapp_jid
 from tempa.channels.whatsapp.session import parse_bridge_state
 
 logger = logging.getLogger(__name__)
@@ -291,37 +292,47 @@ class WhatsAppBridgeClient:
             return data if isinstance(data, list) else []
 
     async def resolved_connection_state(self) -> tuple[str, bool]:
-        """Prefer live connectionState; fetchInstances can lag during pairing."""
+        """Prefer live connectionState; stale DB rows must not mask a dead socket."""
         from tempa.debug_agent_log import agent_log
-
-        inst = await self._instance_row()
-        if inst and inst.get("ownerJid"):
-            return "open", True
 
         live_raw = await self.connection_state()
         live_name, live_connected = parse_bridge_state(live_raw)
+        if live_connected:
+            return "open", True
+
+        inst = await self._instance_row()
         db_status = ""
         if inst:
             db_status = str(inst.get("connectionStatus") or inst.get("state") or "").lower()
-            if db_status in {"open", "connected"}:
-                return "open", True
 
-        if live_connected:
-            return "open", True
         if live_name and live_name.lower() not in {"", "unknown"}:
-            # #region agent log
             agent_log(
                 location="client.py:resolved_connection_state",
                 message="using live connectionState",
                 data={"live_name": live_name, "db_status": db_status},
                 hypothesis_id="H6",
             )
-            # #endregion
             return live_name, False
 
+        if db_status in {"open", "connected"}:
+            return "open", False
         if db_status:
             return db_status, False
         return live_name or "disconnected", False
+
+    async def ensure_live_connection(self, *, attempts: int = 4) -> bool:
+        """Reconnect when the bridge socket is down (DB may still show linked)."""
+        for attempt in range(attempts):
+            _, connected = parse_bridge_state(await self.connection_state())
+            if connected:
+                return True
+            try:
+                await self.connect(for_qr=False)
+            except Exception as exc:
+                logger.warning("WhatsApp reconnect attempt %s failed: %s", attempt + 1, exc)
+            await asyncio.sleep(min(2 + attempt, 5))
+        _, connected = parse_bridge_state(await self.connection_state())
+        return connected
 
     async def logout(self) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -522,7 +533,7 @@ class WhatsAppBridgeClient:
 
     async def send_text(self, number: str, text: str) -> dict[str, Any]:
         payload = {"number": number, "text": text}
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=90) as client:
             resp = await client.post(
                 f"{self.base_url}/message/sendText/{self.instance}",
                 json=payload,
@@ -530,6 +541,39 @@ class WhatsAppBridgeClient:
             )
             resp.raise_for_status()
             return resp.json()
+
+    async def fetch_contact_history(
+        self,
+        *,
+        hint: str = "",
+        number: str | None = None,
+        jid: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"hint": hint, "limit": limit}
+        if number:
+            payload["number"] = number
+        if jid:
+            payload["jid"] = jid
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(
+                f"{self.base_url}/chat/fetchContactHistory/{self.instance}",
+                json=payload,
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def match_contacts(self, hint: str) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{self.base_url}/chat/matchContacts/{self.instance}",
+                json={"hint": hint},
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return list(data.get("matches") or [])
 
     async def mark_messages_as_read(self, raw_item: dict[str, Any]) -> dict[str, Any]:
         """Send read receipts so the sender sees messages as viewed (blue ticks)."""

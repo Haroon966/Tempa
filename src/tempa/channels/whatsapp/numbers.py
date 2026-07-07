@@ -86,6 +86,59 @@ def get_bridge_whatsapp_phone() -> str:
     return normalize_phone(str(linked.get("bridge_phone") or ""))
 
 
+def is_bridge_self_chat(chat_id: str) -> bool:
+    """True when the linked account messages itself (voice-note forward inbox)."""
+    bridge = get_bridge_whatsapp_phone()
+    if not bridge or not chat_id.endswith("@s.whatsapp.net"):
+        return False
+    return phones_match(chat_id.split("@")[0], bridge)
+
+
+def resolve_whatsapp_jid(phone: str) -> str:
+    """Best outbound JID for a phone number (prefer known LID mapping)."""
+    phone = normalize_phone(phone)
+    if not phone:
+        return ""
+    linked = _load_linked_owner()
+    lids = linked.get("lid_phones")
+    if isinstance(lids, dict):
+        for lid_key, mapped in lids.items():
+            if isinstance(mapped, str) and phones_match(mapped, phone):
+                lid_digits = _DIGITS_RE.sub("", str(lid_key))
+                if lid_digits:
+                    return f"{lid_digits}@lid"
+    return f"{phone}@s.whatsapp.net"
+
+
+def get_owner_delivery_jid() -> str:
+    """Where to deliver Tempa replies when owner phone != linked bridge phone.
+
+    ponytail: WhatsApp 463 blocks fresh API outreach to the personal number from
+    the linked device; self-chat on the bridge account still delivers.
+    """
+    owner = get_owner_whatsapp_number()
+    bridge = get_bridge_whatsapp_phone()
+    if owner and bridge and not phones_match(owner, bridge):
+        return f"{bridge}@s.whatsapp.net"
+    if owner:
+        return resolve_whatsapp_jid(owner)
+    if bridge:
+        return f"{bridge}@s.whatsapp.net"
+    return ""
+
+
+def owner_delivery_for_number(number: str) -> str:
+    """Map owner phone to a deliverable JID; pass through other numbers."""
+    local = normalize_phone(number.split("@")[0] if "@" in number else number)
+    if local and phones_match(local, get_owner_whatsapp_number()):
+        jid = get_owner_delivery_jid()
+        if jid:
+            return jid
+    if "@" in number:
+        return number
+    return resolve_whatsapp_jid(number)
+
+
 def _remember_lid_phone(lid: str, phone: str) -> None:
     lid = _DIGITS_RE.sub("", lid.split("@")[0].split(":")[0])
     phone = normalize_phone(phone)

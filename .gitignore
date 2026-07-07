@@ -11,6 +11,9 @@ node_modules/
 extension/dist/
 dashboard/node_modules/
 dashboard/dist/
+
+# Large meet camera fixtures (keep locally; mp4/mjpeg are small enough for git)
+config/assets/*.y4m
 .DS_Store
 *.wav
 *.log

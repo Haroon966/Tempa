@@ -663,13 +663,25 @@ def apply_calendar_actions_from_message(
     }
 
 
-def should_auto_join_meet(start: datetime, *, within_minutes: int = 20) -> bool:
-    """True when the meeting is soon enough that Tempa should join now."""
+def should_auto_join_meet(
+    start: datetime,
+    *,
+    end: datetime | None = None,
+    within_minutes: int = 20,
+    trigger_before_minutes: int = 2,
+) -> bool:
+    """True when the meeting is active now or starting within the pre-join window."""
     if start.tzinfo is None:
         start = start.replace(tzinfo=_local_tz())
     now = datetime.now(_local_tz())
+    if end is not None:
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=_local_tz())
+        trigger_start = start - timedelta(minutes=trigger_before_minutes)
+        if trigger_start <= now < end:
+            return True
     delta_min = (start - now).total_seconds() / 60.0
-    return -5 <= delta_min <= within_minutes
+    return -trigger_before_minutes <= delta_min <= within_minutes
 
 
 def schedule_meet_join_for_event(
@@ -677,10 +689,11 @@ def schedule_meet_join_for_event(
     *,
     summary: str,
     start: datetime | None = None,
+    end: datetime | None = None,
 ) -> str | None:
     if not meet_url:
         return None
-    if start is not None and not should_auto_join_meet(start):
+    if start is not None and not should_auto_join_meet(start, end=end):
         return None
     from tempa.meet.service import schedule_meeting_join
 

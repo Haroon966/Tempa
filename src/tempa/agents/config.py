@@ -32,3 +32,27 @@ def plan_preview_enabled() -> bool:
     cfg = load_agents_config()
     coordinator = cfg.get("coordinator") or {}
     return bool(coordinator.get("plan_preview", False))
+
+
+def _coordinator_cfg() -> dict[str, Any]:
+    return load_agents_config().get("coordinator") or {}
+
+
+def actor_loop_enabled() -> bool:
+    return bool(_coordinator_cfg().get("actor_loop", False))
+
+
+def actor_max_steps() -> int:
+    return int(_coordinator_cfg().get("actor_max_steps", 8))
+
+
+def actor_replan_on_error() -> bool:
+    return bool(_coordinator_cfg().get("actor_replan_on_error", True))
+
+
+def goal_check_enabled() -> bool:
+    return bool(_coordinator_cfg().get("goal_check", True))
+
+
+def goal_check_max_extra_steps() -> int:
+    return int(_coordinator_cfg().get("goal_check_max_extra_steps", 1))

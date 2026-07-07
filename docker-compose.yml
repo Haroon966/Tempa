@@ -44,6 +44,14 @@ services:
     environment:
       TEMPA_MEET_WORKER_POLL_SECONDS: "3"
       TEMPA_TIMEZONE: Asia/Karachi
+      MEET_RECORD_VIDEO: "true"
+      MEET_SYSTEM_CAPTURE_ENABLED: "true"
+      MEET_BROWSER_AUDIO_FALLBACK: "false"
+      MEET_VIRTUAL_CAMERA_ENABLED: "true"
+      MEET_CALENDAR_LOOKBACK_HOURS: "12"
+      XDG_RUNTIME_DIR: /tmp/pulse-runtime
+      PULSE_SERVER: unix:/tmp/pulse-runtime/pulse/native
+      MEET_PULSE_MONITOR_SOURCE: meet_sink.monitor
     volumes:
       - ./data:/app/data
       - ./config:/app/config

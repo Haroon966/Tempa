@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from tempa.api.dashboard import build_dashboard_payload
+from tempa.api.dashboard import build_dashboard_payload, build_dashboard_summary
 from tempa.channels.calendar.oauth import (
     authorization_url,
     begin_google_connect,
@@ -43,9 +43,9 @@ from tempa.channels.whatsapp.session import (
 from tempa.channels.whatsapp.webhook import handle_webhook
 from tempa.api.settings_store import apply_daemon_settings, get_public_settings, save_daemon_settings
 from tempa.core.events import event_bus
-from tempa.meet.archive import delete_meeting, erase_all_user_data, export_user_data, get_meeting, init_db, list_meetings, read_live_meeting_state, apply_meet_retention_policy
+from tempa.meet.archive import delete_meeting, erase_all_user_data, export_user_data, get_meeting, init_db, list_meetings, read_live_meeting_state, apply_meet_retention_policy, repair_archives_missing_minutes, sync_meeting_archives_from_disk
 from tempa.meet.consent import grant_recording_consent, has_recording_consent, revoke_recording_consent
-from tempa.meet.service import get_active_meeting_ids, get_meeting_jobs, schedule_meeting_join_async
+from tempa.meet.service import get_active_meeting_ids, get_live_meeting_views, get_meeting_jobs, schedule_meeting_join_async
 from tempa.meet.scheduler import meet_readiness
 from tempa.meet.session_registry import list_active_sessions
 from tempa.rag.ingest import ingest_text, search_memory
@@ -110,6 +110,8 @@ class MeetingJoinRequest(BaseModel):
     meet_url: str
     title: str = ""
     notify_number: str | None = None
+    duration_seconds: int = Field(default=3600, ge=60, le=28800)
+    av_test_youtube_url: str | None = None
 
 
 class MeetingChatRequest(BaseModel):
@@ -345,7 +347,7 @@ async def _calendar_loop() -> None:
     logger = logging.getLogger(__name__)
 
     async def on_trigger(ev):
-        await schedule_join_for_calendar_event(ev)
+        return await schedule_join_for_calendar_event(ev)
 
     settings = get_settings()
     while True:
@@ -411,6 +413,20 @@ async def lifespan(app: FastAPI):
 
     load_builtin_plugins()
     await init_db()
+
+    async def _sync_meeting_archives_background() -> None:
+        import logging
+
+        log = logging.getLogger(__name__)
+        try:
+            synced = await sync_meeting_archives_from_disk()
+            repaired = await repair_archives_missing_minutes(min_segments=3)
+            if synced or repaired:
+                log.info("Meeting archives: synced %s from disk, repaired %s minutes", synced, repaired)
+        except Exception as exc:
+            log.warning("Meeting archive sync failed: %s", exc)
+
+    asyncio.create_task(_sync_meeting_archives_background(), name="meeting-archive-sync")
     await init_contacts_db()
     sweep_stale_tasks()
 
@@ -569,8 +585,12 @@ def create_app() -> FastAPI:
     )
 
     @app.get("/api/dashboard")
-    async def dashboard_status():
-        return await build_dashboard_payload()
+    async def dashboard_status(refresh: bool = False):
+        return await build_dashboard_payload(refresh=refresh)
+
+    @app.get("/api/dashboard/summary")
+    async def dashboard_summary(refresh: bool = False):
+        return await build_dashboard_summary(refresh=refresh)
 
     @app.get("/api/health")
     async def health():
@@ -1111,6 +1131,24 @@ if (window.opener) {{
             queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
             done = asyncio.Event()
             cancel_event = await register_run(run_id)
+            stream_steps: list[dict[str, Any]] = []
+            stream_activity: list[dict[str, Any]] = []
+
+            def _merge_stream_step(step: dict[str, Any]) -> None:
+                if step.get("status") == "start":
+                    stream_steps.append(step)
+                else:
+                    for i, existing in enumerate(stream_steps):
+                        if (
+                            existing.get("subtask_id") == step.get("subtask_id")
+                            and existing.get("status") == "start"
+                        ):
+                            stream_steps[i] = {**existing, **step}
+                            break
+                    else:
+                        stream_steps.append(step)
+                if len(stream_steps) > 50:
+                    del stream_steps[:-50]
 
             session = ensure_session(body.session_id)
             session_id = session["id"]
@@ -1136,8 +1174,19 @@ if (window.opener) {{
                         try:
                             event = await asyncio.wait_for(sub.get(), timeout=0.15)
                             if event.get("event_kind") == "step":
+                                _merge_stream_step(event)
                                 await queue.put(("step", event))
                             else:
+                                stream_activity.append(
+                                    {
+                                        "agent": str(event.get("agent", "")),
+                                        "action": str(event.get("action", "")),
+                                        "detail": str(event.get("detail", "")),
+                                        "timestamp": str(event.get("timestamp", "")),
+                                    }
+                                )
+                                if len(stream_activity) > 50:
+                                    del stream_activity[:-50]
                                 await queue.put(("activity", event))
                         except asyncio.TimeoutError:
                             continue
@@ -1161,13 +1210,19 @@ if (window.opener) {{
                     paused = bool(result.get("paused"))
                     pending_actions = result.get("pending_actions") or []
                     artifacts = result.get("artifacts") or []
-                    if content:
+                    planned_steps = result.get("planned_steps") or []
+                    if content or paused or pending_actions or artifacts:
                         append_message(
                             session_id,
                             "assistant",
                             content,
                             sources=sources,
                             paused=paused,
+                            steps=stream_steps or None,
+                            activity=stream_activity or None,
+                            pending_actions=pending_actions or None,
+                            artifacts=artifacts or None,
+                            planned_steps=planned_steps or None,
                         )
                     await queue.put(
                         (
@@ -1179,6 +1234,7 @@ if (window.opener) {{
                                 "session_id": session_id,
                                 "pending_actions": pending_actions,
                                 "artifacts": artifacts,
+                                "planned_steps": planned_steps,
                                 "run_id": run_id,
                             },
                         )
@@ -1269,6 +1325,58 @@ if (window.opener) {{
     async def meetings():
         return {"meetings": await list_meetings(), "jobs": get_meeting_jobs()}
 
+    @app.post("/api/meetings/sync-archives")
+    async def meetings_sync_archives():
+        synced = await sync_meeting_archives_from_disk()
+        repaired = await repair_archives_missing_minutes(min_segments=3)
+        return {
+            "synced": synced,
+            "minutes_repaired": repaired,
+            "meetings": await list_meetings(),
+        }
+
+    @app.post("/api/meetings/process-audio")
+    async def meetings_process_audio():
+        from tempa.meet.transcribe import process_meetings_with_audio
+
+        results = await process_meetings_with_audio(send_notifications=False)
+        return {"processed": results, "meetings": await list_meetings()}
+
+    @app.post("/api/meetings/{meeting_id}/transcribe")
+    async def meeting_transcribe(meeting_id: str):
+        from tempa.meet.transcribe import transcribe_meeting_audio
+
+        try:
+            segment_count = await transcribe_meeting_audio(meeting_id, force=True)
+            return {
+                "status": "ok",
+                "meeting_id": meeting_id,
+                "transcript_segments": segment_count,
+                "meeting": await get_meeting(meeting_id),
+            }
+        except Exception as exc:
+            return {"status": "error", "detail": str(exc)}
+
+    @app.post("/api/meetings/{meeting_id}/summarize")
+    async def meeting_summarize(meeting_id: str):
+        from tempa.meet.transcribe import summarize_meeting_from_transcript
+
+        try:
+            await summarize_meeting_from_transcript(meeting_id, send_notifications=False)
+            return {"status": "ok", "meeting": await get_meeting(meeting_id)}
+        except Exception as exc:
+            return {"status": "error", "detail": str(exc)}
+
+    @app.post("/api/meetings/{meeting_id}/process")
+    async def meeting_process(meeting_id: str):
+        from tempa.meet.transcribe import process_meeting_from_audio
+
+        try:
+            result = await process_meeting_from_audio(meeting_id, send_notifications=False)
+            return {"status": "ok", **result, "meeting": await get_meeting(meeting_id)}
+        except Exception as exc:
+            return {"status": "error", "detail": str(exc)}
+
     @app.post("/api/meetings/join")
     async def meeting_join(body: MeetingJoinRequest):
         meet_url = body.meet_url.strip()
@@ -1279,6 +1387,8 @@ if (window.opener) {{
                 meet_url,
                 title=body.title,
                 notify_number=body.notify_number,
+                duration_seconds=body.duration_seconds,
+                av_test_youtube_url=body.av_test_youtube_url,
             )
             return {"status": "queued", "meeting_id": meeting_id, "meet_url": meet_url}
         except RuntimeError as exc:
@@ -1309,21 +1419,8 @@ if (window.opener) {{
 
     @app.get("/api/meetings/active")
     async def meetings_active():
-        jobs = get_meeting_jobs()
-        active_ids = get_active_meeting_ids()
         sessions = list_active_sessions()
-        live: list[dict[str, Any]] = []
-        for mid in active_ids:
-            row = jobs.get(mid, {})
-            live.append(
-                {
-                    "meeting_id": mid,
-                    "title": row.get("title", ""),
-                    "meet_url": row.get("meet_url", ""),
-                    "status": row.get("status", "unknown"),
-                    **read_live_meeting_state(mid),
-                }
-            )
+        live = await asyncio.to_thread(get_live_meeting_views)
         return {"active": live, "sessions": sessions}
 
     @app.get("/api/meetings/{meeting_id}/live")
@@ -1392,7 +1489,44 @@ if (window.opener) {{
             for a in list_pending_actions(status="pending")
             if (a.get("source_channel") or "").startswith(f"meeting:{meeting_id}")
         ]
-        return {"meeting": meeting, "transcript_raw": transcript, "pending_followups": pending}
+        from tempa.meet.media import list_meeting_media
+
+        media = list_meeting_media(
+            meeting_id,
+            audio_path_hint=str(meeting.get("audio_path") or ""),
+        )
+        return {
+            "meeting": meeting,
+            "transcript_raw": transcript,
+            "pending_followups": pending,
+            "media": media,
+        }
+
+    @app.get("/api/meetings/{meeting_id}/transcript")
+    async def meeting_transcript_download(meeting_id: str):
+        from tempa.meet.media import resolve_transcript_path
+
+        path = resolve_transcript_path(meeting_id)
+        if not path:
+            return {"error": "transcript_not_found"}
+        return FileResponse(path, media_type="application/x-ndjson", filename=path.name)
+
+    @app.get("/api/meetings/{meeting_id}/video")
+    async def meeting_video(meeting_id: str):
+        from tempa.meet.media import resolve_playable_video_path
+
+        meeting = await get_meeting(meeting_id)
+        if not meeting:
+            return {"error": "not_found"}
+        path = await asyncio.to_thread(
+            resolve_playable_video_path,
+            meeting_id,
+            audio_path_hint=str(meeting.get("audio_path") or ""),
+        )
+        if not path:
+            return {"error": "video_not_found"}
+        media_type = "video/mp4" if path.suffix.lower() == ".mp4" else "video/webm"
+        return FileResponse(path, media_type=media_type, filename=path.name)
 
     @app.get("/api/meetings/{meeting_id}/audio")
     async def meeting_audio(meeting_id: str):
@@ -1416,6 +1550,42 @@ if (window.opener) {{
             return {"error": "audio_not_found"}
         media = "audio/wav" if str(path).endswith(".wav") else "audio/pcm"
         return FileResponse(path, media_type=media, filename=path.name)
+
+    @app.get("/api/meetings/{meeting_id}/waveform")
+    async def meeting_waveform(meeting_id: str, bars: int = 72):
+        from tempa.meet.media import compute_audio_waveform
+
+        meeting = await get_meeting(meeting_id)
+        if not meeting:
+            return {"error": "not_found", "available": False, "duration_seconds": 0.0, "peaks": []}
+        return await asyncio.to_thread(
+            compute_audio_waveform,
+            meeting_id,
+            audio_path_hint=str(meeting.get("audio_path") or ""),
+            bars=bars,
+        )
+
+    @app.get("/api/meetings/{meeting_id}/storyboard")
+    async def meeting_storyboard(meeting_id: str):
+        from tempa.meet.media import compute_video_storyboard
+
+        meeting = await get_meeting(meeting_id)
+        if not meeting:
+            return {"error": "not_found", "available": False}
+        return await asyncio.to_thread(compute_video_storyboard, meeting_id)
+
+    @app.get("/api/meetings/{meeting_id}/storyboard/sprite")
+    async def meeting_storyboard_sprite(meeting_id: str):
+        from tempa.meet.media import compute_video_storyboard, resolve_storyboard_sprite_path
+
+        meeting = await get_meeting(meeting_id)
+        if not meeting:
+            return {"error": "not_found"}
+        await asyncio.to_thread(compute_video_storyboard, meeting_id)
+        path = resolve_storyboard_sprite_path(meeting_id)
+        if not path:
+            return {"error": "storyboard_not_found"}
+        return FileResponse(path, media_type="image/jpeg", filename=path.name)
 
     @app.delete("/api/meetings/{meeting_id}")
     async def meeting_delete(meeting_id: str):

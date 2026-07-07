@@ -5,15 +5,19 @@ FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl xvfb && rm -rf /var/lib/apt/lists/*
+    build-essential curl xvfb ffmpeg pulseaudio pulseaudio-utils && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml prd.md ./
 RUN mkdir -p src/tempa && touch src/tempa/__init__.py
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -e . \
-    && pip install "playwright==1.49.1"
+    && pip install "playwright==1.49.1" "yt-dlp"
 
 COPY config ./config
+RUN if [ -f config/assets/animated_tempa.mp4 ]; then \
+      ffmpeg -y -nostdin -loglevel error -i config/assets/animated_tempa.mp4 \
+        -an -vf scale=640:360 -c:v mjpeg -q:v 5 -f mjpeg config/assets/animated_tempa.mjpeg; \
+    fi
 COPY src ./src
 COPY scripts/meet-worker-entrypoint.sh /usr/local/bin/meet-worker-entrypoint.sh
 RUN chmod +x /usr/local/bin/meet-worker-entrypoint.sh
@@ -21,6 +25,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -e . --no-deps
 
 ENV DISPLAY=:99
+ENV XDG_RUNTIME_DIR=/tmp/pulse-runtime
+ENV PULSE_SERVER=unix:/tmp/pulse-runtime/pulse/native
+ENV MEET_PULSE_MONITOR_SOURCE=meet_sink.monitor
 ENV TEMPA_MEET_WORKER_POLL_SECONDS=3
 ENV PYTHONUNBUFFERED=1
 

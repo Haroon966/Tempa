@@ -1,25 +1,29 @@
 import { useCallback, useEffect, useState } from "react"
 import {
   HashIcon,
-  BrainIcon,
   CalendarIcon,
-  DatabaseIcon,
   MailIcon,
   MessageCircleIcon,
   RefreshCwIcon,
-  ServerIcon,
   TicketIcon,
   VideoIcon,
-  type LucideIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 import type { DashboardPayload } from "@/types/dashboard"
+import { PageHeader } from "@/components/dashboard/page-header"
 import { PanelCard } from "@/components/dashboard/panel-card"
+import { InfraStrip } from "@/components/settings/infra-strip"
+import { GroqSection } from "@/components/settings/groq-section"
+import {
+  applyWhatsAppStatus,
+  isWhatsAppConnected,
+  logWhatsApp,
+  resolveWhatsAppStatusMessage,
+} from "@/components/settings/helpers"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import {
   disconnectGmail,
@@ -40,53 +44,7 @@ import {
   type WhatsAppStatus,
 } from "@/lib/api"
 
-function isWhatsAppConnected(w: WhatsAppStatus): boolean {
-  if (w.connected != null) return w.connected
-  const state = w.connection_state as
-    | { state?: string; instance?: { state?: string } }
-    | undefined
-  const name = state?.state ?? state?.instance?.state
-  return name === "open"
-}
-
-function logWhatsApp(level: "info" | "warn" | "error", message: string, data?: unknown) {
-  const tag = "[WhatsApp]"
-  if (level === "error") console.error(tag, message, data ?? "")
-  else if (level === "warn") console.warn(tag, message, data ?? "")
-  else console.log(tag, message, data ?? "")
-}
-
-function applyWhatsAppStatus(
-  w: WhatsAppStatus,
-  setWaQr: (v: string | null) => void,
-  setWaConnected: (v: boolean) => void,
-) {
-  const qr = w.qr_code
-  if (qr) {
-    setWaQr(qr.startsWith("data:") ? qr : `data:image/png;base64,${qr}`)
-  }
-  const connected = isWhatsAppConnected(w)
-  setWaConnected(connected)
-  if (connected) {
-    setWaQr(null)
-  }
-}
-
-function resolveWhatsAppStatusMessage(w: WhatsAppStatus): string | null {
-  const autoAction = (w as WhatsAppStatus & { auto_action?: string }).auto_action
-  const connecting = autoAction === "connecting" || w.status === "connecting"
-
-  if (isWhatsAppConnected(w)) return null
-  if (w.status === "error") return w.detail ?? "WhatsApp connection error"
-  if (connecting) {
-    return w.detail ?? "Pairing in progress — keep WhatsApp open on your phone"
-  }
-  if (w.qr_code) return "QR code ready — scan with WhatsApp → Linked Devices"
-  if (w.detail) return w.detail
-  return null
-}
-
-export function ConnectionsTab({
+export function SettingsTab({
   data,
   onRefresh,
 }: {
@@ -99,7 +57,6 @@ export function ConnectionsTab({
   const whatsapp = data.connections.whatsapp
   const slack = data.connections.slack
   const jira = data.connections.jira
-  const bridge = data.connections.whatsapp_bridge ?? data.connections.evolution_api
   const meetAutoJoin = data.connections.meet_auto_join
 
   const [groqKey, setGroqKey] = useState("")
@@ -260,8 +217,12 @@ export function ConnectionsTab({
 
   useEffect(() => {
     if (waConnected) return
+    const tick = () => {
+      if (document.visibilityState === "hidden") return
+      void loadWhatsApp()
+    }
     void loadWhatsApp()
-    const id = setInterval(() => void loadWhatsApp(), 8000)
+    const id = setInterval(tick, 8000)
     return () => clearInterval(id)
   }, [waConnected, loadWhatsApp])
 
@@ -464,7 +425,11 @@ export function ConnectionsTab({
 
   return (
     <div className="flex flex-col gap-8">
-      {/* OAuth redirect URI notice */}
+      <PageHeader
+        title="Settings"
+        description="Connect external services, API keys, and integrations"
+      />
+
       <Alert className="border-border bg-muted">
         <AlertDescription className="text-sm text-muted-foreground">
           Google OAuth redirect URI must be{" "}
@@ -475,49 +440,18 @@ export function ConnectionsTab({
         </AlertDescription>
       </Alert>
 
-      {/* Status strip */}
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <InfraCard title="Tempa Daemon" conn={data.connections.daemon} icon={ServerIcon} />
-        <InfraCard title="Unified RAG"  conn={data.connections.rag}    icon={DatabaseIcon} />
-        <InfraCard title="WhatsApp Bridge" conn={bridge}              icon={MessageCircleIcon} />
-        <InfraCard title="Slack"          conn={slack}                icon={HashIcon} />
-      </section>
+      <InfraStrip data={data} />
 
       {/* Service cards */}
       <section className="grid gap-4 lg:grid-cols-2">
-        {/* Groq */}
-        <PanelCard
-          title="Groq API"
-          description="LLM, STT, and safety inference"
-          icon={BrainIcon}
-          action={<StatusBadge status={groq?.status ?? "disconnected"} />}
-          contentClassName="flex flex-col gap-3"
-        >
-          {"detail" in (groq ?? {}) && typeof groq?.detail === "string" && groq.detail && (
-            <p className="text-sm text-muted-foreground">{groq.detail}</p>
-          )}
-          {groqModels.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {groqModels.map((m) => (
-                <Badge key={m} variant="outline" className="border-border bg-muted text-xs text-primary/70">
-                  {m}
-                </Badge>
-              ))}
-            </div>
-          )}
-          <Input
-            type="password"
-            placeholder="GROQ_API_KEY"
-            value={groqKey}
-            onChange={(e) => setGroqKey(e.target.value)}
-            autoComplete="off"
-            aria-label="Groq API key"
-            className="focus:border-primary/40"
-          />
-          <Button className="cursor-pointer" onClick={() => void handleSaveGroq()} disabled={groqBusy}>
-            {groqBusy ? "Testing…" : "Save & test"}
-          </Button>
-        </PanelCard>
+        <GroqSection
+          groq={groq}
+          groqKey={groqKey}
+          setGroqKey={setGroqKey}
+          groqBusy={groqBusy}
+          groqModels={groqModels}
+          onSave={() => void handleSaveGroq()}
+        />
 
         {/* Google Calendar */}
         <PanelCard
@@ -608,8 +542,8 @@ export function ConnectionsTab({
           {!waConnected && waStatusMessage && (
             <Alert
               className={cn(
-                "w-full border-green-200 bg-green-50 text-green-900",
-                waFailed && "border-amber-200 bg-amber-50 text-amber-900",
+                "w-full border-success/30 bg-success/5 text-foreground",
+                waFailed && "border-warning/30 bg-warning/5",
                 whatsapp?.status === "error" && "border-destructive/30 bg-destructive/5 text-destructive",
               )}
             >
@@ -628,8 +562,8 @@ export function ConnectionsTab({
             <div className="flex h-64 w-64 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border bg-muted/30">
               {waConnected ? (
                 <>
-                  <span className="size-4 rounded-full bg-green-400 shadow-[0_0_12px_rgba(34,197,94,0.9)]" />
-                  <span className="text-base font-medium text-green-500">Connected</span>
+                  <span className="size-4 rounded-full bg-success glow-green" />
+                  <span className="text-base font-medium text-success">Connected</span>
                 </>
               ) : waRefreshBusy ? (
                 <>
@@ -638,13 +572,13 @@ export function ConnectionsTab({
                 </>
               ) : waPairing ? (
                 <>
-                  <div className="size-8 animate-spin rounded-full border-2 border-green-400/30 border-t-green-400" />
-                  <span className="text-sm text-green-500">Pairing…</span>
+                  <div className="size-8 animate-spin rounded-full border-2 border-success/30 border-t-success" />
+                  <span className="text-sm text-success">Pairing…</span>
                   <span className="text-xs text-muted-foreground">Keep WhatsApp open on your phone</span>
                 </>
               ) : waFailed ? (
                 <>
-                  <span className="text-sm font-medium text-amber-500">QR not available</span>
+                  <span className="text-sm font-medium text-warning">QR not available</span>
                   <span className="max-w-[220px] text-center text-xs text-muted-foreground">
                     Remove old linked devices on your phone, then click Refresh QR
                   </span>
@@ -881,44 +815,6 @@ export function ConnectionsTab({
           </div>
         </PanelCard>
       </section>
-    </div>
-  )
-}
-
-function InfraCard({
-  title,
-  conn,
-  icon: Icon,
-}: {
-  title: string
-  conn: DashboardPayload["connections"][string] | undefined
-  icon: LucideIcon
-}) {
-  if (!conn) return null
-  const connected = "connected" in conn ? conn.connected : "reachable" in conn ? conn.reachable : false
-  const status = conn.status ?? (connected ? "connected" : "disconnected")
-  const isGood = status === "connected" || status === "healthy"
-
-  return (
-    <div className={`rounded-xl border p-4 transition-all duration-200 ${isGood ? "border-green-200 bg-green-50" : "border-border bg-muted/30"}`}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <div className={`flex size-8 items-center justify-center rounded-lg border ${isGood ? "border-green-300 bg-green-100 text-green-700" : "border-border bg-card text-muted-foreground"}`}>
-            <Icon className="size-4" aria-hidden />
-          </div>
-          <span className="text-sm font-medium text-foreground">{title}</span>
-        </div>
-        <StatusBadge status={status} />
-      </div>
-      {"detail" in conn && typeof conn.detail === "string" && conn.detail && (
-        <p className="mt-2 text-xs text-muted-foreground">{conn.detail}</p>
-      )}
-      {"chunks" in conn && conn.chunks !== undefined && (
-        <p className="mt-2 text-xs text-muted-foreground">Chunks: {conn.chunks}</p>
-      )}
-      {"port" in conn && typeof conn.port === "number" && (
-        <p className="mt-2 text-xs text-muted-foreground">Port: {conn.port}</p>
-      )}
     </div>
   )
 }

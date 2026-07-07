@@ -1,5 +1,6 @@
 import { CheckCircle2Icon, CircleDashedIcon, RouteIcon, XCircleIcon } from "lucide-react"
 import type { DashboardPayload, HealthStatus } from "@/types/dashboard"
+import { PageHeader } from "@/components/dashboard/page-header"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
@@ -7,24 +8,28 @@ import { cn } from "@/lib/utils"
 function StepIcon({ status }: { status: HealthStatus | string }) {
   const key = status.toLowerCase()
   if (key === "healthy" || key === "connected")
-    return <CheckCircle2Icon className="size-4 text-green-600" />
+    return <CheckCircle2Icon className="size-4 text-success" />
   if (key === "degraded")
-    return <CircleDashedIcon className="size-4 text-amber-600" />
-  return <XCircleIcon className="size-4 text-red-600" />
+    return <CircleDashedIcon className="size-4 text-warning" />
+  return <XCircleIcon className="size-4 text-destructive" />
 }
 
 export function FlowsTab({ data }: { data: DashboardPayload }) {
   if (data.flows.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-muted/30 py-20 text-center">
+      <div className="flex flex-col gap-5">
+        <PageHeader title="E2E Flows" description="End-to-end pipeline traces and flow health" />
+      <div className="surface-card flex flex-col items-center gap-3 py-20 text-center">
         <RouteIcon className="size-8 text-muted-foreground/30" />
         <p className="text-sm text-muted-foreground">No end-to-end flows registered.</p>
+      </div>
       </div>
     )
   }
 
   return (
     <div className="flex flex-col gap-6">
+      <PageHeader title="E2E Flows" description="End-to-end pipeline traces and flow health" />
       {data.flows.map((flow) => (
         <PanelCard
           key={flow.id}

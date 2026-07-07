@@ -74,7 +74,7 @@ async def sync_once(*, full: bool = False) -> dict[str, Any]:
     history_id = state.get("history_id") or ""
     if full or not history_id:
         try:
-            ids = await asyncio.to_thread(client.list_messages, query="is:unread", max_results=max_messages)
+            ids, _ = await asyncio.to_thread(client.list_messages, query="is:unread", max_results=max_messages)
             new_ids = [mid for mid in ids if mid not in seen]
         except Exception as exc:
             return {"status": "error", "reason": str(exc)}
@@ -87,7 +87,7 @@ async def sync_once(*, full: bool = False) -> dict[str, Any]:
         except Exception as exc:
             err = str(exc)
             if "404" in err or "historyId" in err.lower():
-                ids = await asyncio.to_thread(
+                ids, _ = await asyncio.to_thread(
                     client.list_messages, query="newer_than:7d", max_results=max_messages
                 )
                 new_ids = [mid for mid in ids if mid not in seen]

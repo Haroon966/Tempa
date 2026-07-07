@@ -134,6 +134,11 @@ def append_message(
     sources: list[dict[str, Any]] | None = None,
     *,
     paused: bool = False,
+    steps: list[dict[str, Any]] | None = None,
+    activity: list[dict[str, Any]] | None = None,
+    pending_actions: list[dict[str, Any]] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+    planned_steps: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     with _lock:
         session = _read_session_unlocked(session_id)
@@ -149,6 +154,16 @@ def append_message(
         }
         if paused:
             message["paused"] = True
+        if steps:
+            message["steps"] = steps[-50:]
+        if activity:
+            message["activity"] = activity[-50:]
+        if pending_actions:
+            message["pending_actions"] = pending_actions
+        if artifacts:
+            message["artifacts"] = artifacts
+        if planned_steps:
+            message["planned_steps"] = planned_steps
         session["messages"].append(message)
         session["updated_at"] = now
         if role == "user" and (session.get("title") in ("", "New chat") or not session.get("title")):

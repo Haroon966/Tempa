@@ -26,6 +26,14 @@ _SEND_TO_PATTERNS = (
     re.compile(r"ping\s+(.+?)(?:\s+(?:saying|with)\b|\s*$)", re.I),
 )
 
+_SEND_CHANNEL_PATTERNS = (
+    re.compile(r"\b(?:in|to)\s+(?:the\s+)?(?:[#@*])?([\w][\w\s-]*?)\s+channel\b", re.I),
+    re.compile(r"\bchannel\s+(?:named\s+)?(?:[#@*])?([\w-]+)\b", re.I),
+    re.compile(r"#\s*([\w-]+)"),
+    re.compile(r"\*([\w-]+)\*"),
+)
+_CHANNEL_TARGET_STOP = frozenset({"this", "that", "the", "a", "an", "it"})
+
 
 def wants_slack_send_intent(text: str) -> bool:
     cleaned = (text or "").strip()
@@ -33,7 +41,7 @@ def wants_slack_send_intent(text: str) -> bool:
         return False
     if _READ_MESSAGE_RE.search(cleaned):
         return False
-    if re.search(r"\bmessage\s+(?:from|of|in)\b", cleaned, re.I):
+    if re.search(r"\bmessage\s+(?:from|of)\b", cleaned, re.I):
         return False
     if re.search(r"\b(?:send|dm|ping)\b", cleaned, re.I):
         return True
@@ -46,9 +54,26 @@ _BODY_PATTERNS = (
 )
 
 
+def extract_slack_channel_target(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    for pattern in _SEND_CHANNEL_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        name = re.sub(r"\s+", " ", match.group(1).strip(" .,\"'*"))
+        if not name or name.lower() in _CHANNEL_TARGET_STOP:
+            continue
+        return name
+    return ""
+
+
 def extract_slack_recipient_name(text: str) -> str:
     text = (text or "").strip()
     if not text:
+        return ""
+    if extract_slack_channel_target(text):
         return ""
     for pattern in _SEND_TO_PATTERNS:
         match = pattern.search(text)

@@ -24,8 +24,11 @@ def _ensure_dir() -> None:
     _queue_path().parent.mkdir(parents=True, exist_ok=True)
 
 
-def recover_stale_running_jobs(*, max_age_minutes: int = 10) -> int:
-    """Re-queue meet jobs stuck in running state (e.g. after worker crash).
+def recover_stale_running_jobs(*, max_age_minutes: int = 10, on_startup: bool = False) -> int:
+    """Recover meet jobs stuck in running/finalizing (e.g. after worker crash).
+
+    On worker startup, any in-flight job is orphaned — fail it immediately.
+    During normal operation, only jobs older than *max_age_minutes* are touched.
 
     Jobs already superseded by a newer queued entry for the same URL are marked failed.
     """
@@ -33,6 +36,7 @@ def recover_stale_running_jobs(*, max_age_minutes: int = 10) -> int:
     now = datetime.now(timezone.utc)
     recovered = 0
     changed = False
+    stale_statuses = ("running", "finalizing")
     with _lock:
         statuses = _read_statuses_unlocked()
         queue_lines: list[str] = []
@@ -43,10 +47,10 @@ def recover_stale_running_jobs(*, max_age_minutes: int = 10) -> int:
         queued_urls = {str(row.get("meet_url") or "") for row in all_queued if row.get("status") == "queued"}
 
         for job_id, row in list(statuses.items()):
-            if row.get("status") != "running":
+            if row.get("status") not in stale_statuses:
                 continue
             started_at = str(row.get("started_at") or row.get("enqueued_at") or "")
-            if started_at:
+            if not on_startup and started_at:
                 try:
                     started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
                     if started.tzinfo is None:
@@ -65,20 +69,36 @@ def recover_stale_running_jobs(*, max_age_minutes: int = 10) -> int:
                 statuses[job_id] = {**row, "status": "failed", "error": "superseded by newer queued job"}
                 changed = True
                 continue
-            statuses[job_id] = {**row, "status": "queued"}
-            queue_lines.append(
-                json.dumps(
-                    {
-                        "id": job_id,
-                        "meet_url": meet_url,
-                        "title": row.get("title", ""),
-                        "notify_number": row.get("notify_number"),
-                        "enqueued_at": now.isoformat(),
-                        "status": "queued",
-                    },
-                    ensure_ascii=False,
+            if on_startup or row.get("status") == "finalizing":
+                err = (
+                    "finalization interrupted by worker restart"
+                    if row.get("status") == "finalizing"
+                    else "worker session interrupted"
                 )
-            )
+                statuses[job_id] = {**row, "status": "failed", "error": err}
+                changed = True
+                recovered += 1
+                continue
+            statuses[job_id] = {**row, "status": "queued"}
+            requeue = {
+                "id": job_id,
+                "meet_url": meet_url,
+                "title": row.get("title", ""),
+                "notify_number": row.get("notify_number"),
+                "enqueued_at": now.isoformat(),
+                "status": "queued",
+            }
+            for field in (
+                "calendar_event_id",
+                "calendar_event_start",
+                "calendar_event_end",
+                "attendee_emails",
+                "duration_seconds",
+                "av_test_youtube_url",
+            ):
+                if row.get(field) is not None:
+                    requeue[field] = row[field]
+            queue_lines.append(json.dumps(requeue, ensure_ascii=False))
             recovered += 1
             changed = True
         if changed:
@@ -92,7 +112,7 @@ def _active_job_for_url_unlocked(meet_url: str) -> str | None:
         return None
     statuses = _read_statuses_unlocked()
     for job_id, row in statuses.items():
-        if row.get("meet_url") == meet_url and row.get("status") in ("queued", "running"):
+        if row.get("meet_url") == meet_url and row.get("status") in ("queued", "running", "finalizing"):
             return job_id
     return None
 
@@ -100,6 +120,59 @@ def _active_job_for_url_unlocked(meet_url: str) -> str | None:
 def has_active_job_for_url(meet_url: str) -> bool:
     with _lock:
         return _active_job_for_url_unlocked(meet_url) is not None
+
+
+def _parse_utc_timestamp(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def latest_job_for_url(meet_url: str) -> tuple[str, dict[str, Any]] | None:
+    """Most recent job row for a Meet URL (by started_at / enqueued_at)."""
+    if not meet_url:
+        return None
+    with _lock:
+        statuses = _read_statuses_unlocked()
+    best: tuple[str, dict[str, Any], datetime] | None = None
+    for job_id, row in statuses.items():
+        if row.get("meet_url") != meet_url:
+            continue
+        ts = _parse_utc_timestamp(str(row.get("started_at") or row.get("enqueued_at") or ""))
+        if ts is None:
+            ts = datetime.min.replace(tzinfo=timezone.utc)
+        if best is None or ts >= best[2]:
+            best = (job_id, row, ts)
+    if best is None:
+        return None
+    return best[0], best[1]
+
+
+def should_retry_calendar_join(meet_url: str, *, cooldown_seconds: int = 180) -> bool:
+    """True when a prior join ended but the calendar event may still be active."""
+    latest = latest_job_for_url(meet_url)
+    if latest is None:
+        return True
+    _job_id, row = latest
+    status = str(row.get("status") or "")
+    if status in ("queued", "running", "finalizing"):
+        return False
+    started = _parse_utc_timestamp(str(row.get("started_at") or row.get("enqueued_at") or ""))
+    if started is not None:
+        age = (datetime.now(timezone.utc) - started).total_seconds()
+        if age < cooldown_seconds:
+            return False
+    event_end = _parse_utc_timestamp(str(row.get("calendar_event_end") or ""))
+    now = datetime.now(timezone.utc)
+    if event_end is not None and now < event_end:
+        return True
+    return status == "failed"
 
 
 def enqueue_meet_job(
@@ -224,10 +297,13 @@ def claim_next_job() -> dict[str, Any] | None:
                     "title": row.get("title", ""),
                     "error": "superseded by newer job",
                 }
+        prior = statuses.get(claimed_id, {})
         statuses[claimed_id] = {
+            **prior,
+            **{k: v for k, v in claimed.items() if k not in ("status", "enqueued_at")},
             "status": "running",
             "meet_url": claimed.get("meet_url"),
-            "title": claimed.get("title", ""),
+            "title": claimed.get("title", prior.get("title", "")),
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
         _write_statuses_unlocked(statuses)

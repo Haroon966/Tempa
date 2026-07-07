@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { QaAgentPlaybookSheet } from "@/components/qa/qa-agent-playbook-sheet"
+import { PageHeader } from "@/components/dashboard/page-header"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { StatCard } from "@/components/dashboard/stat-card"
 import { Badge } from "@/components/ui/badge"
@@ -121,6 +122,10 @@ export function QaTab() {
 
   return (
     <div className="flex flex-col gap-5">
+      <PageHeader
+        title="QA"
+        description="Branch health, scan queue, vulnerabilities, and test failures across repos"
+      />
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}

@@ -92,3 +92,54 @@ def test_recover_stale_running_job_skips_when_newer_queued():
     assert recovered == 0
     statuses = job_store.get_all_job_statuses()
     assert statuses["stale-running"]["status"] == "failed"
+
+
+def test_claim_next_job_preserves_calendar_metadata():
+    _write_queue(
+        {
+            "id": "job-1",
+            "meet_url": "https://meet.google.com/abc-defg-hij",
+            "title": "Standup",
+            "enqueued_at": "2026-06-18T15:00:00+00:00",
+            "status": "queued",
+            "calendar_event_id": "cal-1",
+            "attendee_emails": ["a@example.com"],
+            "duration_seconds": 1800,
+        }
+    )
+    job_store._status_path().write_text(
+        json.dumps(
+            {
+                "job-1": {
+                    "status": "queued",
+                    "meet_url": "https://meet.google.com/abc-defg-hij",
+                    "title": "Standup",
+                    "calendar_event_id": "cal-1",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    claimed = job_store.claim_next_job()
+    assert claimed is not None
+    statuses = job_store.get_all_job_statuses()
+    row = statuses["job-1"]
+    assert row["status"] == "running"
+    assert row["calendar_event_id"] == "cal-1"
+    assert row["attendee_emails"] == ["a@example.com"]
+    assert row["duration_seconds"] == 1800
+
+
+def test_has_active_job_for_url_includes_finalizing():
+    job_store._status_path().write_text(
+        json.dumps(
+            {
+                "fin": {
+                    "status": "finalizing",
+                    "meet_url": "https://meet.google.com/live-meet",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert job_store.has_active_job_for_url("https://meet.google.com/live-meet")

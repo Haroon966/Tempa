@@ -20,7 +20,7 @@ _HALLUCINATION_RE = re.compile(
     r"^(thank you\.?|thanks\.?|\.+|you\.?|okay\.?|ok\.?|bye\.?|goodbye\.?)$",
     re.I,
 )
-_MIN_RMS = 80.0
+_MIN_RMS = 15.0
 
 
 class GroqWhisperAdapter(STTStreamingAdapter):

@@ -1,19 +1,43 @@
-import { useEffect, useState } from "react"
-import { CheckIcon, XIcon } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { CheckIcon, DownloadIcon, RefreshCwIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 import type { MeetingRecord } from "@/types/dashboard"
-import { approvePendingAction, fetchMeetingDetail, rejectPendingAction } from "@/lib/api"
+import {
+  approvePendingAction,
+  fetchMeetingDetail,
+  meetingDownloadUrl,
+  rejectPendingAction,
+  summarizeMeeting,
+  transcribeMeeting,
+} from "@/lib/api"
 import { PanelCard } from "@/components/dashboard/panel-card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { AudioWaveform } from "@/components/audio-waveform"
+import { VideoPlayer } from "@/components/video-player"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { cn } from "@/lib/utils"
+
+function formatTranscript(raw: string): string {
+  const lines: string[] = []
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue
+    try {
+      const row = JSON.parse(line) as { type?: string; speaker?: string; text?: string }
+      if (row.type === "segment" && row.text) {
+        lines.push(`${row.speaker || "Unknown"}: ${row.text}`)
+      }
+    } catch {
+      lines.push(line)
+    }
+  }
+  return lines.join("\n") || raw
+}
 
 interface MeetingDetailPanelProps {
   meeting: MeetingRecord
-  onClose?: () => void
 }
 
-export function MeetingDetailPanel({ meeting, onClose }: MeetingDetailPanelProps) {
+export function MeetingDetailPanel({ meeting }: MeetingDetailPanelProps) {
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof fetchMeetingDetail>> | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -28,6 +52,10 @@ export function MeetingDetailPanel({ meeting, onClose }: MeetingDetailPanelProps
   const actionItems = (minutes.action_items ?? []) as Array<{ owner?: string; task?: string; due?: string }>
   const decisions = (minutes.decisions ?? []) as Array<{ summary?: string; made_by?: string }>
   const pending = detail?.pending_followups ?? []
+  const transcriptText = useMemo(
+    () => (detail?.transcript_raw ? formatTranscript(detail.transcript_raw) : ""),
+    [detail?.transcript_raw],
+  )
 
   async function handleApprove(id: string) {
     setBusy(id)
@@ -57,43 +85,152 @@ export function MeetingDetailPanel({ meeting, onClose }: MeetingDetailPanelProps
     }
   }
 
+  async function refreshDetail() {
+    const refreshed = await fetchMeetingDetail(meeting.id)
+    setDetail(refreshed)
+    return refreshed
+  }
+
+  async function handleTranscribe() {
+    setBusy("transcribe")
+    try {
+      const result = await transcribeMeeting(meeting.id)
+      if (result.status === "error") {
+        toast.error(result.detail || "Transcription failed")
+        return
+      }
+      toast.success(`Transcribed ${result.transcript_segments ?? 0} segments`)
+      await refreshDetail()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Transcription failed")
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleSummarize() {
+    setBusy("summarize")
+    try {
+      const result = await summarizeMeeting(meeting.id)
+      if (result.status === "error") {
+        toast.error(result.detail || "Summary generation failed")
+        return
+      }
+      toast.success("Meeting summary regenerated")
+      await refreshDetail()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Summary generation failed")
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const media = detail?.media
+  const artifacts = m.artifacts ?? {}
+  const hasAudio = media?.has_audio ?? artifacts.audio
+  const hasVideo = media?.has_video ?? artifacts.video
+  const hasTranscript = media?.has_transcript ?? artifacts.transcript
+
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <h3 className="text-lg font-semibold text-foreground">{m.title || m.id}</h3>
-          {m.calendar_event_id && (
-            <p className="text-xs text-muted-foreground">Calendar event {m.calendar_event_id}</p>
+      {(hasVideo || hasAudio || hasTranscript) && (
+        <PanelCard title="Media & processing" description="Play, download, or re-run pipeline steps">
+          {hasVideo && (
+            <div className="mb-4">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                Video
+              </p>
+              <VideoPlayer
+                meetingId={meeting.id}
+                src={media?.video_url || `/api/meetings/${meeting.id}/video`}
+                initialDuration={media?.video_duration_seconds}
+              />
+            </div>
           )}
-        </div>
-        {onClose && (
-          <Button variant="ghost" size="sm" className="cursor-pointer" onClick={onClose}>
-            Close
-          </Button>
-        )}
-      </div>
-
-      {m.artifacts && (
-        <div className="flex flex-wrap gap-2">
-          {Object.entries(m.artifacts).map(([key, ok]) => (
-            <Badge key={key} variant={ok ? "default" : "outline"}>
-              {key} {ok ? "✓" : "—"}
-            </Badge>
-          ))}
-        </div>
-      )}
-
-      {(minutes.tldr as string) && (
-        <PanelCard title="Summary" description="Meeting TL;DR">
-          <p className="text-sm text-foreground">{String(minutes.tldr)}</p>
+          {hasAudio && (
+            <div className="mb-4">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                Audio
+              </p>
+              <AudioWaveform
+                meetingId={meeting.id}
+                src={media?.audio_url || `/api/meetings/${meeting.id}/audio`}
+                initialDuration={media?.duration_seconds}
+                variant="flat"
+              />
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {hasAudio && (
+              <a
+                href={meetingDownloadUrl(media?.audio_url || `/api/meetings/${meeting.id}/audio`)}
+                download
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }), "cursor-pointer")}
+              >
+                <DownloadIcon className="mr-1 size-3" /> Audio
+              </a>
+            )}
+            {hasVideo && (
+              <a
+                href={meetingDownloadUrl(media?.video_url || `/api/meetings/${meeting.id}/video`)}
+                download
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }), "cursor-pointer")}
+              >
+                <DownloadIcon className="mr-1 size-3" /> Video
+              </a>
+            )}
+            {hasTranscript && (
+              <a
+                href={meetingDownloadUrl(media?.transcript_url || `/api/meetings/${meeting.id}/transcript`)}
+                download
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }), "cursor-pointer")}
+              >
+                <DownloadIcon className="mr-1 size-3" /> Transcript
+              </a>
+            )}
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              className="cursor-pointer"
+              disabled={!hasAudio || busy === "transcribe"}
+              onClick={() => void handleTranscribe()}
+            >
+              <RefreshCwIcon className="mr-1 size-3" />
+              {busy === "transcribe" ? "Transcribing…" : "Re-run audio → text"}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="cursor-pointer"
+              disabled={!hasTranscript || busy === "summarize"}
+              onClick={() => void handleSummarize()}
+            >
+              <RefreshCwIcon className="mr-1 size-3" />
+              {busy === "summarize" ? "Summarizing…" : "Re-run text → summary"}
+            </Button>
+          </div>
         </PanelCard>
       )}
+
+      {(minutes.tldr as string) ? (
+        <PanelCard title="Summary" description="Meeting TL;DR">
+          <p className="text-sm leading-relaxed text-foreground">{String(minutes.tldr)}</p>
+        </PanelCard>
+      ) : m.minutes_status === "partial" || m.minutes_status === "none" ? (
+        <PanelCard title="Summary" description="Minutes not generated yet">
+          <p className="text-sm text-muted-foreground">
+            This session was archived with transcript only. Re-run finalization to generate minutes.
+          </p>
+        </PanelCard>
+      ) : null}
 
       {actionItems.length > 0 && (
         <PanelCard title="Action items" description={`${actionItems.length} tasks`}>
           <ul className="flex flex-col gap-2">
             {actionItems.map((item, i) => (
-              <li key={i} className="text-sm text-foreground">
+              <li key={i} className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-sm text-foreground">
                 <span className="font-medium">{item.owner || "Unassigned"}:</span> {item.task}
                 {item.due && <span className="text-muted-foreground"> — due {item.due}</span>}
               </li>
@@ -106,7 +243,7 @@ export function MeetingDetailPanel({ meeting, onClose }: MeetingDetailPanelProps
         <PanelCard title="Decisions">
           <ul className="flex flex-col gap-2">
             {decisions.map((d, i) => (
-              <li key={i} className="text-sm text-foreground">
+              <li key={i} className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-sm text-foreground">
                 {d.summary}
                 {d.made_by && <span className="text-muted-foreground"> ({d.made_by})</span>}
               </li>
@@ -115,18 +252,28 @@ export function MeetingDetailPanel({ meeting, onClose }: MeetingDetailPanelProps
         </PanelCard>
       )}
 
+      {detail?.transcript_raw && (
+        <PanelCard title="Transcript" description="Recorded session text">
+          <ScrollArea className="max-h-64">
+            <pre className="whitespace-pre-wrap text-xs leading-relaxed text-foreground">
+              {transcriptText}
+            </pre>
+          </ScrollArea>
+        </PanelCard>
+      )}
+
       {pending.length > 0 && (
         <PanelCard title="Follow-up drafts" description="Approve to send">
           <ul className="flex flex-col gap-3">
             {pending.map((action) => (
-              <li key={action.id} className="rounded-lg border border-border/60 p-3">
-                <p className="text-sm font-medium">{action.title || action.type}</p>
+              <li key={action.id} className="rounded-xl border border-border/60 bg-muted/20 p-3">
+                <p className="text-sm font-medium text-foreground">{action.title || action.type}</p>
                 <ScrollArea className="mt-2 max-h-32">
                   <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
                     {JSON.stringify(action.payload, null, 2)}
                   </pre>
                 </ScrollArea>
-                <div className="mt-2 flex gap-2">
+                <div className="mt-3 flex gap-2">
                   <Button
                     size="sm"
                     className="cursor-pointer"

@@ -100,11 +100,27 @@ class AudioDumpWriter:
             "remote_path": None,
             "bytes_written": self._bytes_written,
             "duration_seconds": round(duration_seconds, 2),
+            "peak_rms": 0.0,
+            "silent_capture": False,
         }
 
         if self._file:
             try:
                 self._file.close()
+                if self._filepath and self._bytes_written > 0:
+                    from tempa.meet.audio_capture import is_silent_capture, pcm_file_peak_rms
+
+                    peak_rms = pcm_file_peak_rms(self._filepath)
+                    result["peak_rms"] = round(peak_rms, 2)
+                    result["silent_capture"] = is_silent_capture(peak_rms, duration_seconds)
+                    if result["silent_capture"]:
+                        _logger.warning(
+                            "GMEET: silent audio capture detected meeting=%s peak_rms=%.1f duration=%.0fs "
+                            "(remote Meet audio was not hooked — check WebRTC / video elements)",
+                            self.meeting_id,
+                            peak_rms,
+                            duration_seconds,
+                        )
                 _logger.info(
                     "GMEET: audio dump file closed: %s (bytes=%s, duration=%.2fs)",
                     self._filepath,

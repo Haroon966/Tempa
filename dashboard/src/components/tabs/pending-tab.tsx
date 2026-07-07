@@ -1,5 +1,13 @@
+import { useCallback, useEffect, useState } from "react"
 import { CheckIcon, ShieldCheckIcon, XIcon } from "lucide-react"
-import { usePendingActions } from "@/hooks/use-pending-actions"
+import { toast } from "sonner"
+import {
+  approvePendingAction,
+  fetchPendingActions,
+  rejectPendingAction,
+  type PendingAction,
+} from "@/lib/api"
+import { useDashboardActions, useDashboardData } from "@/contexts/dashboard-context"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { EmailPreview } from "@/components/pending/email-preview"
@@ -27,7 +35,53 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 export function PendingTab() {
-  const { actions, loading, approve, reject } = usePendingActions()
+  const { data } = useDashboardData()
+  const { refresh } = useDashboardActions()
+  const [actions, setActions] = useState<PendingAction[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const loadFullList = useCallback(async () => {
+    try {
+      const result = await fetchPendingActions()
+      setActions(result.actions)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadFullList()
+  }, [loadFullList, data?.pending_actions])
+
+  const approve = useCallback(
+    async (id: string) => {
+      try {
+        await approvePendingAction(id)
+        await loadFullList()
+        await refresh()
+        toast.success("Action approved")
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Approve failed")
+        throw e
+      }
+    },
+    [loadFullList, refresh],
+  )
+
+  const reject = useCallback(
+    async (id: string) => {
+      try {
+        await rejectPendingAction(id)
+        await loadFullList()
+        await refresh()
+        toast.success("Action rejected")
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Reject failed")
+        throw e
+      }
+    },
+    [loadFullList, refresh],
+  )
 
   if (loading && actions.length === 0) {
     return (
@@ -81,7 +135,6 @@ export function PendingTab() {
                 : "border-border hover:border-primary/30",
             )}
           >
-            {/* header */}
             <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border/60 p-4">
               <div className="min-w-0 flex-1">
                 <p className="font-semibold text-foreground">{action.title ?? action.type}</p>

@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   ActivityIcon,
   ArrowRightIcon,
   CalendarIcon,
+  ChevronDownIcon,
   DatabaseIcon,
   MessageCircleIcon,
   ServerIcon,
@@ -11,26 +12,45 @@ import {
   VideoIcon,
   WorkflowIcon,
 } from "lucide-react"
-import tempaVideo from "@/assets/animated_tempa.mp4"
 import type { DashboardPayload, OrchestratorManifest } from "@/types/dashboard"
 import { fetchOrchestrator } from "@/lib/api"
 import { useNavigateSection } from "@/hooks/use-navigate-section"
+import { PageHeader } from "@/components/dashboard/page-header"
 import { StatCard } from "@/components/dashboard/stat-card"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { StatusBadge } from "@/components/status-badge"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 export function OverviewTab({ data }: { data: DashboardPayload }) {
   const navigateSection = useNavigateSection()
   const { overall, agents, calendar, whatsapp, data: stats } = data
   const [orchestrator, setOrchestrator] = useState<OrchestratorManifest | null>(null)
+  const [workersOpen, setWorkersOpen] = useState(false)
+  const [videoSrc, setVideoSrc] = useState<string | null>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
 
   useEffect(() => {
     fetchOrchestrator()
       .then(setOrchestrator)
       .catch(() => setOrchestrator(null))
+  }, [])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) {
+        setVideoSrc((src) => src ?? new URL("../../assets/animated_tempa.mp4", import.meta.url).href)
+        void video.play().catch(() => {})
+      } else {
+        video.pause()
+      }
+    })
+    observer.observe(video)
+    return () => observer.disconnect()
   }, [])
 
   const workerCards = orchestrator?.workers ?? agents.map((a) => ({
@@ -55,27 +75,28 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
 
   return (
     <div className="flex flex-col gap-6 lg:gap-8">
+      <PageHeader
+        title="Overview"
+        description="System health, stats, and quick status at a glance"
+      />
 
-      {/* ══ Bento hero grid ═════════════════════════════════ */}
       <div className="grid gap-4 lg:grid-cols-12 lg:gap-5">
-
-        {/* Mascot tile — square 1:1 */}
-        <div className="bento-tile relative self-start overflow-hidden rounded-2xl border border-white bg-[#f4f6f6] before:hidden hover:border-white hover:shadow-[0_1px_2px_rgba(19,78,74,0.04)] lg:col-span-3">
-          <div className="relative aspect-square w-full bg-[#f4f6f6] p-[6px]">
+        <div className="surface-card relative self-start overflow-hidden lg:col-span-3">
+          <div className="relative aspect-square w-full bg-muted p-1.5">
             <video
-              src={tempaVideo}
-              autoPlay
+              ref={videoRef}
+              src={videoSrc ?? undefined}
               loop
               muted
               playsInline
-              className="h-full w-full object-cover"
+              preload="none"
+              className="h-full w-full rounded-xl object-cover"
               aria-label="Tempa mascot animation"
             />
           </div>
         </div>
 
-        {/* Status tile — wider command center */}
-        <div className="bento-tile flex flex-col justify-between rounded-2xl p-6 sm:p-8 lg:col-span-9">
+        <div className="surface-card flex flex-col justify-between p-6 sm:p-8 lg:col-span-9">
           <div>
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-primary">
@@ -101,21 +122,20 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
               </div>
               <Progress
                 value={readyPct}
-                className="h-2.5 bg-muted [&>div]:rounded-full [&>div]:bg-gradient-to-r [&>div]:from-primary [&>div]:to-secondary [&>div]:transition-all [&>div]:duration-700"
+                className="h-2.5 bg-muted [&>div]:rounded-full [&>div]:bg-primary [&>div]:transition-all [&>div]:duration-700"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <MetricChip count={overall.healthy} label="Healthy" tone="emerald" />
-              <MetricChip count={overall.degraded} label="Degraded" tone="amber" />
-              <MetricChip count={overall.unhealthy} label="Down" tone="red" />
-              <MetricChip count={overall.total_components} label="Total" tone="teal" />
+              <MetricChip count={overall.healthy} label="Healthy" tone="success" />
+              <MetricChip count={overall.degraded} label="Degraded" tone="warning" />
+              <MetricChip count={overall.unhealthy} label="Down" tone="destructive" />
+              <MetricChip count={overall.total_components} label="Total" tone="muted" />
             </div>
           </div>
         </div>
       </div>
 
-      {/* ══ Quick stats bento row ═══════════════════════════ */}
       <section>
         <SectionHeader label="At a glance" />
         <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -125,7 +145,7 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
             hint={`${overall.healthy} healthy · ${overall.degraded} degraded · ${overall.unhealthy} down`}
             icon={ActivityIcon}
             status={overall.status}
-            onClick={() => navigateSection("components")}
+            onClick={() => navigateSection("diagnostics")}
           />
           <StatCard
             label="Pending approvals"
@@ -133,7 +153,7 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
             hint="actions awaiting your confirmation"
             icon={ShieldCheckIcon}
             accent="orange"
-            onClick={() => navigateSection("pending")}
+            onClick={() => navigateSection("inbox")}
           />
           <StatCard
             label="Active tasks"
@@ -148,12 +168,11 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
             value={stats.rag_chunks}
             hint="chunks indexed in memory"
             icon={DatabaseIcon}
-            onClick={() => navigateSection("data")}
+            onClick={() => navigateSection("meetings")}
           />
         </div>
       </section>
 
-      {/* ══ Integration + meetings bento ════════════════════ */}
       <section>
         <SectionHeader label="Integrations & meetings" />
         <div className="mt-3 grid gap-4 lg:grid-cols-12">
@@ -164,7 +183,7 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
               hint="with Google Meet links (7 days)"
               icon={CalendarIcon}
               className="h-full"
-              onClick={() => navigateSection("data")}
+              onClick={() => navigateSection("meetings")}
             />
             <StatCard
               label="WhatsApp"
@@ -174,7 +193,7 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
               status={data.connections.whatsapp?.connected ? "connected" : "disconnected"}
               accent="sky"
               className="h-full"
-              onClick={() => navigateSection("connections")}
+              onClick={() => navigateSection("settings")}
             />
           </div>
 
@@ -192,13 +211,13 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
                 </div>
                 <Progress
                   value={readyPct}
-                  className="h-2 bg-muted [&>div]:rounded-full [&>div]:bg-gradient-to-r [&>div]:from-primary [&>div]:to-secondary"
+                  className="h-2 bg-muted [&>div]:rounded-full [&>div]:bg-primary"
                 />
               </div>
               <div className="grid grid-cols-3 gap-2">
-                <HealthSegment count={overall.healthy} label="Healthy" color="text-emerald-700" dot="bg-emerald-500 glow-green" />
-                <HealthSegment count={overall.degraded} label="Degraded" color="text-amber-700" dot="bg-amber-500 glow-amber" />
-                <HealthSegment count={overall.unhealthy} label="Down" color="text-red-700" dot="bg-red-500 glow-red" />
+                <HealthSegment count={overall.healthy} label="Healthy" tone="success" />
+                <HealthSegment count={overall.degraded} label="Degraded" tone="warning" />
+                <HealthSegment count={overall.unhealthy} label="Down" tone="destructive" />
               </div>
             </div>
           </PanelCard>
@@ -207,7 +226,6 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
             title="Triggerable meets now"
             description="Meetings in the auto-join window"
             icon={VideoIcon}
-            variant="featured"
             className="lg:col-span-5"
           >
             {calendar.triggerable_now.length === 0 ? (
@@ -228,7 +246,7 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
                       </div>
                       {ev.meet_url && (
                         <a
-                          className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-muted px-3 py-1.5 text-xs font-semibold text-primary transition-all duration-200 hover:bg-muted/80 hover:shadow-sm"
+                          className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-muted px-3 py-1.5 text-xs font-semibold text-primary transition-colors duration-200 hover:bg-accent"
                           href={ev.meet_url}
                           target="_blank"
                           rel="noreferrer"
@@ -245,88 +263,97 @@ export function OverviewTab({ data }: { data: DashboardPayload }) {
         </div>
       </section>
 
-      {/* ══ Orchestrator + workers ═════════════════════════════ */}
       <section>
-        <SectionHeader
-          label={orchestrator ? "Orchestrator & workers" : "Specialist agents"}
-          action={
+        <div className="flex items-center justify-between">
+          <p className="section-label">
+            {orchestrator ? "Orchestrator & workers" : "Specialist agents"}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="cursor-pointer text-xs font-semibold text-primary"
+              onClick={() => setWorkersOpen((v) => !v)}
+            >
+              {workersOpen ? "Collapse" : "Expand"}
+              <ChevronDownIcon className={cn("size-3.5 transition-transform", workersOpen && "rotate-180")} />
+            </Button>
             <button
               type="button"
-              onClick={() => navigateSection("components")}
+              onClick={() => navigateSection("diagnostics")}
               className="flex cursor-pointer items-center gap-1 text-xs font-semibold text-primary/70 transition-colors hover:text-primary"
             >
               View all <ArrowRightIcon className="size-3" />
             </button>
-          }
-        />
-        <div className="mt-3 space-y-3">
-          {orchestrator ? (
-            <PanelCard
-              title={orchestrator.orchestrator.name}
-              description={orchestrator.orchestrator.role}
-              icon={WorkflowIcon}
-            >
-              <p className="text-xs text-muted-foreground">
-                {orchestrator.skills.length} skills · {orchestrator.workers.length} workers ·{" "}
-                {orchestrator.tools.length} tools
-              </p>
-            </PanelCard>
-          ) : null}
-          <PanelCard
-            title="Workers"
-            description="Domain agents and bound tools"
-            icon={ServerIcon}
-          >
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {workerCards.map((worker) => {
-                const agentStatus = agents.find((a) => a.id === worker.id)?.status ?? "healthy"
-                return (
-                  <div key={worker.id} className="list-row flex flex-col gap-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="truncate font-semibold text-foreground">{worker.name}</div>
-                        <div className="line-clamp-2 text-xs text-muted-foreground">{worker.role}</div>
-                      </div>
-                      <StatusBadge status={agentStatus} />
-                    </div>
-                    {worker.tools.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {worker.tools.slice(0, 3).map((tool) => (
-                          <Badge
-                            key={tool}
-                            variant="outline"
-                            className="border-border bg-muted text-[10px] font-medium text-muted-foreground"
-                          >
-                            {tool}
-                          </Badge>
-                        ))}
-                      </div>
-                    ) : (
-                      <Badge
-                        variant="outline"
-                        className="w-fit border-border bg-muted text-xs font-medium text-primary"
-                      >
-                        {agents.find((a) => a.id === worker.id)?.model_category ?? worker.runner}
-                      </Badge>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </PanelCard>
+          </div>
         </div>
+
+        {workersOpen && (
+          <div className="mt-3 space-y-3">
+            {orchestrator ? (
+              <PanelCard
+                title={orchestrator.orchestrator.name}
+                description={orchestrator.orchestrator.role}
+                icon={WorkflowIcon}
+              >
+                <p className="text-xs text-muted-foreground">
+                  {orchestrator.skills.length} skills · {orchestrator.workers.length} workers ·{" "}
+                  {orchestrator.tools.length} tools
+                </p>
+              </PanelCard>
+            ) : null}
+            <PanelCard
+              title="Workers"
+              description="Domain agents and bound tools"
+              icon={ServerIcon}
+            >
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {workerCards.map((worker) => {
+                  const agentStatus = agents.find((a) => a.id === worker.id)?.status ?? "healthy"
+                  return (
+                    <div key={worker.id} className="list-row flex flex-col gap-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate font-semibold text-foreground">{worker.name}</div>
+                          <div className="line-clamp-2 text-xs text-muted-foreground">{worker.role}</div>
+                        </div>
+                        <StatusBadge status={agentStatus} />
+                      </div>
+                      {worker.tools.length > 0 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {worker.tools.slice(0, 3).map((tool) => (
+                            <Badge
+                              key={tool}
+                              variant="outline"
+                              className="border-border bg-muted text-[10px] font-medium text-muted-foreground"
+                            >
+                              {tool}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="w-fit border-border bg-muted text-xs font-medium text-primary"
+                        >
+                          {agents.find((a) => a.id === worker.id)?.model_category ?? worker.runner}
+                        </Badge>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </PanelCard>
+          </div>
+        )}
       </section>
     </div>
   )
 }
 
-function SectionHeader({ label, action }: { label: string; action?: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between">
-      <p className="section-label">{label}</p>
-      {action}
-    </div>
-  )
+function SectionHeader({ label }: { label: string }) {
+  return <p className="section-label">{label}</p>
 }
 
 function MetricChip({
@@ -336,13 +363,13 @@ function MetricChip({
 }: {
   count: number
   label: string
-  tone: "emerald" | "amber" | "red" | "teal"
+  tone: "success" | "warning" | "destructive" | "muted"
 }) {
   const styles = {
-    emerald: "border-emerald-200/80 bg-emerald-50/80 text-emerald-800",
-    amber: "border-amber-200/80 bg-amber-50/80 text-amber-800",
-    red: "border-red-200/80 bg-red-50/80 text-red-700",
-    teal: "border-border bg-muted text-primary",
+    success: "border-success/30 bg-success/5 text-success",
+    warning: "border-warning/30 bg-warning/5 text-warning",
+    destructive: "border-destructive/30 bg-destructive/5 text-destructive",
+    muted: "border-border bg-muted text-primary",
   }
 
   return (
@@ -353,9 +380,26 @@ function MetricChip({
   )
 }
 
-function HealthSegment({ count, label, color, dot }: {
-  count: number; label: string; color: string; dot: string
+function HealthSegment({
+  count,
+  label,
+  tone,
+}: {
+  count: number
+  label: string
+  tone: "success" | "warning" | "destructive"
 }) {
+  const dot = {
+    success: "bg-success glow-green",
+    warning: "bg-warning glow-amber",
+    destructive: "bg-destructive glow-red",
+  }[tone]
+  const color = {
+    success: "text-success",
+    warning: "text-warning",
+    destructive: "text-destructive",
+  }[tone]
+
   return (
     <div className="list-row flex flex-col items-center gap-1.5 py-4">
       <span className={cn("size-2 rounded-full", dot)} aria-hidden />

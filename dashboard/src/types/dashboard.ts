@@ -1,5 +1,13 @@
 export type HealthStatus = "healthy" | "degraded" | "unhealthy" | "connected" | "disconnected" | "error"
 
+export interface DashboardSummary {
+  generated_at: string
+  overall: DashboardPayload["overall"]
+  connections: DashboardPayload["connections"]
+  pending_actions: PendingActionSummary[]
+  pending_count: number
+}
+
 export interface DashboardPayload {
   generated_at: string
   overall: {

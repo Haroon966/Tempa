@@ -13,6 +13,13 @@ class AudioConfig:
 
 
 @dataclass
+class VideoConfig:
+    record_enabled: bool = True
+    width: int = 1280
+    height: int = 720
+
+
+@dataclass
 class SttConfig:
     provider: Optional[str] = None
     api_key: Optional[str] = None
@@ -30,6 +37,7 @@ class JoinConfig:
     bot_name: str = "Meeto"
     disable_mic: bool = True
     disable_camera: bool = True
+    virtual_camera_path: Optional[str] = None
     join_timeout_ms: int = 90000
     screenshot_dir: Optional[str] = None
 
@@ -41,6 +49,7 @@ class WorkerConfig:
     duration_seconds: int = 3600
     output_dir: str = "./generated"
     audio: AudioConfig = field(default_factory=AudioConfig)
+    video: VideoConfig = field(default_factory=VideoConfig)
     stt: SttConfig = field(default_factory=SttConfig)
     join: JoinConfig = field(default_factory=JoinConfig)
     calendar_event_id: str | None = None
@@ -48,3 +57,4 @@ class WorkerConfig:
     calendar_event_end: str | None = None
     attendee_emails: list[str] = field(default_factory=list)
     started_at: str | None = None
+    av_test_youtube_url: str | None = None

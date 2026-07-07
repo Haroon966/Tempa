@@ -1,29 +1,29 @@
 import {
   ActivityIcon,
-  BotIcon,
-  DatabaseIcon,
   GitBranchIcon,
+  InboxIcon,
   LayoutDashboardIcon,
-  MailIcon,
   MessageSquareIcon,
-  NetworkIcon,
-  RadioIcon,
-  RouteIcon,
-  ShieldCheckIcon,
+  SettingsIcon,
+  StethoscopeIcon,
+  VideoIcon,
 } from "lucide-react"
 
 export const NAV_ITEMS = [
-  { value: "agent", path: "/agent", label: "Agent", icon: MessageSquareIcon, group: "monitor" },
-  { value: "overview", path: "/overview", label: "Overview", icon: LayoutDashboardIcon, group: "monitor" },
-  { value: "qa", path: "/qa", label: "QA", icon: GitBranchIcon, group: "monitor" },
-  { value: "live-meeting", path: "/live-meeting", label: "Live Meeting", icon: RadioIcon, group: "monitor" },
+  { value: "overview", path: "/overview", label: "Overview", icon: LayoutDashboardIcon, group: "work" },
+  { value: "agent", path: "/agent", label: "Agent", icon: MessageSquareIcon, group: "work" },
+  { value: "meetings", path: "/meetings/live", label: "Meetings", icon: VideoIcon, group: "work" },
+  { value: "inbox", path: "/inbox/mail", label: "Inbox", icon: InboxIcon, group: "work" },
   { value: "activity", path: "/activity", label: "Activity", icon: ActivityIcon, group: "monitor" },
-  { value: "pending", path: "/pending", label: "Approvals", icon: ShieldCheckIcon, group: "monitor" },
-  { value: "mail", path: "/mail", label: "Mail", icon: MailIcon, group: "monitor" },
-  { value: "connections", path: "/connections", label: "Connections", icon: NetworkIcon, group: "system" },
-  { value: "components", path: "/components", label: "Components", icon: BotIcon, group: "system" },
-  { value: "flows", path: "/flows", label: "E2E Flows", icon: RouteIcon, group: "system" },
-  { value: "data", path: "/data", label: "Data", icon: DatabaseIcon, group: "system" },
+  { value: "qa", path: "/qa", label: "QA", icon: GitBranchIcon, group: "monitor" },
+  { value: "settings", path: "/settings", label: "Settings", icon: SettingsIcon, group: "system" },
+  {
+    value: "diagnostics",
+    path: "/diagnostics/components",
+    label: "Diagnostics",
+    icon: StethoscopeIcon,
+    group: "system",
+  },
 ] as const
 
 export type NavSection = (typeof NAV_ITEMS)[number]["value"]
@@ -31,54 +31,43 @@ export type NavSection = (typeof NAV_ITEMS)[number]["value"]
 export const DEFAULT_SECTION: NavSection = "overview"
 
 export const NAV_GROUPS = [
+  { id: "work", label: "Work" },
   { id: "monitor", label: "Monitor" },
   { id: "system", label: "System" },
 ] as const
 
 export const PAGE_META: Record<NavSection, { title: string; description: string }> = {
-  agent: {
-    title: "Agent",
-    description: "Chat with the coordinator — memory, Gmail, calendar, Meet, WhatsApp, and PC",
-  },
   overview: {
     title: "Overview",
     description: "System health, stats, and quick status at a glance",
   },
-  qa: {
-    title: "QA",
-    description: "Branch health, scan queue, vulnerabilities, and test failures across repos",
+  agent: {
+    title: "Agent",
+    description: "Chat with the coordinator — memory, Gmail, calendar, Meet, WhatsApp, and PC",
   },
-  "live-meeting": {
-    title: "Live Meeting",
-    description: "Active Meet sessions — transcript, notes, and chat copilot",
+  meetings: {
+    title: "Meetings",
+    description: "Live Meet sessions and archived recordings",
   },
-  connections: {
-    title: "Connections",
-    description: "External services, APIs, and integration status",
-  },
-  components: {
-    title: "Components",
-    description: "Agents, tools, and runtime modules",
-  },
-  flows: {
-    title: "E2E Flows",
-    description: "End-to-end pipeline traces and flow health",
-  },
-  data: {
-    title: "Data",
-    description: "Memory, RAG indexes, and stored context",
+  inbox: {
+    title: "Inbox",
+    description: "Synced mail and actions awaiting your approval",
   },
   activity: {
     title: "Activity",
     description: "Recent events, logs, and live operations",
   },
-  pending: {
-    title: "Approvals",
-    description: "Review and confirm emails, messages, and PC actions",
+  qa: {
+    title: "QA",
+    description: "Branch health, scan queue, vulnerabilities, and test failures across repos",
   },
-  mail: {
-    title: "Mail",
-    description: "Synced inbox and Gmail status",
+  settings: {
+    title: "Settings",
+    description: "Integrations, API keys, and connection status",
+  },
+  diagnostics: {
+    title: "Diagnostics",
+    description: "Runtime components and end-to-end pipeline health",
   },
 }
 
@@ -91,6 +80,10 @@ export function sectionPath(section: NavSection): string {
 }
 
 export function sectionFromPath(pathname: string): NavSection | null {
+  if (pathname.startsWith("/agent")) return "agent"
+  if (pathname.startsWith("/meetings")) return "meetings"
+  if (pathname.startsWith("/inbox")) return "inbox"
+  if (pathname.startsWith("/diagnostics")) return "diagnostics"
   const item = NAV_ITEMS.find((entry) => entry.path === pathname)
   return item?.value ?? null
 }

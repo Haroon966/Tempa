@@ -114,10 +114,16 @@ def collect_cross_channel_conversation(
 ) -> list[dict[str, Any]]:
     """Merge recent turns from dashboard, Slack, and WhatsApp chronologically."""
     ctx = dict(context or {})
+    channel = str(ctx.get("channel") or "")
     merged: list[dict[str, Any]] = []
     merged.extend(_dashboard_turns(ctx, per_channel_limit))
-    merged.extend(_slack_turns(per_channel_limit, ctx))
-    merged.extend(_whatsapp_turns(per_channel_limit))
+
+    inbound_slack = bool(ctx.get("inbound_slack")) or channel == "slack"
+    inbound_whatsapp = bool(ctx.get("inbound_whatsapp")) or channel == "whatsapp"
+    if inbound_slack:
+        merged.extend(_slack_turns(per_channel_limit, ctx))
+    if inbound_whatsapp:
+        merged.extend(_whatsapp_turns(per_channel_limit))
 
     merged.sort(key=lambda row: _parse_ts(str(row.get("timestamp") or "")))
 
@@ -126,18 +132,25 @@ def collect_cross_channel_conversation(
     return merged
 
 
-def enrich_conversation_context(context: dict[str, Any] | None = None) -> dict[str, Any]:
+def enrich_conversation_context(
+    context: dict[str, Any] | None = None,
+    *,
+    message_limit: int = 20,
+) -> dict[str, Any]:
     """Attach unified cross-channel conversation history to coordinator context."""
     ctx = dict(context or {})
-    turns = collect_cross_channel_conversation(ctx)
+    turns = collect_cross_channel_conversation(ctx, total_limit=message_limit)
     if turns:
         ctx["recent_conversation"] = turns
+        ctx["conversation_messages"] = turns
         ctx["cross_channel_loaded"] = True
         ctx["recent_user_messages"] = [
             str(row.get("text") or row.get("content") or "")
             for row in turns
             if row.get("role") == "user"
         ][-8:]
+    else:
+        ctx.setdefault("conversation_messages", [])
     return ctx
 
 

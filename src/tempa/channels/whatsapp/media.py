@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from tempa.channels.whatsapp.client import WhatsAppBridgeClient
+from tempa.channels.whatsapp.schemas import _unwrap_message
 from tempa.router.groq_router import get_router
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 async def transcribe_whatsapp_audio(message_item: dict[str, Any]) -> str:
     """FR-WA-06: transcribe voice notes via Groq Whisper."""
+    msg = message_item.get("message", {})
+    if isinstance(msg, dict) and not _unwrap_message(msg).get("audioMessage"):
+        return ""
     client = WhatsAppBridgeClient()
     payload = {"message": message_item}
     async with httpx.AsyncClient(timeout=60) as http:

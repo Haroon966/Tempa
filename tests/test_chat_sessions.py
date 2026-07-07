@@ -54,6 +54,39 @@ def test_append_message_persist_paused(chat_store):
     assert updated["messages"][0]["paused"] is True
 
 
+def test_append_message_persist_stream_meta(chat_store):
+    session = cs.create_session()
+    steps = [
+        {
+            "subtask_id": "a1",
+            "agent": "gmail",
+            "status": "done",
+            "detail": "search",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }
+    ]
+    activity = [
+        {
+            "agent": "coordinator",
+            "action": "route",
+            "detail": "gmail",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+        }
+    ]
+    cs.append_message(
+        session["id"],
+        "assistant",
+        "Done.",
+        steps=steps,
+        activity=activity,
+    )
+    updated = cs.get_session(session["id"])
+    assert updated is not None
+    msg = updated["messages"][0]
+    assert msg["steps"][0]["agent"] == "gmail"
+    assert msg["activity"][0]["action"] == "route"
+
+
 def test_delete_session(chat_store):
     session = cs.create_session()
     assert cs.delete_session(session["id"]) is True

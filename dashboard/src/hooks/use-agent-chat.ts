@@ -17,6 +17,9 @@ export type ChatMessage = {
   paused?: boolean
   pending_actions?: PendingActionPreview[]
   artifacts?: ChatArtifact[]
+  steps?: StepEvent[]
+  activity?: ActivityEvent[]
+  planned_steps?: Array<{ agent?: string; task?: string }>
   created_at?: string
   streaming?: boolean
 }
@@ -50,6 +53,8 @@ export function useAgentChat() {
   const abortRef = useRef<AbortController | null>(null)
   const streamingRef = useRef(false)
   const runIdRef = useRef<string | null>(null)
+  const stepsRef = useRef<StepEvent[]>([])
+  const activityRef = useRef<ActivityEvent[]>([])
 
   const sendMessage = useCallback(
     async (
@@ -70,6 +75,7 @@ export function useAgentChat() {
       const userMsg: ChatMessage = { id: newId(), role: "user", content: trimmed }
       const assistantId = newId()
       const contentRef = { current: "" }
+      const rafRef = { current: 0 }
       let finalized = false
 
       setMessages((prev) => [
@@ -79,6 +85,8 @@ export function useAgentChat() {
       ])
       streamingRef.current = true
       setStreaming(true)
+      stepsRef.current = []
+      activityRef.current = []
       setActivity([])
       setSteps([])
 
@@ -94,12 +102,20 @@ export function useAgentChat() {
       const applyToken = (delta: string) => {
         if (!delta || finalized) return
         contentRef.current += delta
-        updateAssistant({ content: contentRef.current, streaming: true })
+        if (rafRef.current) return
+        rafRef.current = requestAnimationFrame(() => {
+          rafRef.current = 0
+          updateAssistant({ content: contentRef.current, streaming: true })
+        })
       }
 
       const finalizeAssistant = (patch: Partial<ChatMessage> = {}) => {
         if (finalized) return
         finalized = true
+        if (rafRef.current) {
+          cancelAnimationFrame(rafRef.current)
+          rafRef.current = 0
+        }
 
         const patchContent = patch.content?.trim() ?? ""
         const content = patchContent || contentRef.current
@@ -109,6 +125,8 @@ export function useAgentChat() {
           ...patch,
           content,
           streaming: false,
+          steps: stepsRef.current.length ? [...stepsRef.current] : undefined,
+          activity: activityRef.current.length ? [...activityRef.current] : undefined,
         })
       }
 
@@ -122,21 +140,27 @@ export function useAgentChat() {
           } else if (event.type === "token") {
             applyToken(event.delta)
           } else if (event.type === "activity") {
-            setActivity((prev) => [...prev.slice(-49), event.event])
+            setActivity((prev) => {
+              const next = [...prev.slice(-49), event.event]
+              activityRef.current = next
+              return next
+            })
           } else if (event.type === "step") {
             setSteps((prev) => {
               const existing = prev.findIndex(
                 (s) => s.subtask_id === event.step.subtask_id && s.status === "start",
               )
+              let next: StepEvent[]
               if (event.step.status === "start") {
-                return [...prev.slice(-49), event.step]
-              }
-              if (existing >= 0) {
-                const next = [...prev]
+                next = [...prev.slice(-49), event.step]
+              } else if (existing >= 0) {
+                next = [...prev]
                 next[existing] = { ...next[existing], ...event.step }
-                return next
+              } else {
+                next = [...prev.slice(-49), event.step]
               }
-              return [...prev.slice(-49), event.step]
+              stepsRef.current = next
+              return next
             })
           } else if (event.type === "message") {
             resolvedSessionId = event.session_id ?? resolvedSessionId
@@ -148,8 +172,17 @@ export function useAgentChat() {
               paused: event.paused,
               pending_actions: event.pending_actions,
               artifacts: event.artifacts,
+              planned_steps: event.planned_steps,
             })
           } else if (event.type === "error") {
+            if (event.code === "CANCELLED") {
+              finalizeAssistant({
+                content: contentRef.current
+                  ? `${contentRef.current}\n\n_(Stopped)_`
+                  : "_(Stopped)_",
+              })
+              continue
+            }
             const hint = errorRecoveryHint(event.code)
             const message = hint ? `${event.error}\n\n${hint}` : event.error
             finalizeAssistant({ content: `Error: ${message}` })
@@ -165,9 +198,14 @@ export function useAgentChat() {
         if ((err as Error).name !== "AbortError") {
           finalizeAssistant({ content: `Error: ${(err as Error).message}` })
         } else if (!finalized) {
+          const stopped = contentRef.current
+            ? `${contentRef.current}\n\n_(Stopped)_`
+            : "_(Stopped)_"
           updateAssistant({
-            content: contentRef.current,
+            content: stopped,
             streaming: false,
+            steps: stepsRef.current.length ? [...stepsRef.current] : undefined,
+            activity: activityRef.current.length ? [...activityRef.current] : undefined,
           })
           finalized = true
         }
@@ -192,7 +230,16 @@ export function useAgentChat() {
     streamingRef.current = false
     setStreaming(false)
     setMessages((prev) =>
-      prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+      prev.map((m) =>
+        m.streaming
+          ? {
+              ...m,
+              streaming: false,
+              steps: stepsRef.current.length ? [...stepsRef.current] : m.steps,
+              activity: activityRef.current.length ? [...activityRef.current] : m.activity,
+            }
+          : m,
+      ),
     )
   }, [])
 
@@ -204,6 +251,11 @@ export function useAgentChat() {
         content: string
         sources?: ChatSource[]
         paused?: boolean
+        pending_actions?: PendingActionPreview[]
+        artifacts?: ChatArtifact[]
+        steps?: StepEvent[]
+        activity?: ActivityEvent[]
+        planned_steps?: Array<{ agent?: string; task?: string }>
         created_at?: string
       }>,
     ) => {
@@ -214,6 +266,11 @@ export function useAgentChat() {
           content: m.content,
           sources: m.sources,
           paused: m.paused,
+          pending_actions: m.pending_actions,
+          artifacts: m.artifacts,
+          steps: m.steps,
+          activity: m.activity,
+          planned_steps: m.planned_steps,
           created_at: m.created_at,
           streaming: false,
         })),

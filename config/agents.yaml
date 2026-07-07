@@ -3,6 +3,11 @@ coordinator:
   role: Master agent — plan tasks, delegate to workers, merge results
   model_category: reasoning
   plan_preview: false
+  actor_loop: true
+  actor_max_steps: 8
+  actor_replan_on_error: true
+  goal_check: true
+  goal_check_max_extra_steps: 1
 
 specialists:
   meet:

@@ -48,10 +48,31 @@ def _pending_preview(action_id: str, action_type: str, preview: str) -> dict[str
     return {"id": action_id, "type": action_type, "preview": preview[:500]}
 
 
-def _collect_pending_actions(state: CoordinatorState) -> list[dict[str, Any]]:
-    collected = list(state.get("pending_actions") or [])
-    seen = {item["id"] for item in collected if item.get("id")}
-    for result in (state.get("results") or {}).values():
+def _pending_type_from_payload(payload: dict[str, Any]) -> str:
+    if "subject" in payload or ("to" in payload and "@" in str(payload.get("to", ""))):
+        return "email_send"
+    if payload.get("tool") in ("write_file", "create_directory", "delete_path", "prepare_file_transfer"):
+        tool = str(payload.get("tool"))
+        return {
+            "write_file": "pc_write",
+            "create_directory": "pc_mkdir",
+            "delete_path": "pc_delete",
+            "prepare_file_transfer": "file_transfer",
+        }.get(tool, "pc_write")
+    if payload.get("path") and payload.get("status") == "pending":
+        return "pc_write"
+    if payload.get("number"):
+        return "whatsapp_send"
+    if payload.get("channel") and "text" in payload:
+        return "slack_send"
+    return "whatsapp_send"
+
+
+def collect_pending_from_results(results: dict[str, str]) -> list[dict[str, Any]]:
+    """Scan specialist JSON outputs for pending_action_id entries."""
+    collected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for result in results.values():
         try:
             payload = json.loads(result)
         except (json.JSONDecodeError, TypeError):
@@ -59,18 +80,21 @@ def _collect_pending_actions(state: CoordinatorState) -> list[dict[str, Any]]:
         if not isinstance(payload, dict):
             continue
         action_id = payload.get("pending_action_id")
-        if payload.get("status") == "pending" and action_id and action_id not in seen:
+        if payload.get("status") == "pending" and action_id and str(action_id) not in seen:
             preview = str(payload.get("preview") or payload.get("body") or payload.get("message") or "")
-            if "subject" in payload or ("to" in payload and "@" in str(payload.get("to", ""))):
-                action_type = "email_send"
-            elif payload.get("number"):
-                action_type = "whatsapp_send"
-            elif payload.get("channel") and "text" in payload:
-                action_type = "slack_send"
-            else:
-                action_type = "whatsapp_send"
+            action_type = _pending_type_from_payload(payload)
             collected.append(_pending_preview(str(action_id), action_type, preview))
             seen.add(str(action_id))
+    return collected
+
+
+def _collect_pending_actions(state: CoordinatorState) -> list[dict[str, Any]]:
+    collected = list(state.get("pending_actions") or [])
+    seen = {item["id"] for item in collected if item.get("id")}
+    for item in collect_pending_from_results(state.get("results") or {}):
+        if item.get("id") not in seen:
+            collected.append(item)
+            seen.add(item.get("id"))
     return collected
 
 
@@ -269,6 +293,8 @@ async def _run_specialist_with_retry(
     subtask_id: str = "",
 ) -> str:
     import time
+
+    _check_cancelled(context)
 
     runner = AGENT_RUNNERS.get(agent)
     if not runner:

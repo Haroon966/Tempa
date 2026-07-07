@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   deleteQaRepo,
   fetchQaAgentPlaybook,
@@ -7,6 +7,7 @@ import {
   fetchQaJobs,
   fetchQaRepos,
   fetchQaSummary,
+  invalidateJsonCache,
   postQaComment,
   postQaFix,
   postQaRepo,
@@ -19,7 +20,13 @@ import {
   type QaSummary,
 } from "@/lib/api"
 
-export function useQa(pollMs = 12000) {
+const QA_POLL_MS = 30_000
+
+function qaResultsEqual<T>(a: T, b: T) {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+export function useQa(pollMs = QA_POLL_MS) {
   const [summary, setSummary] = useState<QaSummary | null>(null)
   const [repos, setRepos] = useState<QaRepoEntry[]>([])
   const [branches, setBranches] = useState<QaBranchStatus[]>([])
@@ -27,75 +34,108 @@ export function useQa(pollMs = 12000) {
   const [jobs, setJobs] = useState<QaJob[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const inFlight = useRef(false)
 
   const refresh = useCallback(async () => {
-    const results = await Promise.allSettled([
-      fetchQaSummary(),
-      fetchQaRepos(),
-      fetchQaBranches(),
-      fetchQaFindings(),
-      fetchQaJobs(),
-    ])
-    const [s, r, b, f, j] = results
-    if (s.status === "fulfilled") setSummary(s.value)
-    if (r.status === "fulfilled") setRepos(r.value.repos)
-    if (b.status === "fulfilled") setBranches(b.value.branches)
-    if (f.status === "fulfilled") setFindings(f.value.findings)
-    if (j.status === "fulfilled") setJobs(j.value.jobs)
+    if (inFlight.current) return
+    inFlight.current = true
+    try {
+      const results = await Promise.allSettled([
+        fetchQaSummary(),
+        fetchQaRepos(),
+        fetchQaBranches(),
+        fetchQaFindings(),
+        fetchQaJobs(),
+      ])
+      const [s, r, b, f, j] = results
+      if (s.status === "fulfilled") {
+        setSummary((prev) => (qaResultsEqual(prev, s.value) ? prev : s.value))
+      }
+      if (r.status === "fulfilled") {
+        setRepos((prev) => (qaResultsEqual(prev, r.value.repos) ? prev : r.value.repos))
+      }
+      if (b.status === "fulfilled") {
+        setBranches((prev) => (qaResultsEqual(prev, b.value.branches) ? prev : b.value.branches))
+      }
+      if (f.status === "fulfilled") {
+        setFindings((prev) => (qaResultsEqual(prev, f.value.findings) ? prev : f.value.findings))
+      }
+      if (j.status === "fulfilled") {
+        setJobs((prev) => (qaResultsEqual(prev, j.value.jobs) ? prev : j.value.jobs))
+      }
 
-    const failed = results.find((res) => res.status === "rejected")
-    if (failed && failed.status === "rejected") {
-      setError(failed.reason instanceof Error ? failed.reason.message : String(failed.reason))
-    } else {
-      setError(null)
+      const failed = results.find((res) => res.status === "rejected")
+      if (failed && failed.status === "rejected") {
+        setError(failed.reason instanceof Error ? failed.reason.message : String(failed.reason))
+      } else {
+        setError(null)
+      }
+    } finally {
+      setLoading(false)
+      inFlight.current = false
     }
-    setLoading(false)
   }, [])
 
   useEffect(() => {
-    refresh()
-    const id = setInterval(refresh, pollMs)
-    return () => clearInterval(id)
+    const tick = () => {
+      if (document.visibilityState === "hidden") return
+      void refresh()
+    }
+    void refresh()
+    const id = setInterval(tick, pollMs)
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void refresh()
+    }
+    document.addEventListener("visibilitychange", onVisibility)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
   }, [refresh, pollMs])
+
+  const invalidateAndRefresh = useCallback(async () => {
+    invalidateJsonCache()
+    await refresh()
+  }, [refresh])
 
   const scanRepo = useCallback(
     async (repo: string, branch?: string, prNumber?: number) => {
       await postQaScan(repo, branch, prNumber)
-      await refresh()
+      await invalidateAndRefresh()
     },
-    [refresh],
+    [invalidateAndRefresh],
   )
 
   const addRepo = useCallback(
     async (repo: string) => {
       await postQaRepo(repo)
-      await refresh()
+      await invalidateAndRefresh()
     },
-    [refresh],
+    [invalidateAndRefresh],
   )
 
   const removeRepo = useCallback(
     async (repo: string) => {
       await deleteQaRepo(repo)
-      await refresh()
+      await invalidateAndRefresh()
     },
-    [refresh],
+    [invalidateAndRefresh],
   )
 
   const commentFinding = useCallback(
     async (findingId: string) => {
       await postQaComment(findingId)
-      await refresh()
+      await invalidateAndRefresh()
     },
-    [refresh],
+    [invalidateAndRefresh],
   )
 
   const requestFix = useCallback(
     async (findingId: string) => {
       await postQaFix(findingId)
-      await refresh()
+      await invalidateAndRefresh()
     },
-    [refresh],
+    [invalidateAndRefresh],
   )
 
   const loadAgentPlaybook = useCallback(
