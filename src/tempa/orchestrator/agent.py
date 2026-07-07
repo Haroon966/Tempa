@@ -6,11 +6,16 @@ from typing import Any
 from tempa.core.events import event_bus
 
 logger = logging.getLogger(__name__)
+from tempa.agents.graph import collect_pending_from_results
+from tempa.orchestrator.actor_loop import needs_pause, run_actor_loop, should_use_actor_loop
 from tempa.orchestrator.config import load_orchestrator_config
 from tempa.orchestrator.delegate import delegate_tasks
 from tempa.orchestrator.format import format_response_for_channel, guest_blocked_message
+from tempa.orchestrator.goal_check import check_goal_satisfied
 from tempa.orchestrator.merge import merge_worker_results, merge_with_claude
 from tempa.orchestrator.planner import plan_orchestrator_tasks
+from tempa.orchestrator.step_verify import results_for_merge
+from tempa.orchestrator.understand import understand_user_goal
 from tempa.skills.matcher import match_skills
 from tempa.skills.routing import skill_routing_hints
 
@@ -25,6 +30,60 @@ def _resolve_merge_backend(context: dict[str, Any], override: str | None) -> str
     if should_use_claude_merge(message, context):
         return "claude"
     return cfg.merge_backend
+
+
+async def _verify_merged_response(
+    user_message: str,
+    response: str,
+    results: dict[str, str],
+    context: dict[str, Any],
+) -> str:
+    from tempa.agents.specialists import _build_merge_prompt_async
+    from tempa.router.verifier import verify_reply
+
+    _, pack, _ = await _build_merge_prompt_async(
+        user_message, results, context, list(context.get("rag_sources") or [])
+    )
+    ok, verified = verify_reply(response, pack)
+    return verified if not ok else response
+
+
+async def _merge_response(
+    user_message: str,
+    results: dict[str, str],
+    ctx: dict[str, Any],
+    *,
+    merge_backend: str | None,
+    runtime_prefetch: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    backend = _resolve_merge_backend(ctx, merge_backend)
+    rag_sources = list(ctx.get("rag_sources") or [])
+
+    if backend == "claude":
+        try:
+            response = await merge_with_claude(
+                user_message, results, ctx, system_extra=runtime_prefetch
+            )
+            response = await _verify_merged_response(user_message, response, results, ctx)
+            return response, rag_sources
+        except RuntimeError as exc:
+            err = str(exc)
+            if "Claude" not in err and "claude" not in err:
+                raise
+            logger.warning("Claude merge unavailable, falling back to Groq: %s", exc)
+
+    stream_sink = ctx.get("stream_sink")
+    response, merge_sources = await merge_worker_results(
+        user_message,
+        results,
+        ctx,
+        on_token=stream_sink,
+    )
+    sources = list(rag_sources)
+    for source in merge_sources:
+        if source not in sources:
+            sources.append(source)
+    return response, sources
 
 
 class OrchestratorAgent:
@@ -74,6 +133,21 @@ class OrchestratorAgent:
                 "paused": False,
                 "pending_actions": [],
                 "artifacts": [],
+                "planned_steps": [],
+            }
+
+        user_goal = await understand_user_goal(user_message, ctx)
+        ctx["user_goal"] = user_goal
+        missing = [m for m in user_goal.get("missing_info") or [] if str(m).strip()]
+        if missing and not ctx.get("plan_approved"):
+            question = "Before I proceed: " + "; ".join(str(m) for m in missing) + "?"
+            return {
+                "response": format_response_for_channel(question, ctx),
+                "sources": [],
+                "paused": False,
+                "pending_actions": [],
+                "artifacts": [],
+                "planned_steps": [],
             }
 
         skills = match_skills(user_message, ctx)
@@ -89,12 +163,19 @@ class OrchestratorAgent:
         subtasks = plan_orchestrator_tasks(user_message, ctx)
         others = [t for t in subtasks if t.get("agent") != "rag"]
         rag_task = next((t for t in subtasks if t.get("agent") == "rag"), None)
+        planned_steps = [
+            {"agent": t.get("agent"), "task": str(t.get("task", ""))[:120]} for t in subtasks if t.get("agent") != "rag"
+        ]
 
         from tempa.core.task_store import create_task
 
         task_id = create_task(user_message, others) if others else ""
 
         results: dict[str, str] = {}
+        paused = False
+        pending_actions: list[dict[str, Any]] = []
+        clarification: str | None = None
+
         if rag_task:
             from tempa.agents.graph import _run_specialist_with_retry
 
@@ -113,51 +194,88 @@ class OrchestratorAgent:
             rag_sources = []
 
         if others:
-            worker_results, ctx = await delegate_tasks(
+            if should_use_actor_loop(subtasks, ctx):
+                results, ctx, paused, pending_actions, clarification = await run_actor_loop(
+                    user_message,
+                    subtasks,
+                    ctx,
+                    task_id=task_id,
+                    existing_results=results,
+                )
+                planned_steps = ctx.get("planned_steps") or planned_steps
+            else:
+                worker_results, ctx = await delegate_tasks(
+                    user_message,
+                    others,
+                    ctx,
+                    task_id=task_id,
+                    existing_results=results,
+                )
+                results.update(worker_results)
+                planned_steps = ctx.get("planned_steps") or planned_steps
+                pending_actions = collect_pending_from_results(results)
+                paused = needs_pause(pending_actions)
+
+        if clarification:
+            return {
+                "response": format_response_for_channel(clarification.strip(), ctx),
+                "sources": list(rag_sources),
+                "paused": False,
+                "pending_actions": pending_actions,
+                "artifacts": [],
+                "planned_steps": planned_steps,
+            }
+
+        merge_results_dict = results_for_merge(ctx, results)
+
+        goal = await check_goal_satisfied(user_message, user_goal, ctx)
+        extra_runs = 0
+        from tempa.agents.config import goal_check_max_extra_steps
+
+        while (
+            not goal.get("satisfied")
+            and goal.get("extra_steps")
+            and extra_runs < goal_check_max_extra_steps()
+            and not paused
+        ):
+            extra_runs += 1
+            await event_bus.publish_json("orchestrator", "activity", "goal_replan")
+            extra_steps = list(goal.get("extra_steps") or [])
+            results, ctx, extra_paused, extra_pending, extra_clarify = await run_actor_loop(
                 user_message,
-                others,
+                extra_steps,
                 ctx,
                 task_id=task_id,
                 existing_results=results,
+                queue_override=extra_steps,
             )
-            results.update(worker_results)
+            merge_results_dict = results_for_merge(ctx, results)
+            if extra_paused:
+                paused = True
+                pending_actions.extend(extra_pending)
+            if extra_clarify:
+                return {
+                    "response": format_response_for_channel(extra_clarify.strip(), ctx),
+                    "sources": list(rag_sources),
+                    "paused": False,
+                    "pending_actions": pending_actions,
+                    "artifacts": [],
+                    "planned_steps": planned_steps,
+                }
+            goal = await check_goal_satisfied(user_message, user_goal, ctx)
 
-        backend = _resolve_merge_backend(ctx, merge_backend)
+        response, sources = await _merge_response(
+            user_message,
+            merge_results_dict,
+            ctx,
+            merge_backend=merge_backend,
+            runtime_prefetch=runtime_prefetch,
+        )
 
-        if backend == "claude":
-            try:
-                response = await merge_with_claude(
-                    user_message, results, ctx, system_extra=runtime_prefetch
-                )
-                sources = list(rag_sources)
-            except RuntimeError as exc:
-                err = str(exc)
-                if "Claude" not in err and "claude" not in err:
-                    raise
-                logger.warning("Claude merge unavailable, falling back to Groq: %s", exc)
-                stream_sink = ctx.get("stream_sink")
-                response, merge_sources = await merge_worker_results(
-                    user_message,
-                    results,
-                    ctx,
-                    on_token=stream_sink,
-                )
-                sources = list(rag_sources)
-                for source in merge_sources:
-                    if source not in sources:
-                        sources.append(source)
-        else:
-            stream_sink = ctx.get("stream_sink")
-            response, merge_sources = await merge_worker_results(
-                user_message,
-                results,
-                ctx,
-                on_token=stream_sink,
-            )
-            sources = list(rag_sources)
-            for source in merge_sources:
-                if source not in sources:
-                    sources.append(source)
+        if not goal.get("satisfied") and goal.get("gaps"):
+            gaps = str(goal.get("gaps") or "").strip()
+            if gaps and gaps.lower() not in response.lower():
+                response = f"{response.strip()}\n\n_Note: {gaps}_"
 
         response = format_response_for_channel(response.strip(), ctx)
 
@@ -165,12 +283,12 @@ class OrchestratorAgent:
 
         ingest_text(response, tool="core", source="orchestrator", tags=["reply"])
 
-        await self._channel_followup(user_message, results, response, ctx)
+        await self._channel_followup(user_message, merge_results_dict, response, ctx)
 
         from tempa.agents.graph import _extract_artifacts
 
         artifacts: list[dict[str, Any]] = []
-        for artifact in _extract_artifacts(results):
+        for artifact in _extract_artifacts(merge_results_dict):
             if artifact not in artifacts:
                 artifacts.append(artifact)
 
@@ -179,12 +297,18 @@ class OrchestratorAgent:
 
             complete_task(task_id)
 
+        if not pending_actions:
+            pending_actions = collect_pending_from_results(merge_results_dict)
+        if not paused:
+            paused = needs_pause(pending_actions)
+
         return {
             "response": response,
             "sources": sources,
-            "paused": False,
-            "pending_actions": [],
+            "paused": paused,
+            "pending_actions": pending_actions,
             "artifacts": artifacts,
+            "planned_steps": planned_steps,
         }
 
 

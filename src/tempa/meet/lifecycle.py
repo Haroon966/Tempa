@@ -3,6 +3,7 @@
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 _logger = logging.getLogger(__name__)
 
@@ -48,6 +49,18 @@ class MeetingEndTracker:
     alone_grace_seconds: float = 300.0
 
 
+def calendar_start_timestamp(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
 async def _get_participant_count(page) -> int:
     try:
         return await page.evaluate(_PARTICIPANT_COUNT_JS)
@@ -61,7 +74,14 @@ async def check_meeting_ended(
     *,
     min_participants: int = 2,
     tracker: MeetingEndTracker | None = None,
+    event_start_ts: float | None = None,
 ) -> bool:
+    # ponytail: pre-start lobby wait — don't alone-exit before the calendar start time
+    if event_start_ts is not None and time.time() < event_start_ts:
+        if tracker is not None:
+            tracker.alone_since = None
+        return False
+
     for selector in _END_SELECTORS:
         try:
             count = await page.locator(selector).count()

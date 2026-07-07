@@ -5,6 +5,7 @@ from typing import Any
 
 from tempa.agents.graph import compute_execution_waves
 from tempa.core.events import event_bus
+from tempa.orchestrator.step_verify import observe_step, verify_step
 
 
 async def delegate_tasks(
@@ -28,6 +29,13 @@ async def delegate_tasks(
     waves = compute_execution_waves(subtasks)
     results = dict(existing_results or {})
     ctx = dict(context)
+    ctx.setdefault("action_facts", [])
+    ctx.setdefault("step_results", [])
+    ctx["planned_steps"] = [
+        {"agent": t.get("agent"), "task": str(t.get("task", ""))[:120]}
+        for wave in waves
+        for t in wave
+    ]
 
     await event_bus.publish_json("orchestrator", "delegate", f"{len(subtasks)} subtasks, {len(waves)} waves")
 
@@ -53,7 +61,16 @@ async def delegate_tasks(
         wave_results = await asyncio.gather(*coros)
         for task, result in zip(wave, wave_results):
             agent = str(task.get("agent"))
+            step_id = str(task.get("_id") or agent)
             results[agent] = result
             ctx[f"{agent}_result"] = result
+            payload = observe_step(
+                ctx,
+                agent,
+                result,
+                subtask_id=step_id,
+                task=str(task.get("task", "")),
+            )
+            verify_step(agent, result, payload)
 
     return results, ctx

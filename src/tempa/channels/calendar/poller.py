@@ -15,7 +15,7 @@ from tempa.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-TriggerCallback = Callable[[CalendarEvent], Awaitable[None]]
+TriggerCallback = Callable[[CalendarEvent], Awaitable[str | None]]
 
 
 def _state_path() -> Path:
@@ -60,30 +60,27 @@ def _event_key(ev: CalendarEvent) -> str:
 def find_triggerable_meet_events(
     *,
     window_minutes: int = 120,
+    lookback_hours: int = 12,
     trigger_before_minutes: int = 2,
     trigger_after_start_minutes: int = 10,
 ) -> list[CalendarEvent]:
-    """Return Google Calendar events with Meet links inside the trigger window."""
+    """Return Google Calendar events with Meet links that are active or about to start."""
     client = load_calendar_client()
     if client is None:
         return []
 
     now_utc = dt.datetime.now(dt.timezone.utc)
-    lookback = dt.timedelta(minutes=window_minutes)
-    upcoming = client.list_upcoming_events(
-        calendar_id="primary",
-        time_min=now_utc,
-        time_max=now_utc + dt.timedelta(minutes=window_minutes),
-    )
-    recent = client.list_upcoming_events(
+    lookback = dt.timedelta(hours=lookback_hours)
+    events_raw = client.list_upcoming_events(
         calendar_id="primary",
         time_min=now_utc - lookback,
-        time_max=now_utc,
+        time_max=now_utc + dt.timedelta(minutes=window_minutes),
+        max_results=50,
     )
 
     events: list[CalendarEvent] = []
     seen: set[str] = set()
-    for ev in recent + upcoming:
+    for ev in events_raw:
         key = _event_key(ev)
         if key in seen:
             continue
@@ -101,8 +98,8 @@ def find_triggerable_meet_events(
         start_utc = ev.start.astimezone(dt.timezone.utc)
         end_utc = ev.end.astimezone(dt.timezone.utc)
         trigger_window_start = start_utc - dt.timedelta(minutes=trigger_before_minutes)
-        trigger_window_end = start_utc + dt.timedelta(minutes=trigger_after_start_minutes)
-        if trigger_window_start <= now_utc <= trigger_window_end and now_utc < end_utc:
+        # Join for the full active meeting window (until end), not only N minutes after start.
+        if trigger_window_start <= now_utc < end_utc:
             events.append(ev)
     return events
 
@@ -110,21 +107,25 @@ def find_triggerable_meet_events(
 async def poll_once(state: PollerState, on_trigger: TriggerCallback) -> list[CalendarEvent]:
     import asyncio
 
-    from tempa.meet.job_store import has_active_job_for_url
+    from tempa.meet.job_store import has_active_job_for_url, should_retry_calendar_join
 
     settings = get_settings()
     triggered: list[CalendarEvent] = []
     events = await asyncio.to_thread(
         find_triggerable_meet_events,
+        lookback_hours=settings.meet_calendar_lookback_hours,
         trigger_before_minutes=settings.meet_trigger_before_minutes,
         trigger_after_start_minutes=settings.meet_trigger_after_start_minutes,
     )
+
     for ev in events:
         key = _event_key(ev)
-        if key in state.triggered_keys:
-            continue
         if ev.meet_url and has_active_job_for_url(ev.meet_url):
             continue
+        if key in state.triggered_keys:
+            if not should_retry_calendar_join(ev.meet_url or ""):
+                continue
+            state.triggered_keys.discard(key)
         try:
             ingest_calendar_event(ev)
         except Exception:
@@ -132,10 +133,13 @@ async def poll_once(state: PollerState, on_trigger: TriggerCallback) -> list[Cal
         await event_bus.publish_json("calendar", "meet_trigger", ev.summary)
         logger.info("Calendar auto-join: triggering %s (%s)", ev.summary, ev.meet_url)
         try:
-            await on_trigger(ev)
-            triggered.append(ev)
-            state.triggered_keys.add(key)
-            save_poller_state(state)
+            meeting_id = await on_trigger(ev)
+            if meeting_id:
+                triggered.append(ev)
+                state.triggered_keys.add(key)
+                save_poller_state(state)
+            else:
+                logger.info("Calendar auto-join skipped for %s (not queued)", ev.summary)
         except Exception:
             logger.exception("Calendar auto-join trigger failed for %s", ev.summary)
     return triggered

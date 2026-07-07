@@ -1,18 +1,13 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, useEffect, useRef, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import {
-  CheckCircle2Icon,
-  CircleDotIcon,
   HistoryIcon,
   Loader2Icon,
   MessageSquareIcon,
-  PanelRightCloseIcon,
-  PanelRightOpenIcon,
   ShieldCheckIcon,
-  XCircleIcon,
 } from "lucide-react"
-import type { DashboardPayload } from "@/types/dashboard"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { setAgentStreaming } from "@/lib/dashboard-streaming"
+import { useDashboardData } from "@/contexts/dashboard-context"
 import { useNavigateSection } from "@/hooks/use-navigate-section"
 import { useScrollToBottom } from "@/hooks/use-scroll-to-bottom"
 import { useAgentChat } from "@/hooks/use-agent-chat"
@@ -23,16 +18,17 @@ import {
   ConversationSidebarDesktop,
   ConversationSidebarSheet,
 } from "@/components/agent/conversation-sidebar"
-import { MarkdownMessage } from "@/components/agent/markdown-message"
+import { LazyMarkdownMessage } from "@/components/agent/lazy-markdown-message"
+import { StreamingActivityFeed } from "@/components/agent/streaming-activity-feed"
 import { MessageActions } from "@/components/agent/message-actions"
 import { PendingActionCard } from "@/components/agent/pending-action-card"
 import { SourceBadges } from "@/components/agent/source-badges"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { formatTime } from "@/lib/format"
+import type { ActivityEvent } from "@/types/dashboard"
 import type { StepEvent } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
@@ -44,90 +40,9 @@ const EXAMPLE_PROMPTS = [
   { text: "Summarize my latest WhatsApp conversations", requires: "whatsapp" as const },
 ]
 
-type AgentTabProps = {
-  data: DashboardPayload
-}
+type AgentTabProps = Record<string, never>
 
-function StepStatusIcon({ status }: { status: StepEvent["status"] }) {
-  if (status === "start") return <Loader2Icon className="size-3.5 shrink-0 motion-safe:animate-spin text-primary" />
-  if (status === "done") return <CheckCircle2Icon className="size-3.5 shrink-0 text-green-600" />
-  if (status === "error") return <XCircleIcon className="size-3.5 shrink-0 text-destructive" />
-  return <CircleDotIcon className="size-3.5 shrink-0 text-muted-foreground" />
-}
-
-function ActivityPanel({
-  activity,
-  steps,
-  streaming,
-  className,
-}: {
-  activity: ReturnType<typeof useAgentChat>["activity"]
-  steps: StepEvent[]
-  streaming: boolean
-  className?: string
-}) {
-  const hasSteps = steps.length > 0
-
-  return (
-    <div className={cn("flex min-h-0 flex-col rounded-xl border border-border bg-muted/20", className)}>
-      <p className="border-b border-border px-3 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-        Live activity
-      </p>
-      <ScrollArea className="h-0 min-h-0 flex-1 basis-0 p-2">
-        {!hasSteps && activity.length === 0 ? (
-          <p className="px-1 py-2 text-xs text-muted-foreground">
-            {streaming ? "Coordinator is working…" : "Activity appears during requests."}
-          </p>
-        ) : (
-          <ol className="flex flex-col gap-2">
-            {steps.map((step, i) => (
-              <li
-                key={`${step.subtask_id}-${step.status}-${i}`}
-                className="rounded-lg border border-border bg-card p-2.5 text-xs"
-              >
-                <div className="flex items-start gap-2">
-                  <StepStatusIcon status={step.status} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <Badge variant="outline" className="text-[10px]">
-                        {step.agent}
-                      </Badge>
-                      <span className="font-medium capitalize">{step.status}</span>
-                      {step.duration_ms != null && (
-                        <span className="text-muted-foreground">{step.duration_ms}ms</span>
-                      )}
-                    </div>
-                    {step.detail && (
-                      <p className="mt-1 break-words text-muted-foreground">{step.detail}</p>
-                    )}
-                  </div>
-                </div>
-              </li>
-            ))}
-            {activity.map((ev, i) => (
-              <li
-                key={`${ev.timestamp}-${i}`}
-                className="rounded-lg border border-border/60 bg-card/60 p-2.5 text-xs"
-              >
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Badge variant="outline" className="text-[10px]">
-                    {ev.agent}
-                  </Badge>
-                  <span className="font-medium break-words">{ev.action}</span>
-                </div>
-                {ev.detail && (
-                  <p className="mt-1 break-words text-muted-foreground">{ev.detail}</p>
-                )}
-              </li>
-            ))}
-          </ol>
-        )}
-      </ScrollArea>
-    </div>
-  )
-}
-
-function ChatMessageBubble({
+const ChatMessageBubble = memo(function ChatMessageBubble({
   msg,
   onContinuePlan,
   onOpenApprovals,
@@ -135,6 +50,8 @@ function ChatMessageBubble({
   onRetry,
   onNavigateData,
   streaming,
+  liveSteps,
+  liveActivity,
 }: {
   msg: ReturnType<typeof useAgentChat>["messages"][number]
   onContinuePlan: () => void
@@ -143,8 +60,13 @@ function ChatMessageBubble({
   onRetry?: () => void
   onNavigateData: () => void
   streaming: boolean
+  liveSteps?: StepEvent[]
+  liveActivity?: ActivityEvent[]
 }) {
   const isUser = msg.role === "user"
+  const displaySteps = liveSteps ?? msg.steps
+  const displayActivity = liveActivity ?? msg.activity
+  const hasActivity = Boolean(displaySteps?.length || displayActivity?.length)
 
   return (
     <div className={cn("group space-y-2", isUser && "text-right")}>
@@ -163,14 +85,33 @@ function ChatMessageBubble({
       </div>
       <div
         className={cn(
-          "inline-block max-w-full rounded-2xl border px-3 py-2.5 text-left sm:px-4 sm:py-3",
-          isUser ? "border-border bg-muted" : "border-border bg-card",
+          "max-w-full text-left",
+          isUser &&
+            "inline-block rounded-2xl border border-border bg-muted px-3 py-2.5 sm:px-4 sm:py-3",
         )}
       >
         {isUser ? (
           <p className="whitespace-pre-wrap break-words text-sm text-foreground">{msg.content}</p>
         ) : (
-          <MarkdownMessage content={msg.content} isStreaming={Boolean(msg.streaming)} />
+          <div className="flex flex-col gap-3">
+            {msg.content ? (
+              <LazyMarkdownMessage content={msg.content} isStreaming={Boolean(msg.streaming)} />
+            ) : msg.streaming && !hasActivity ? (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2Icon className="size-4 motion-safe:animate-spin text-primary" aria-hidden />
+                Thinking…
+              </p>
+            ) : !msg.streaming && !hasActivity ? (
+              <p className="text-sm text-muted-foreground">No response.</p>
+            ) : msg.streaming && hasActivity ? null : null}
+            {hasActivity ? (
+              <StreamingActivityFeed
+                steps={displaySteps ?? []}
+                activity={displayActivity ?? []}
+                live={Boolean(msg.streaming)}
+              />
+            ) : null}
+          </div>
         )}
       </div>
 
@@ -221,10 +162,10 @@ function ChatMessageBubble({
       )}
     </div>
   )
-}
+})
 
-export function AgentTab({ data }: AgentTabProps) {
-  const isMobile = useIsMobile()
+export function AgentTab(_props: AgentTabProps) {
+  const { data } = useDashboardData()
   const navigate = useNavigate()
   const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>()
   const navigateSection = useNavigateSection()
@@ -251,18 +192,20 @@ export function AgentTab({ data }: AgentTabProps) {
 
   const [input, setInput] = useState("")
   const [sessionId, setSessionId] = useState<string | null>(urlSessionId ?? null)
-  const [showActivity, setShowActivity] = useState(() =>
-    typeof window !== "undefined" ? window.matchMedia("(min-width: 1024px)").matches : true,
-  )
   const [historyOpen, setHistoryOpen] = useState(false)
   const [composerFocusKey, setComposerFocusKey] = useState(0)
   const composerRef = useRef<HTMLTextAreaElement>(null)
-  const groqConnected = data.connections.groq?.connected ?? false
+  const groqConnected = data?.connections.groq?.connected ?? false
 
   const { anchorRef: messagesEndRef } = useScrollToBottom<HTMLDivElement>(
-    [messages.length, streaming, messages[messages.length - 1]?.content],
+    [messages.length, streaming, steps.length, activity.length, messages.at(-1)?.content?.length ?? 0],
     messages.length > 0,
   )
+
+  useEffect(() => {
+    setAgentStreaming(streaming)
+    return () => setAgentStreaming(false)
+  }, [streaming])
 
   const syncSessionUrl = (id: string | null) => {
     if (id) {
@@ -287,16 +230,11 @@ export function AgentTab({ data }: AgentTabProps) {
     })()
   }, [urlSessionId, sessionId, loadSession, setMessagesFromSession, clearActivity, navigate])
 
-  useEffect(() => {
-    if (!isMobile) return
-    setShowActivity(false)
-  }, [isMobile])
-
   const isPromptAvailable = (requires: "gmail" | "google" | "whatsapp" | null) => {
     if (!requires) return true
-    if (requires === "gmail") return data.connections.gmail?.connected ?? false
-    if (requires === "google") return data.connections.google?.connected ?? false
-    if (requires === "whatsapp") return data.connections.whatsapp?.connected ?? false
+    if (requires === "gmail") return data?.connections.gmail?.connected ?? false
+    if (requires === "google") return data?.connections.google?.connected ?? false
+    if (requires === "whatsapp") return data?.connections.whatsapp?.connected ?? false
     return true
   }
 
@@ -358,15 +296,15 @@ export function AgentTab({ data }: AgentTabProps) {
       if (isNewSession) {
         setSessionId(resolvedId)
         syncSessionUrl(resolvedId)
-        await refreshSessions()
       }
-      try {
-        const session = await loadSession(activeId)
-        setActiveSession(session)
-        setMessagesFromSession(session.messages)
-      } catch {
-        /* keep optimistic messages */
-      }
+      void refreshSessions().then(async () => {
+        try {
+          const session = await loadSession(activeId)
+          setActiveSession(session)
+        } catch {
+          /* keep streamed messages in UI */
+        }
+      })
     }
     setComposerFocusKey((k) => k + 1)
   }
@@ -418,7 +356,7 @@ export function AgentTab({ data }: AgentTabProps) {
               <button
                 type="button"
                 className="cursor-pointer font-medium text-primary underline transition-colors duration-200"
-                onClick={() => navigateSection("connections")}
+                onClick={() => navigateSection("settings")}
               >
                 Connections
               </button>{" "}
@@ -435,43 +373,21 @@ export function AgentTab({ data }: AgentTabProps) {
           descriptionClassName="hidden lg:block"
           headerClassName="hidden pb-0 sm:block sm:pb-3 lg:pb-4"
           action={
-            <div className="flex items-center gap-1">
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-9 cursor-pointer gap-1.5 transition-colors duration-200 lg:hidden"
-                onClick={() => setHistoryOpen(true)}
-              >
-                <HistoryIcon className="size-3.5" />
-                <span className="max-w-[7rem] truncate sm:max-w-[10rem]">{activeSessionTitle}</span>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-9 cursor-pointer gap-1.5 px-2 transition-colors duration-200 sm:px-3"
-                onClick={() => setShowActivity((v) => !v)}
-                aria-label={showActivity ? "Hide activity" : "Show activity"}
-              >
-                {showActivity ? (
-                  <PanelRightCloseIcon className="size-4" />
-                ) : (
-                  <PanelRightOpenIcon className="size-4" />
-                )}
-                <span className="hidden sm:inline">Activity</span>
-              </Button>
-            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 cursor-pointer gap-1.5 transition-colors duration-200 lg:hidden"
+              onClick={() => setHistoryOpen(true)}
+            >
+              <HistoryIcon className="size-3.5" />
+              <span className="max-w-[7rem] truncate sm:max-w-[10rem]">{activeSessionTitle}</span>
+            </Button>
           }
           className="flex min-h-0 flex-1 flex-col overflow-hidden py-0"
           contentClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
         >
-          <div
-            className={cn(
-              "grid min-h-0 flex-1 overflow-hidden",
-              showActivity && "lg:grid-cols-[minmax(0,1fr)_240px] xl:grid-cols-[minmax(0,1fr)_260px]",
-            )}
-          >
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <ScrollArea className="h-0 min-h-0 flex-1 basis-0">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ScrollArea className="h-0 min-h-0 flex-1 basis-0">
                 <div className="px-3 sm:px-4 lg:px-6">
                   {messages.length === 0 ? (
                     <div className="flex flex-col items-center gap-4 py-10 text-center sm:gap-6 sm:py-14">
@@ -506,10 +422,12 @@ export function AgentTab({ data }: AgentTabProps) {
                           key={msg.id}
                           msg={msg}
                           streaming={streaming}
+                          liveSteps={msg.streaming && msg.role === "assistant" ? steps : undefined}
+                          liveActivity={msg.streaming && msg.role === "assistant" ? activity : undefined}
                           onContinuePlan={() => void handleContinuePlan()}
-                          onOpenApprovals={() => navigateSection("pending")}
+                          onOpenApprovals={() => navigateSection("inbox")}
                           onPendingResolved={() => void reloadSession()}
-                          onNavigateData={() => navigateSection("data")}
+                          onNavigateData={() => navigateSection("meetings")}
                           onRetry={
                             msg.role === "assistant" && index === messages.length - 1
                               ? () => void retryLastUserMessage(sessionId)
@@ -523,18 +441,7 @@ export function AgentTab({ data }: AgentTabProps) {
                 </div>
               </ScrollArea>
 
-              {showActivity && (
-                <div className="shrink-0 border-t border-border px-3 py-3 sm:px-4 lg:hidden">
-                  <ActivityPanel
-                    activity={activity}
-                    steps={steps}
-                    streaming={streaming}
-                    className="max-h-36"
-                  />
-                </div>
-              )}
-
-              <ChatComposer
+            <ChatComposer
                 key={composerFocusKey}
                 value={input}
                 onChange={setInput}
@@ -544,19 +451,7 @@ export function AgentTab({ data }: AgentTabProps) {
                 disabled={!groqConnected}
                 inputRef={composerRef}
                 autoFocus
-              />
-            </div>
-
-            {showActivity && (
-              <div className="hidden min-h-0 flex-1 overflow-hidden border-l border-border lg:flex lg:flex-col">
-                <ActivityPanel
-                  activity={activity}
-                  steps={steps}
-                  streaming={streaming}
-                  className="min-h-0 flex-1 rounded-none border-0 bg-transparent"
-                />
-              </div>
-            )}
+            />
           </div>
         </PanelCard>
       </div>

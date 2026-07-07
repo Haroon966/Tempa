@@ -20,11 +20,17 @@ def resolve_audio_path(meeting_dir: Path, meeting_id: str) -> Path | None:
     audio_dir = meeting_dir / "audio"
     if not audio_dir.exists():
         return None
+    pcm = audio_dir / f"{meeting_id}.pcm"
     wav = audio_dir / f"{meeting_id}.wav"
-    if wav.exists():
+    if pcm.exists() and pcm.stat().st_size > 44:
+        if wav.exists() and wav.stat().st_size > pcm.stat().st_size:
+            return wav
+        pcm_to_wav(pcm, wav)
         return wav
-    pcm_files = sorted(audio_dir.glob("*.pcm"))
-    if not pcm_files:
-        return None
-    pcm_to_wav(pcm_files[0], wav)
-    return wav
+    pcm_files = sorted(audio_dir.glob("*.pcm"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if pcm_files and pcm_files[0].stat().st_size > 44:
+        pcm_to_wav(pcm_files[0], wav)
+        return wav
+    if wav.exists() and wav.stat().st_size > 44:
+        return wav
+    return None

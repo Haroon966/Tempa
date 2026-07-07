@@ -1,17 +1,19 @@
 import { useEffect, useId, useRef, useState } from "react"
-import mermaid from "mermaid"
 
 let mermaidReady = false
 
-function ensureMermaid() {
-  if (mermaidReady) return
-  mermaid.initialize({
-    startOnLoad: false,
-    theme: "neutral",
-    securityLevel: "strict",
-    fontFamily: "inherit",
-  })
-  mermaidReady = true
+async function ensureMermaid() {
+  const mermaid = (await import("mermaid")).default
+  if (!mermaidReady) {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "neutral",
+      securityLevel: "strict",
+      fontFamily: "inherit",
+    })
+    mermaidReady = true
+  }
+  return mermaid
 }
 
 export function MermaidBlock({
@@ -36,7 +38,7 @@ export function MermaidBlock({
     let cancelled = false
     const timer = window.setTimeout(async () => {
       try {
-        ensureMermaid()
+        const mermaid = await ensureMermaid()
         const { svg: rendered } = await mermaid.render(`mermaid-${id}`, chart.trim())
         if (!cancelled) {
           setSvg(rendered)

@@ -2,6 +2,7 @@ import { useState } from "react"
 import { Link } from "react-router-dom"
 import { ArrowRightIcon, LayersIcon } from "lucide-react"
 import type { DashboardPayload } from "@/types/dashboard"
+import { PageHeader } from "@/components/dashboard/page-header"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { StatusBadge } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
@@ -33,6 +34,10 @@ export function ComponentsTab({ data }: { data: DashboardPayload }) {
 
   return (
     <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Components"
+        description="Agents, tools, and runtime modules"
+      />
       {/* filter bar */}
       <div className="flex flex-wrap gap-1.5">
         {FILTER_OPTIONS.map((opt) => (

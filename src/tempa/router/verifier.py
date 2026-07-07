@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -9,6 +10,14 @@ from tempa.router.groq_router import get_router
 
 logger = logging.getLogger(__name__)
 
+_SLACK_SENT_RE = re.compile(
+    r"\b(slack message|message)\s+(was\s+)?sent\b|\bsent\s+(the\s+)?(slack\s+)?message\b",
+    re.I,
+)
+_WHATSAPP_SENT_RE = re.compile(
+    r"\b(whatsapp|message)\s+(was\s+)?sent\b|\bsent\s+(on\s+)?whatsapp\b",
+    re.I,
+)
 _EMAIL_SENT_RE = re.compile(
     r"\b(email|mail)\s+(was\s+)?sent\b|\bsent\s+(the\s+)?(email|mail)\b|\bi\s+sent\b",
     re.I,
@@ -41,7 +50,15 @@ _SUCCESS_MARKERS = (
 
 def _action_text(pack: dict[str, Any]) -> str:
     facts = pack.get("action_facts") or []
-    return "\n".join(str(f) for f in facts).lower()
+    lines = [str(f) for f in facts]
+    for step in pack.get("step_results") or []:
+        if not isinstance(step, dict):
+            continue
+        agent = step.get("agent", "")
+        payload = step.get("payload")
+        if isinstance(payload, dict) and payload.get("status"):
+            lines.append(f"[{agent}] status={payload['status']}")
+    return "\n".join(lines).lower()
 
 
 def _has_confirmed_success(actions: str) -> bool:
@@ -79,6 +96,16 @@ def _claims_false_action(reply: str, pack: dict[str, Any]) -> bool:
     if _EMAIL_SENT_RE.search(reply):
         if "sent" not in actions and "status=sent" not in actions:
             if "pending" in actions or "status=pending" in actions or not actions:
+                return True
+
+    if _SLACK_SENT_RE.search(reply):
+        if "status=sent" not in actions and "slack message sent" not in actions:
+            if "status=pending" in actions or not actions:
+                return True
+
+    if _WHATSAPP_SENT_RE.search(reply):
+        if "status=sent" not in actions and "whatsapp" not in actions:
+            if "status=pending" in actions or not actions:
                 return True
 
     if _INVITE_SENT_RE.search(reply):
@@ -149,6 +176,9 @@ def verify_reply(reply: str, grounding_pack: dict[str, Any]) -> tuple[bool, str]
             val = grounding_pack.get(key)
             if val:
                 facts_parts.append(f"{key}:\n{val}")
+        step_results = grounding_pack.get("step_results") or []
+        if step_results:
+            facts_parts.append(f"step_results:\n{json.dumps(step_results, ensure_ascii=False)[:2000]}")
         prompt = (
             "You verify assistant replies against known facts. "
             "If the reply falsely claims an email was sent, calendar invite sent, "

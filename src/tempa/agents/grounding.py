@@ -310,6 +310,8 @@ def build_grounding_pack(
 
     pack["user_message"] = user_message
     pack["channel"] = channel
+    if context.get("step_results"):
+        pack["step_results"] = context["step_results"]
 
     try:
         from tempa.core.timezone import format_local_now, tz_name

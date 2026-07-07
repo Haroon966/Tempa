@@ -10,6 +10,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from tempa.meet.storage import ArtifactStorageAdapter, LocalStorageAdapter
+from tempa.meet.audio_capture import early_webrtc_hook_script
 
 _logger = logging.getLogger(__name__)
 
@@ -62,6 +63,14 @@ async def _dismiss_consent_popup(
         "text=/Continue without/i",
         "text=/Click Allow/i",
     ]
+    blocked_mic = page.locator("text=/Meet is blocked from using your microphone/i")
+    if await blocked_mic.count() > 0:
+        close_btn = page.locator('div[role="dialog"] button[aria-label="Close"]').first
+        if await close_btn.count() > 0 and await close_btn.is_visible():
+            await close_btn.click()
+            consent_clicked = True
+            _logger.info("GMEET: dismissed microphone-blocked dialog")
+            return consent_clicked
 
     scopes = [page.locator('div[role="dialog"]').first, page]
     for scope in scopes:
@@ -165,8 +174,17 @@ class MeetSession:
     browser: object
     context: object
     page: object
+    video_save_path: Optional[str] = None
 
     async def close(self):
+        if self.video_save_path and self.page is not None:
+            video = getattr(self.page, "video", None)
+            if video is not None:
+                try:
+                    await video.save_as(self.video_save_path)
+                    _logger.info("GMEET: meeting video saved to %s", self.video_save_path)
+                except Exception:
+                    _logger.exception("GMEET: failed to save meeting video")
         await self.context.close()
         await self.browser.close()
         await self.playwright.stop()
@@ -274,9 +292,111 @@ _JOIN_BUTTON_SELECTOR = (
     'button:has-text("Switch here"), '
     'button:has-text("Join now"), '
     'button:has-text("Join here"), '
+    'button:has-text("Join"), '
     'button:has-text("Ask to join"), '
     'button[jsname="Qx7uuf"]'
 )
+
+
+async def _turn_off_media_button(page, button_locator, label: str) -> None:
+    try:
+        await button_locator.wait_for(state="visible", timeout=5000)
+    except PlaywrightTimeoutError:
+        _logger.debug("GMEET: %s button not found, skipping", label)
+        return
+    muted = await button_locator.get_attribute("data-is-muted")
+    aria = (await button_locator.get_attribute("aria-label") or "").lower()
+    is_off = muted == "true" or "turn on" in aria or "unmute" in aria
+    if not is_off:
+        await button_locator.click()
+        _logger.info("GMEET: %s disabled", label)
+    else:
+        _logger.debug("GMEET: %s already off", label)
+
+
+async def ensure_mic_disabled(page) -> None:
+    """Mute microphone in pre-join or in-call Meet UI."""
+    mic_button = page.locator(
+        'button[aria-label*="microphone" i], button[aria-label*="mic" i], button[data-is-muted]'
+    ).first
+    await _turn_off_media_button(page, mic_button, "mic")
+
+
+async def _ensure_media_disabled(page, *, disable_mic: bool, disable_camera: bool) -> None:
+    """Mute mic / turn off camera only when they appear enabled (avoid accidental unmute)."""
+    if disable_mic:
+        await ensure_mic_disabled(page)
+
+    if disable_camera:
+        cam_button = page.locator('button[aria-label*="camera" i], button[aria-label*="video" i]').first
+        await _turn_off_media_button(page, cam_button, "camera")
+
+
+async def dismiss_meet_popups(page) -> None:
+    """Close in-call nags that block controls or hide the self preview."""
+    for label in ("Got it", "Dismiss", "OK", "No thanks"):
+        btn = page.locator(f'button:has-text("{label}")').first
+        try:
+            if await btn.count() > 0 and await btn.is_visible():
+                await btn.click()
+                _logger.info("GMEET: dismissed popup (%s)", label)
+                await asyncio.sleep(0.3)
+        except Exception:
+            pass
+
+
+async def wait_until_meet_connected(page, *, timeout_s: float = 120.0) -> bool:
+    """Wait until Meet finishes the post-join 'Connecting…' spinner."""
+    import time as _time
+
+    deadline = _time.monotonic() + timeout_s
+    while _time.monotonic() < deadline:
+        connecting = page.locator("text=/^Connecting/i")
+        if await connecting.count() == 0 and await _is_in_active_call(page):
+            return True
+        await asyncio.sleep(1.0)
+    return await _is_in_active_call(page)
+
+
+async def ensure_camera_enabled(page, *, retries: int = 4) -> None:
+    """Turn camera on for virtual Tempa avatar feed."""
+    cam_selectors = (
+        'button[aria-label*="Turn on camera" i]',
+        'button[aria-label*="Turn off camera" i]',
+        'button[aria-label*="Camera is on" i]',
+        'button[aria-label*="Camera is off" i]',
+    )
+    for attempt in range(retries):
+        await dismiss_meet_popups(page)
+        cam_button = None
+        for selector in cam_selectors:
+            candidate = page.locator(selector).first
+            if await candidate.count() > 0:
+                cam_button = candidate
+                break
+        if cam_button is None:
+            _logger.warning("GMEET: camera button not found (attempt %s)", attempt + 1)
+            await asyncio.sleep(1.0)
+            continue
+        try:
+            await cam_button.wait_for(state="visible", timeout=5000)
+        except PlaywrightTimeoutError:
+            _logger.warning("GMEET: camera button not visible (attempt %s)", attempt + 1)
+            await asyncio.sleep(1.0)
+            continue
+        aria = (await cam_button.get_attribute("aria-label") or "").lower()
+        muted = await cam_button.get_attribute("data-is-muted")
+        if "turn off" in aria or ("camera is on" in aria and muted != "true"):
+            _logger.info("GMEET: virtual camera on")
+            return
+        await cam_button.click()
+        _logger.info("GMEET: virtual camera enable click (attempt %s, aria=%s)", attempt + 1, aria[:60])
+        await asyncio.sleep(0.8)
+    _logger.warning("GMEET: could not confirm virtual camera is on")
+
+
+async def _ensure_camera_enabled(page) -> None:
+    await ensure_camera_enabled(page)
 
 
 async def _wait_for_prejoin_ready(page, *, timeout_ms: int = 120000) -> None:
@@ -375,6 +495,10 @@ async def join_meet(
     slow_mo_ms: Optional[int] = None,
     screenshot_dir: Optional[str] = "./screenshots",
     storage_adapter: Optional[ArtifactStorageAdapter] = None,
+    video_save_path: Optional[str] = None,
+    record_video_size: Optional[tuple[int, int]] = None,
+    virtual_camera_path: Optional[str] = None,
+    screen_share_test: bool = False,
 ) -> MeetSession:
     screenshot_storage = storage_adapter or LocalStorageAdapter()
     guest_mode = bool(bot_name) and not storage_state_path
@@ -399,19 +523,56 @@ async def join_meet(
         launch_args = list(_LAUNCH_ARGS)
         if guest_mode:
             launch_args = list(_GUEST_LAUNCH_ARGS)
+        using_virtual_cam = bool(virtual_camera_path and Path(virtual_camera_path).exists())
+        silent_fake_audio: Path | None = None
+        if using_virtual_cam and disable_mic:
+            from tempa.settings import get_settings
+
+            silent_fake_audio = get_settings().resolved_silent_fake_audio_path()
+        if using_virtual_cam:
+            cam_file = str(Path(virtual_camera_path).resolve())
+            launch_args.append(f"--use-file-for-fake-video-capture={cam_file}")
+            _logger.info("GMEET: virtual camera file loaded (%s)", cam_file)
+            if silent_fake_audio:
+                launch_args.append(f"--use-file-for-fake-audio-capture={silent_fake_audio}")
+                _logger.info("GMEET: silent fake audio loaded (%s)", silent_fake_audio)
+        if screen_share_test:
+            from tempa.meet.av_test import SCREEN_CAPTURE_LAUNCH_ARG
+
+            launch_args.append(SCREEN_CAPTURE_LAUNCH_ARG)
+            _logger.info("GMEET: screen-share test mode (auto-select entire screen)")
         launch_kwargs["args"] = launch_args
         browser = await p.chromium.launch(**launch_kwargs)
-        context_kwargs: dict[str, object] = {"permissions": ["microphone", "camera"]}
+        # Meet requires mic permission even when muted; use silent fake audio + UI mute.
+        if guest_mode and not using_virtual_cam:
+            media_permissions = ["microphone"]
+        else:
+            media_permissions = ["microphone", "camera"]
+        context_kwargs: dict[str, object] = {"permissions": media_permissions}
         if storage_state_path:
             context_kwargs["storage_state"] = storage_state_path
+        if video_save_path:
+            video_parent = Path(video_save_path).parent
+            video_parent.mkdir(parents=True, exist_ok=True)
+            context_kwargs["record_video_dir"] = str(video_parent)
+            if record_video_size:
+                context_kwargs["record_video_size"] = {
+                    "width": record_video_size[0],
+                    "height": record_video_size[1],
+                }
+            _logger.info(
+                "GMEET: Playwright viewport video recording on (%s)",
+                video_save_path,
+            )
         if guest_mode:
             context_kwargs["viewport"] = {"width": 1280, "height": 720}
             context_kwargs["locale"] = "en-US"
-            context_kwargs["permissions"] = ["microphone"]
         context = await browser.new_context(**context_kwargs)
         with contextlib.suppress(Exception):
+            await context.add_init_script(early_webrtc_hook_script())
+        with contextlib.suppress(Exception):
             await context.grant_permissions(
-                ["microphone", "camera"],
+                media_permissions,
                 origin="https://meet.google.com",
             )
         if guest_mode:
@@ -432,25 +593,11 @@ async def join_meet(
 
         await _wait_for_prejoin_ready(page, timeout_ms=join_timeout_ms)
 
-        if disable_mic:
-            mic_button = page.locator(
-                'button[aria-label*="microphone" i], button[aria-label*="mic" i], button[data-is-muted]'
-            ).first
-            try:
-                await mic_button.wait_for(state="visible", timeout=5000)
-                await mic_button.click()
-                _logger.info("GMEET: mic toggled")
-            except PlaywrightTimeoutError:
-                _logger.debug("GMEET: mic button not found, skipping")
-
-        if disable_camera:
-            cam_button = page.locator('button[aria-label*="camera" i], button[aria-label*="video" i]').first
-            try:
-                await cam_button.wait_for(state="visible", timeout=5000)
-                await cam_button.click()
-                _logger.info("GMEET: camera toggled")
-            except PlaywrightTimeoutError:
-                _logger.debug("GMEET: camera button not found, skipping")
+        await _ensure_media_disabled(page, disable_mic=disable_mic, disable_camera=disable_camera)
+        if using_virtual_cam:
+            await _ensure_camera_enabled(page)
+            if disable_mic:
+                await ensure_mic_disabled(page)
 
         await _dismiss_consent_with_retry(
             page,
@@ -459,7 +606,10 @@ async def join_meet(
         )
 
         join_now = page.locator(
-            'button:has-text("Switch here"), button:has-text("Join now"), button:has-text("Join here")'
+            'button:has-text("Switch here"), '
+            'button:has-text("Join now"), '
+            'button:has-text("Join here"), '
+            'button:has-text("Join")'
         ).first
         ask_to_join = page.locator('button:has-text("Ask to join")').first
         join_button = join_now if await join_now.count() > 0 else ask_to_join
@@ -523,6 +673,7 @@ async def join_meet(
             browser=browser,
             context=context,
             page=page,
+            video_save_path=video_save_path,
         )
     except Exception:
         if page and screenshot_dir:

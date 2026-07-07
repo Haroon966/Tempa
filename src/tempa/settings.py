@@ -42,6 +42,19 @@ class Settings(BaseSettings):
     meet_skip_keywords: list[str] = ["focus time", "ooo", "out of office"]
     meet_retention_days: int = 90
     meet_auto_send_summary_whatsapp: bool = True
+    meet_auto_send_summary_slack: bool = True
+    meet_admission_timeout_seconds: int = 600
+    meet_record_video: bool = True
+    meet_record_video_width: int = 1280
+    meet_record_video_height: int = 720
+    meet_system_capture_enabled: bool = True
+    meet_system_capture_fps: int = 30
+    meet_browser_audio_fallback: bool = False
+    meet_pulse_monitor_source: str = "meet_sink.monitor"
+    meet_virtual_camera_enabled: bool = True
+    meet_virtual_camera_path: Path = Path("config/assets/animated_tempa.mjpeg")
+    meet_av_test_enabled: bool = False
+    meet_calendar_lookback_hours: int = 12
     meet_copilot_whatsapp_notify: bool = False
     meet_chat_prefix: str = "[via Tempa]"
     tempa_timezone: str = "Asia/Karachi"
@@ -109,6 +122,26 @@ class Settings(BaseSettings):
     @property
     def google_storage_state_path(self) -> Path:
         return self.sessions_dir / "google" / "storage_state.json"
+
+    def resolved_virtual_camera_path(self) -> Path | None:
+        if not self.meet_virtual_camera_enabled:
+            return None
+        from tempa.meet.virtual_camera import default_mjpeg_path, prepare_virtual_camera_file
+
+        path = self.meet_virtual_camera_path
+        if not path.is_absolute():
+            path = self.project_root / path
+        if path.is_file() and path.stat().st_size > 1000:
+            return path.resolve()
+        prepared = prepare_virtual_camera_file(dest=path if path.suffix.lower() == ".mjpeg" else default_mjpeg_path())
+        if prepared:
+            return prepared
+        static = self.project_root / "config/assets/animated_tempa.y4m"
+        return static.resolve() if static.is_file() else None
+
+    def resolved_silent_fake_audio_path(self) -> Path | None:
+        path = self.project_root / "config/assets/silent_48k.wav"
+        return path if path.is_file() else None
 
     @property
     def db_path(self) -> Path:

@@ -66,6 +66,176 @@ async def init_db() -> None:
         await db.commit()
 
 
+def _parse_transcript_jsonl(path: Path) -> tuple[str, list[dict[str, Any]]]:
+    segments: list[dict[str, Any]] = []
+    lines: list[str] = []
+    if not path.exists():
+        return "", segments
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if row.get("type") == "segment" and row.get("text"):
+            speaker = row.get("speaker") or "Unknown"
+            lines.append(f"{speaker}: {row['text']}")
+            segments.append(row)
+    return "\n".join(lines), segments
+
+
+def _meeting_dir_for_id(meeting_id: str) -> Path:
+    safe_id = meeting_id.replace("/", "_").replace("\\", "_")
+    return get_settings().meetings_dir / safe_id
+
+
+def _meeting_has_archive_artifacts(meeting_dir: Path, meeting_id: str) -> bool:
+    safe_id = meeting_id.replace("/", "_").replace("\\", "_")
+    transcript_path = meeting_dir / "transcripts" / f"{safe_id}.jsonl"
+    if transcript_path.exists() and transcript_path.stat().st_size > 0:
+        return True
+    if (meeting_dir / "minutes.json").exists():
+        return True
+    if (meeting_dir / "live_notes.md").exists() and (meeting_dir / "live_notes.md").stat().st_size > 0:
+        return True
+    if (meeting_dir / "manifest.json").exists():
+        return True
+    audio_dir = meeting_dir / "audio"
+    return audio_dir.exists() and any(audio_dir.glob("*"))
+
+
+async def archive_meeting_from_disk(meeting_id: str) -> bool:
+    """Index a on-disk meeting folder into the SQLite archive (no LLM calls)."""
+    import asyncio
+
+    from tempa.meet.audio_convert import resolve_audio_path
+    from tempa.meet.job_store import get_all_job_statuses
+    from tempa.meet.media import finalize_meeting_media_files
+
+    meeting_dir = _meeting_dir_for_id(meeting_id)
+    if not meeting_dir.is_dir() or not _meeting_has_archive_artifacts(meeting_dir, meeting_id):
+        return False
+
+    await asyncio.to_thread(finalize_meeting_media_files, meeting_id)
+
+    safe_id = meeting_id.replace("/", "_").replace("\\", "_")
+    transcript_path = meeting_dir / "transcripts" / f"{safe_id}.jsonl"
+    manifest_path = meeting_dir / "manifest.json"
+    minutes_path = meeting_dir / "minutes.json"
+    notes_path = meeting_dir / "live_notes.md"
+
+    record: dict[str, Any] = {"id": meeting_id}
+    if manifest_path.exists():
+        try:
+            record.update(json.loads(manifest_path.read_text(encoding="utf-8")))
+        except Exception:
+            logger.debug("Invalid manifest for %s", meeting_id, exc_info=True)
+
+    meta = get_all_job_statuses().get(meeting_id, {})
+    record.setdefault("title", meta.get("title") or f"Meeting {meeting_id[:8]}")
+    record.setdefault("meet_link", meta.get("meet_url") or "")
+    record.setdefault("started_at", meta.get("started_at") or "")
+    record.setdefault("calendar_event_id", meta.get("calendar_event_id") or "")
+    record.setdefault("calendar_event_start", meta.get("calendar_event_start") or "")
+
+    transcript_text, segments = _parse_transcript_jsonl(transcript_path)
+    participants = sorted({s.get("speaker") for s in segments if s.get("speaker")})
+
+    minutes: dict[str, Any] = {}
+    minutes_status = str(record.get("minutes_status") or "")
+    if minutes_path.exists():
+        try:
+            minutes = json.loads(minutes_path.read_text(encoding="utf-8"))
+            if minutes and not minutes_status:
+                minutes_status = "complete"
+        except Exception:
+            logger.debug("Invalid minutes.json for %s", meeting_id, exc_info=True)
+    if not minutes_status:
+        minutes_status = "complete" if minutes else ("partial" if transcript_text.strip() else "none")
+
+    if not record.get("ended_at"):
+        ended_at = meta.get("finished_at") or meta.get("ended_at")
+        if not ended_at:
+            mtimes = [p.stat().st_mtime for p in meeting_dir.rglob("*") if p.is_file()]
+            ended_at = (
+                datetime.fromtimestamp(max(mtimes), tz=timezone.utc).isoformat() if mtimes else ""
+            )
+        record["ended_at"] = ended_at or record.get("started_at") or ""
+
+    if not record.get("started_at") and transcript_path.exists():
+        record["started_at"] = datetime.fromtimestamp(
+            transcript_path.stat().st_mtime, tz=timezone.utc
+        ).isoformat()
+
+    wav_path = resolve_audio_path(meeting_dir, safe_id)
+    audio_files = list((meeting_dir / "audio").glob("*.pcm")) if (meeting_dir / "audio").exists() else []
+
+    record.update(
+        {
+            "id": meeting_id,
+            "participants": participants or record.get("participants") or [],
+            "attendee_emails": record.get("attendee_emails") or meta.get("attendee_emails") or [],
+            "audio_path": str(wav_path or (audio_files[0] if audio_files else record.get("audio_path") or "")),
+            "transcript_path": str(transcript_path) if transcript_path.exists() else "",
+            "minutes": minutes,
+            "minutes_status": minutes_status,
+            "followups": record.get("followups") or [],
+        }
+    )
+
+    await save_meeting_archive(record)
+    return True
+
+
+async def sync_meeting_archives_from_disk() -> int:
+    """Ensure every meeting folder with artifacts has a SQLite archive row."""
+    settings = get_settings()
+    if not settings.meetings_dir.exists():
+        return 0
+    synced = 0
+    for entry in settings.meetings_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        if await archive_meeting_from_disk(entry.name):
+            synced += 1
+    return synced
+
+
+async def repair_archives_missing_minutes(*, min_segments: int = 3) -> int:
+    """Generate minutes for archived meetings that have transcript but no summary."""
+    repaired = 0
+    for meeting in await list_meetings():
+        if meeting.get("minutes_status") == "complete":
+            minutes = meeting.get("minutes") or {}
+            if minutes.get("tldr") or minutes.get("summary"):
+                continue
+        path = meeting.get("transcript_path")
+        if not path:
+            continue
+        transcript_path = Path(path)
+        if not transcript_path.exists():
+            continue
+        text, segments = _parse_transcript_jsonl(transcript_path)
+        if len(segments) < min_segments and not text.strip():
+            continue
+        notes_path = _meeting_dir_for_id(meeting["id"]) / "live_notes.md"
+        if notes_path.exists():
+            notes = notes_path.read_text(encoding="utf-8").strip()
+            if notes:
+                text = f"{text}\n\n--- Live Notes ---\n{notes}".strip()
+        if not text.strip():
+            continue
+        try:
+            minutes = await generate_minutes_from_transcript(text, source_name="transcript.txt")
+            meeting_dir = _meeting_dir_for_id(meeting["id"])
+            record = {**meeting, "minutes": minutes, "minutes_status": "complete"}
+            write_meeting_artifacts(meeting_dir, record, meeting.get("followups") or [])
+            await save_meeting_archive(record)
+            repaired += 1
+        except Exception:
+            logger.exception("Failed to repair minutes for %s", meeting["id"])
+    return repaired
+
+
 async def save_meeting_archive(record: dict[str, Any]) -> str:
     settings = get_settings()
     meeting_id = record.get("id") or ""
@@ -128,14 +298,16 @@ def write_meeting_artifacts(
 
 
 def meeting_artifact_status(meeting_id: str) -> dict[str, bool]:
+    from tempa.meet.media import list_meeting_media
+
     settings = get_settings()
     safe_id = meeting_id.replace("/", "_").replace("\\", "_")
     meeting_dir = settings.meetings_dir / safe_id
+    media = list_meeting_media(meeting_id)
     return {
-        "audio": any((meeting_dir / "audio").glob("*")) if (meeting_dir / "audio").exists() else False,
-        "transcript": any((meeting_dir / "transcripts").glob("*.jsonl"))
-        if (meeting_dir / "transcripts").exists()
-        else False,
+        "audio": media["has_audio"],
+        "video": media["has_video"],
+        "transcript": media["has_transcript"],
         "minutes": (meeting_dir / "minutes.json").exists(),
         "manifest": (meeting_dir / "manifest.json").exists(),
         "followups": (meeting_dir / "followups.json").exists(),
@@ -163,32 +335,78 @@ async def apply_meet_retention_policy() -> int:
     return removed
 
 
-async def list_meetings() -> list[dict[str, Any]]:
+async def count_meetings() -> int:
     settings = get_settings()
     async with aiosqlite.connect(settings.db_path) as db:
         await _ensure_schema(db)
+        cursor = await db.execute("SELECT COUNT(*) FROM meetings")
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+
+async def list_meetings(
+    *,
+    limit: int | None = None,
+    include_artifacts: bool = True,
+) -> list[dict[str, Any]]:
+    return await _list_meetings_from_db(limit=limit, include_artifacts=include_artifacts)
+
+
+def _row_to_meeting(row: dict[str, Any], *, include_artifacts: bool) -> dict[str, Any]:
+    item = dict(row)
+    item["participants"] = json.loads(item.get("participants") or "[]")
+    item["attendee_emails"] = json.loads(item.get("attendee_emails") or "[]")
+    item["minutes"] = json.loads(item.get("minutes_json") or "{}")
+    item["followups"] = json.loads(item.get("followups_json") or "[]")
+    for key in ("minutes_json", "followups_json"):
+        item.pop(key, None)
+    if include_artifacts:
+        try:
+            item["artifacts"] = meeting_artifact_status(item["id"])
+        except OSError:
+            item["artifacts"] = {
+                "audio": False,
+                "video": False,
+                "transcript": False,
+                "minutes": False,
+                "manifest": False,
+                "followups": False,
+            }
+    return item
+
+
+async def _list_meetings_from_db(
+    *,
+    limit: int | None = None,
+    include_artifacts: bool = True,
+    meeting_id: str | None = None,
+) -> list[dict[str, Any]]:
+    settings = get_settings()
+    query = "SELECT * FROM meetings"
+    params: list[Any] = []
+    if meeting_id:
+        query += " WHERE id = ?"
+        params.append(meeting_id)
+    query += " ORDER BY started_at DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    async with aiosqlite.connect(settings.db_path) as db:
+        await _ensure_schema(db)
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM meetings ORDER BY started_at DESC")
+        cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
-    results = []
-    for row in rows:
-        item = dict(row)
-        item["participants"] = json.loads(item.get("participants") or "[]")
-        item["attendee_emails"] = json.loads(item.get("attendee_emails") or "[]")
-        item["minutes"] = json.loads(item.get("minutes_json") or "{}")
-        item["followups"] = json.loads(item.get("followups_json") or "[]")
-        for key in ("minutes_json", "followups_json"):
-            item.pop(key, None)
-        item["artifacts"] = meeting_artifact_status(item["id"])
-        results.append(item)
-    return results
+    return [_row_to_meeting(dict(row), include_artifacts=include_artifacts) for row in rows]
 
 
 async def get_meeting(meeting_id: str) -> dict[str, Any] | None:
-    meetings = await list_meetings()
-    for m in meetings:
-        if m["id"] == meeting_id:
-            return m
+    rows = await _list_meetings_from_db(meeting_id=meeting_id, include_artifacts=True)
+    if rows:
+        return rows[0]
+    if await archive_meeting_from_disk(meeting_id):
+        rows = await _list_meetings_from_db(meeting_id=meeting_id, include_artifacts=True)
+        if rows:
+            return rows[0]
     return None
 
 

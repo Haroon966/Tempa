@@ -59,11 +59,58 @@ def _ingest_inbound(
 async def _resolve_message_text(text: str, raw_item: dict) -> str:
     if text != "[voice note]":
         return text
-    audio = raw_item.get("message", {}).get("audioMessage")
-    if not audio:
+    from tempa.channels.whatsapp.schemas import _has_audio
+
+    if not _has_audio(raw_item.get("message", {}) if isinstance(raw_item.get("message"), dict) else {}):
         return text
     transcript = await transcribe_whatsapp_audio(raw_item)
     return transcript or text
+
+
+async def handle_forwarded_voice_note(raw_item: dict, message_id: str = "") -> dict:
+    """Transcribe a voice note forwarded to the linked account self-chat; summarize to owner."""
+    from tempa.channels.whatsapp.conversation import has_assistant_reply_for, record_conversation_turn
+    from tempa.channels.whatsapp.numbers import get_owner_whatsapp_number
+    from tempa.router.groq_router import get_router
+
+    if message_id and has_assistant_reply_for(message_id):
+        return {"skipped": "duplicate"}
+
+    transcript = await transcribe_whatsapp_audio(raw_item)
+    if not transcript.strip():
+        return {"error": "empty_transcript"}
+
+    resp = get_router().chat_completion(
+        category="text",
+        messages=[
+            {
+                "role": "system",
+                "content": "Summarize this forwarded WhatsApp voice message in 3-6 clear bullet points.",
+            },
+            {"role": "user", "content": transcript},
+        ],
+    )
+    summary = resp.choices[0].message.content or ""
+    owner = get_owner_whatsapp_number() or load_default_whatsapp_number()
+    from tempa.channels.whatsapp.numbers import get_owner_delivery_jid
+
+    delivery = get_owner_delivery_jid() or owner
+    body = f"*Forwarded voice message*\n\n{summary.strip()}\n\n_Transcript:_\n{transcript.strip()}"
+    result = await send_whatsapp_message(
+        delivery,
+        body,
+        skip_safety=True,
+        require_user_confirmation=False,
+        source_channel="coordinator",
+    )
+    record_conversation_turn(
+        role="assistant",
+        text=body,
+        from_number=owner,
+        message_id=message_id,
+        chat_id=delivery,
+    )
+    return {"sent": True, "result": result}
 
 
 async def handle_inbound_whatsapp(
@@ -103,6 +150,7 @@ async def handle_inbound_whatsapp(
         from_number=from_number,
         message_id=message_id,
         chat_id=chat_id,
+        raw_item=raw_item,
     )
 
     participant = chat_id if is_group else from_number
@@ -156,6 +204,10 @@ async def handle_inbound_whatsapp(
         reply = f"Tempa encountered an error: {exc}"
 
     reply_target = chat_id if chat_id and "@" in chat_id else from_number
+    from tempa.channels.whatsapp.numbers import owner_delivery_for_number
+
+    if is_owner_whatsapp_number(from_number, chat_id=chat_id, raw_item=raw_item):
+        reply_target = owner_delivery_for_number(from_number)
     send_result = await send_whatsapp_message(reply_target, reply, source_channel="whatsapp_auto_reply")
 
     record_conversation_turn(

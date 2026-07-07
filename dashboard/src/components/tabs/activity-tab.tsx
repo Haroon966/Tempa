@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { RadioIcon } from "lucide-react"
 import type { ActivityEvent, DashboardPayload } from "@/types/dashboard"
 import { formatTime } from "@/lib/format"
+import { PageHeader } from "@/components/dashboard/page-header"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
@@ -39,6 +40,11 @@ export function ActivityTab({ data }: { data: DashboardPayload }) {
   const events = [...(live.length ? live : data.recent_activity)].reverse()
 
   return (
+    <div className="flex flex-col gap-5">
+      <PageHeader
+        title="Activity"
+        description="Recent events, logs, and live operations"
+      />
     <PanelCard
       title="Agent activity stream"
       description="Live orchestrator plan, delegate, merge, and worker events"
@@ -113,5 +119,6 @@ export function ActivityTab({ data }: { data: DashboardPayload }) {
         )}
       </ScrollArea>
     </PanelCard>
+    </div>
   )
 }

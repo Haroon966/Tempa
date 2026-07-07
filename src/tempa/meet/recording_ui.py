@@ -12,7 +12,7 @@ _RECORDING_BANNER_JS = """
   el.id = id;
   el.setAttribute('role', 'status');
   el.setAttribute('aria-live', 'polite');
-  el.textContent = '⏺ Tempa is recording this meeting for your records.';
+  el.textContent = '⏺ Tempa is recording audio and video for your records.';
   Object.assign(el.style, {
     position: 'fixed',
     top: '12px',

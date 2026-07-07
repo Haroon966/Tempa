@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,16 +18,78 @@ from tempa.channels.whatsapp.client import WhatsAppBridgeClient
 from tempa.channels.whatsapp.webhook import get_recent_messages
 from tempa.core.chat_sessions import session_count
 from tempa.core.events import event_bus
-from tempa.meet.archive import list_meetings
+from tempa.meet.archive import count_meetings, list_meetings
 from tempa.rag.store import COLLECTION_NAME, ensure_store_healthy, get_store
 from tempa.settings import get_settings
+
+_CACHE_TTL_CHECKS = 60.0
+_CACHE_TTL_DIR_SIZE = 120.0
+_PAYLOAD_TTL = 15.0
+_cache: dict[str, tuple[float, Any]] = {}
+_payload_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def _cache_get(key: str, ttl: float) -> Any | None:
+    entry = _cache.get(key)
+    if entry and (time.monotonic() - entry[0]) < ttl:
+        return entry[1]
+    return None
+
+
+def _cache_set(key: str, value: Any) -> Any:
+    _cache[key] = (time.monotonic(), value)
+    return value
+
+
+def _cache_clear() -> None:
+    global _payload_cache
+    _cache.clear()
+    _payload_cache = None
+
+
+def _payload_cache_get() -> dict[str, Any] | None:
+    global _payload_cache
+    if _payload_cache and (time.monotonic() - _payload_cache[0]) < _PAYLOAD_TTL:
+        return _payload_cache[1]
+    return None
+
+
+def _payload_cache_set(payload: dict[str, Any]) -> dict[str, Any]:
+    global _payload_cache
+    _payload_cache = (time.monotonic(), payload)
+    return payload
 
 
 def _status_from_connected(connected: bool, detail: str = "") -> str:
     return "healthy" if connected else "unhealthy"
 
 
-async def _check_whatsapp_bridge() -> dict[str, Any]:
+async def _check_groq(*, refresh: bool = False) -> dict[str, Any]:
+    if not refresh:
+        cached = _cache_get("groq", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
+    settings = get_settings()
+    has_key = bool(settings.load_groq_api_key())
+    if not has_key:
+        result = {"connected": False, "status": "disconnected", "detail": "No API key configured"}
+        return _cache_set("groq", result)
+    try:
+        from tempa.router.groq_router import get_router
+
+        check = await asyncio.to_thread(get_router().test_connection)
+        result = {"connected": True, "status": "connected", **check}
+        return _cache_set("groq", result)
+    except Exception as exc:
+        result = {"connected": False, "status": "error", "detail": str(exc)}
+        return _cache_set("groq", result)
+
+
+async def _check_whatsapp_bridge(*, refresh: bool = False) -> dict[str, Any]:
+    if not refresh:
+        cached = _cache_get("whatsapp_bridge", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
     settings = get_settings()
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -35,40 +98,32 @@ async def _check_whatsapp_bridge() -> dict[str, Any]:
                 headers={"apikey": settings.evolution_api_key},
             )
             reachable = resp.status_code < 500
-            return {
+            result = {
                 "reachable": reachable,
                 "status": "connected" if reachable else "disconnected",
                 "status_code": resp.status_code,
             }
+            return _cache_set("whatsapp_bridge", result)
     except Exception as exc:
-        return {"reachable": False, "status": "disconnected", "error": str(exc)}
+        result = {"reachable": False, "status": "disconnected", "error": str(exc)}
+        return _cache_set("whatsapp_bridge", result)
 
 
-async def _check_groq() -> dict[str, Any]:
-    settings = get_settings()
-    has_key = bool(settings.load_groq_api_key())
-    if not has_key:
-        return {"connected": False, "status": "disconnected", "detail": "No API key configured"}
-    try:
-        from tempa.router.groq_router import get_router
-
-        result = await asyncio.to_thread(get_router().test_connection)
-        return {"connected": True, "status": "connected", **result}
-    except Exception as exc:
-        return {"connected": False, "status": "error", "detail": str(exc)}
-
-
-def _fetch_upcoming_meets() -> list[dict[str, Any]]:
+def _fetch_upcoming_meets(*, refresh: bool = False) -> list[dict[str, Any]]:
+    if not refresh:
+        cached = _cache_get("upcoming_meets", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
     client = load_calendar_client()
     if not client:
-        return []
+        return _cache_set("upcoming_meets", [])
     now = datetime.now(timezone.utc)
     events = client.list_upcoming_events(
         calendar_id="primary",
         time_min=now,
         time_max=now + timedelta(days=7),
     )
-    return [
+    result = [
         {
             "id": e.id,
             "summary": e.summary,
@@ -78,18 +133,35 @@ def _fetch_upcoming_meets() -> list[dict[str, Any]]:
         }
         for e in events[:15]
     ]
+    return _cache_set("upcoming_meets", result)
 
 
-def _fetch_triggerable_meets() -> list[dict[str, Any]]:
-    return [
-        {"summary": ev.summary, "meet_url": ev.meet_url, "start": ev.start.isoformat()}
+def _fetch_triggerable_meets(*, refresh: bool = False) -> list[dict[str, Any]]:
+    if not refresh:
+        cached = _cache_get("triggerable_meets", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
+    result = [
+        {
+            "id": ev.id,
+            "summary": ev.summary,
+            "meet_url": ev.meet_url,
+            "start": ev.start.isoformat(),
+            "end": ev.end.isoformat(),
+        }
         for ev in find_triggerable_meet_events()
     ]
+    return _cache_set("triggerable_meets", result)
 
 
-def _dir_size(path: Path) -> int:
+def _dir_size(path: Path, *, refresh: bool = False) -> int:
+    key = f"dir_size:{path}"
+    if not refresh:
+        cached = _cache_get(key, _CACHE_TTL_DIR_SIZE)
+        if cached is not None:
+            return cached
     if not path.exists():
-        return 0
+        return _cache_set(key, 0)
     total = 0
     for item in path.rglob("*"):
         if item.is_file():
@@ -97,7 +169,87 @@ def _dir_size(path: Path) -> int:
                 total += item.stat().st_size
             except OSError:
                 pass
-    return total
+    return _cache_set(key, total)
+
+
+def _google_connection_status(*, refresh: bool = False) -> dict[str, Any]:
+    if not refresh:
+        cached = _cache_get("google", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
+    from tempa.channels.calendar.status import google_connection_status
+
+    return _cache_set("google", google_connection_status())
+
+
+def _gmail_connection_status(*, refresh: bool = False) -> dict[str, Any]:
+    if not refresh:
+        cached = _cache_get("gmail", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
+    from tempa.channels.gmail.status import gmail_connection_status
+
+    return _cache_set("gmail", gmail_connection_status())
+
+
+def _jira_connection_status(*, refresh: bool = False) -> dict[str, Any]:
+    if not refresh:
+        cached = _cache_get("jira", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
+    from tempa.channels.jira.status import jira_connection_status
+
+    return _cache_set("jira", jira_connection_status())
+
+
+async def _whatsapp_connection_detail(*, refresh: bool = False) -> dict[str, Any]:
+    if not refresh:
+        cached = _cache_get("whatsapp_detail", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
+    from tempa.channels.whatsapp.session import sync_connection_from_bridge
+
+    wa_detail: dict[str, Any] = {"connected": False, "status": "disconnected"}
+    try:
+        snapshot = await sync_connection_from_bridge()
+        wa_connected = bool(snapshot.get("connected"))
+        wa_detail = {
+            "connected": wa_connected,
+            "status": "connected" if wa_connected else snapshot.get("state", "disconnected"),
+            "pause_auto_reply": snapshot.get("pause_auto_reply"),
+            "needs_qr_rescan": snapshot.get("needs_qr_rescan"),
+        }
+    except Exception as exc:
+        wa_detail = {"connected": False, "status": "error", "detail": str(exc)}
+    return _cache_set("whatsapp_detail", wa_detail)
+
+
+async def _slack_connection_detail(*, refresh: bool = False) -> dict[str, Any]:
+    if not refresh:
+        cached = _cache_get("slack", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
+    from tempa.channels.slack.session import connection_status
+
+    return _cache_set("slack", await connection_status())
+
+
+def _meeting_dashboard_summary(meeting: dict[str, Any]) -> dict[str, Any]:
+    minutes = meeting.get("minutes") or {}
+    tldr = (minutes.get("tldr") or minutes.get("summary") or "").strip()
+    summary: dict[str, Any] = {
+        "id": meeting["id"],
+        "title": meeting.get("title"),
+        "meet_link": meeting.get("meet_link"),
+        "started_at": meeting.get("started_at"),
+        "ended_at": meeting.get("ended_at"),
+        "participants": meeting.get("participants"),
+        "minutes_status": meeting.get("minutes_status"),
+        "artifacts": meeting.get("artifacts"),
+    }
+    if tldr:
+        summary["minutes"] = {"tldr": tldr[:200]}
+    return summary
 
 
 def _slack_component(slack: dict[str, Any], groq: dict[str, Any]) -> dict[str, Any]:
@@ -543,56 +695,96 @@ def _flow_status(
     return flows
 
 
-async def build_dashboard_payload() -> dict[str, Any]:
+async def build_dashboard_payload(*, refresh: bool = False) -> dict[str, Any]:
+    if refresh:
+        _cache_clear()
+    else:
+        cached = _payload_cache_get()
+        if cached is not None:
+            return {
+                **cached,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+    payload = await _build_dashboard_payload_uncached(refresh=refresh)
+    return _payload_cache_set(payload)
+
+
+async def build_dashboard_summary(*, refresh: bool = False) -> dict[str, Any]:
+    """Lightweight heartbeat for layout polling."""
+    if refresh:
+        _cache_clear()
+
+    from tempa.core.pending_actions import list_pending_actions
+
+    full = await build_dashboard_payload(refresh=refresh)
+    pending = list_pending_actions(status="pending")[:10]
+    connections = {}
+    for key, conn in full.get("connections", {}).items():
+        if not isinstance(conn, dict):
+            connections[key] = conn
+            continue
+        connections[key] = {
+            k: conn[k]
+            for k in (
+                "status",
+                "connected",
+                "ready",
+                "needs_qr_rescan",
+                "last_sync_error",
+                "error",
+            )
+            if k in conn
+        }
+        if key == "google" and conn.get("calendar_sync"):
+            connections[key]["calendar_sync"] = {
+                "last_sync_error": conn["calendar_sync"].get("last_sync_error"),
+            }
+        if key == "rag":
+            connections[key]["chunks"] = conn.get("chunks")
+            connections[key]["collection"] = conn.get("collection")
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "overall": full["overall"],
+        "connections": connections,
+        "pending_actions": pending,
+        "pending_count": len(pending),
+    }
+
+
+async def _build_dashboard_payload_uncached(*, refresh: bool = False) -> dict[str, Any]:
     settings = get_settings()
     store = get_store()
-    groq = await _check_groq()
-    bridge = await _check_whatsapp_bridge()
 
-    from tempa.channels.calendar.status import google_connection_status
-    from tempa.channels.gmail.status import gmail_connection_status
     from tempa.core.pending_actions import list_pending_actions
     from tempa.core.task_store import list_active_tasks
 
-    google = await asyncio.to_thread(google_connection_status)
-    gmail = await asyncio.to_thread(gmail_connection_status)
-
-    from tempa.channels.whatsapp.session import sync_connection_from_bridge
-
-    wa_detail: dict[str, Any] = {"connected": False, "status": "disconnected"}
-    try:
-        snapshot = await sync_connection_from_bridge()
-        wa_connected = bool(snapshot.get("connected"))
-        wa_detail = {
-            "connected": wa_connected,
-            "status": "connected" if wa_connected else snapshot.get("state", "disconnected"),
-            "pause_auto_reply": snapshot.get("pause_auto_reply"),
-            "needs_qr_rescan": snapshot.get("needs_qr_rescan"),
-        }
-    except Exception as exc:
-        wa_detail = {"connected": False, "status": "error", "detail": str(exc)}
-
-    from tempa.channels.slack.session import connection_status
-
-    slack_detail = await connection_status()
-
-    from tempa.channels.jira.status import jira_connection_status
-
-    jira_detail = await asyncio.to_thread(jira_connection_status)
-
-    meetings = await list_meetings()
-
-    upcoming_meets: list[dict[str, Any]] = []
-    try:
-        upcoming_meets = await asyncio.to_thread(_fetch_upcoming_meets)
-    except Exception:
-        pass
-
-    triggerable = []
-    try:
-        triggerable = await asyncio.to_thread(_fetch_triggerable_meets)
-    except Exception:
-        pass
+    (
+        groq,
+        bridge,
+        google,
+        gmail,
+        wa_detail,
+        slack_detail,
+        jira_detail,
+        upcoming_meets,
+        triggerable,
+        meetings,
+        meetings_count,
+    ) = await asyncio.gather(
+        _check_groq(refresh=refresh),
+        _check_whatsapp_bridge(refresh=refresh),
+        asyncio.to_thread(_google_connection_status, refresh=refresh),
+        asyncio.to_thread(_gmail_connection_status, refresh=refresh),
+        _whatsapp_connection_detail(refresh=refresh),
+        _slack_connection_detail(refresh=refresh),
+        asyncio.to_thread(_jira_connection_status, refresh=refresh),
+        asyncio.to_thread(_fetch_upcoming_meets, refresh=refresh),
+        asyncio.to_thread(_fetch_triggerable_meets, refresh=refresh),
+        list_meetings(limit=20, include_artifacts=False),
+        count_meetings(),
+    )
 
     with (settings.config_dir / "agents.yaml").open(encoding="utf-8") as f:
         agents_config = yaml.safe_load(f) or {}
@@ -628,17 +820,17 @@ async def build_dashboard_payload() -> dict[str, Any]:
     rag_connected = True
     rag_error: str | None = None
     try:
-        rag_chunks = store.count()
+        rag_chunks = await asyncio.to_thread(store.count)
         if rag_chunks == 0:
             # Verify the store is actually readable (count=0 may mean empty or broken).
-            store.collection.peek(limit=1)
+            await asyncio.to_thread(store.collection.peek, 1)
     except Exception as exc:
         rag_status = "error"
         rag_connected = False
         rag_error = str(exc)[:200]
         if ensure_store_healthy(reset_on_failure=True):
             try:
-                rag_chunks = store.count()
+                rag_chunks = await asyncio.to_thread(store.count)
                 rag_status = "connected"
                 rag_connected = True
                 rag_error = None
@@ -739,14 +931,19 @@ async def build_dashboard_payload() -> dict[str, Any]:
     else:
         overall = "healthy"
 
+    vector_db_bytes, meetings_bytes = await asyncio.gather(
+        asyncio.to_thread(_dir_size, settings.vector_dir, refresh=refresh),
+        asyncio.to_thread(_dir_size, settings.meetings_dir, refresh=refresh),
+    )
+
     data_stats = {
         "rag_chunks": rag_chunks,
-        "meetings_count": len(meetings),
+        "meetings_count": meetings_count,
         "chat_sessions_count": session_count(),
         "vector_db_path": str(settings.vector_dir),
-        "vector_db_bytes": _dir_size(settings.vector_dir),
+        "vector_db_bytes": vector_db_bytes,
         "meetings_path": str(settings.meetings_dir),
-        "meetings_bytes": _dir_size(settings.meetings_dir),
+        "meetings_bytes": meetings_bytes,
         "sessions_path": str(settings.sessions_dir),
         "db_path": str(settings.db_path),
         "playwright_installed": shutil.which("playwright") is not None,
@@ -774,7 +971,7 @@ async def build_dashboard_payload() -> dict[str, Any]:
         "whatsapp": {
             "recent_messages": get_recent_messages(15),
         },
-        "meetings": meetings[:20],
+        "meetings": [_meeting_dashboard_summary(m) for m in meetings],
         "recent_activity": event_bus.recent_events(30),
         "pending_actions": list_pending_actions(status="pending")[:10],
         "active_tasks": list_active_tasks()[:10],

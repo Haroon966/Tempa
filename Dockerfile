@@ -12,7 +12,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl && rm -rf /var/lib/apt/lists/*
+    build-essential curl ffmpeg && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml prd.md ./
 RUN mkdir -p src/tempa && touch src/tempa/__init__.py

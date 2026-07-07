@@ -1,11 +1,18 @@
 import { CheckIcon, CopyIcon } from "lucide-react"
-import { useMemo, useState } from "react"
+import { lazy, Suspense, useEffect, useMemo, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import rehypeHighlight from "rehype-highlight"
 import { cn } from "@/lib/utils"
-import { MermaidBlock } from "@/components/agent/mermaid-block"
 import "highlight.js/styles/github.min.css"
+
+const MermaidBlock = lazy(() =>
+  import("@/components/agent/mermaid-block").then((m) => ({ default: m.MermaidBlock })),
+)
+
+async function loadRehypeHighlight() {
+  const mod = await import("rehype-highlight")
+  return mod.default
+}
 
 function CodeBlock({
   className,
@@ -22,7 +29,11 @@ function CodeBlock({
   const text = String(children ?? "").replace(/\n$/, "")
 
   if (lang === "mermaid") {
-    return <MermaidBlock chart={text} isComplete={!isStreaming} />
+    return (
+      <Suspense fallback={<pre className="my-3 text-xs text-muted-foreground">Rendering diagram…</pre>}>
+        <MermaidBlock chart={text} isComplete={!isStreaming} />
+      </Suspense>
+    )
   }
 
   const copy = async () => {
@@ -80,6 +91,20 @@ export function MarkdownMessage({
   isStreaming?: boolean
   className?: string
 }) {
+  const [rehypeHighlight, setRehypeHighlight] = useState<typeof import("rehype-highlight").default | null>(
+    null,
+  )
+
+  useEffect(() => {
+    if (isStreaming || !content.includes("```")) return
+    let cancelled = false
+    void loadRehypeHighlight().then((plugin) => {
+      if (!cancelled) setRehypeHighlight(() => plugin)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [content, isStreaming])
   const markdownComponents = useMemo(
     () => ({
       a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
@@ -154,7 +179,7 @@ export function MarkdownMessage({
     <div className={proseClass}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={rehypeHighlight ? [rehypeHighlight] : []}
         components={markdownComponents}
       >
         {content}

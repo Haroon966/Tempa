@@ -80,6 +80,8 @@ def record_conversation_turn(
     from_number: str = "",
     message_id: str = "",
     chat_id: str = "",
+    push_name: str = "",
+    raw_item: dict[str, Any] | None = None,
 ) -> None:
     if not text.strip():
         return
@@ -92,9 +94,20 @@ def record_conversation_turn(
         "chat_id": chat_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if push_name:
+        row["push_name"] = push_name
     _recent_messages.append(row)
     try:
         with _history_path().open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception:
         pass
+    if role == "user":
+        from tempa.channels.whatsapp.peers import remember_whatsapp_peer
+
+        remember_whatsapp_peer(
+            push_name=push_name,
+            from_number=from_number,
+            chat_id=chat_id,
+            raw_item=raw_item,
+        )

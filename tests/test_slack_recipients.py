@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tempa.channels.slack.recipients import (
+    extract_slack_channel_target,
     extract_slack_message_body,
     extract_slack_recipient_name,
     resolve_slack_recipient,
@@ -24,6 +25,14 @@ def test_wants_slack_send_intent():
     assert wants_slack_send_intent("check latest message from varys what it saying") is False
     assert wants_slack_send_intent("check latest message of varys what it saying") is False
     assert wants_slack_send_intent("tell me latest message from varys in regionpunjab-internal channel") is False
+    assert wants_slack_send_intent("send this message in region punjab channel") is True
+
+
+def test_extract_slack_channel_target():
+    assert extract_slack_channel_target("send this message in region punjab channel") == "region punjab"
+    assert extract_slack_channel_target("post to #region-punjab") == "region-punjab"
+    assert extract_slack_channel_target("in *region-punjab* channel") == "region-punjab"
+    assert extract_slack_channel_target("send message to Sameer saying hello") == ""
 
 
 def test_extract_slack_message_body():
@@ -41,6 +50,41 @@ def test_resolve_slack_recipient_from_contacts(monkeypatch):
     resolved = resolve_slack_recipient("sameer")
     assert resolved["user_id"] == "U123"
     assert "Sameer" in resolved["name"]
+
+
+@pytest.mark.asyncio
+async def test_channel_agent_sends_to_slack_channel():
+    from tempa.agents.specialists import run_channel_agent
+
+    summary = "*Team Punjab – Daily Sync* ended.\n\nDecisions were made."
+    with (
+        patch("tempa.channels.slack.lookup.find_channel_by_hint") as mock_find,
+        patch("tempa.channels.slack.outbound.send_slack_message", new_callable=AsyncMock) as mock_send,
+        patch(
+            "tempa.agents.specialists.get_slack_recent_messages",
+            return_value=[{"role": "assistant", "text": summary}],
+        ),
+    ):
+        mock_find.return_value = ("C123", "region-punjab")
+        mock_send.return_value = {"status": "sent"}
+
+        result = await run_channel_agent(
+            "send this meeting summary in region-punjab channel",
+            {
+                "channel": "slack",
+                "slack_privileged": True,
+                "inbound_slack": True,
+                "slack_channel_id": "D0BC0TD6UE7",
+                "user_message": "send this meeting summary in region-punjab channel",
+            },
+        )
+
+    payload = __import__("json").loads(result)
+    assert payload["status"] == "sent"
+    assert payload["to"] == "#region-punjab"
+    mock_send.assert_awaited_once()
+    assert mock_send.await_args.args[0] == "C123"
+    assert summary in mock_send.await_args.args[1]
 
 
 @pytest.mark.asyncio

@@ -125,6 +125,18 @@ def test_should_auto_join_meet_soon():
     assert should_auto_join_meet(now + timedelta(hours=3)) is False
 
 
+def test_should_auto_join_active_meeting_with_end():
+    from datetime import timedelta
+
+    from tempa.channels.calendar.events import _local_tz, should_auto_join_meet
+
+    now = datetime.now(_local_tz())
+    start = now - timedelta(minutes=30)
+    end = now + timedelta(minutes=30)
+    assert should_auto_join_meet(start, end=end) is True
+    assert should_auto_join_meet(start, end=now - timedelta(minutes=1)) is False
+
+
 def test_parse_event_start_uses_last_time():
     text = "create meeting on 6:00 pm name Test with guest at 6:40pm today"
     now = datetime(2026, 6, 17, 16, 0, tzinfo=ZoneInfo("Asia/Karachi"))

@@ -1,5 +1,45 @@
 const API_BASE = import.meta.env.VITE_TEMPA_API ?? ""
 
+export { API_BASE }
+
+type CacheEntry<T> = { at: number; value: T }
+const jsonCache = new Map<string, CacheEntry<unknown>>()
+const inflight = new Map<string, Promise<unknown>>()
+
+export function fetchJsonCached<T>(
+  key: string,
+  ttlMs: number,
+  fetcher: () => Promise<T>,
+): Promise<T> {
+  const hit = jsonCache.get(key)
+  if (hit && Date.now() - hit.at < ttlMs) {
+    return Promise.resolve(hit.value as T)
+  }
+  const pending = inflight.get(key)
+  if (pending) return pending as Promise<T>
+
+  const promise = fetcher()
+    .then((value) => {
+      jsonCache.set(key, { at: Date.now(), value })
+      return value
+    })
+    .finally(() => {
+      inflight.delete(key)
+    })
+  inflight.set(key, promise)
+  return promise
+}
+
+export function invalidateJsonCache(key?: string) {
+  if (key) {
+    jsonCache.delete(key)
+    inflight.delete(key)
+  } else {
+    jsonCache.clear()
+    inflight.clear()
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, options)
   if (!res.ok) {
@@ -158,7 +198,9 @@ export async function saveWhatsAppAllowedNumbers(additionalNumbers: string[]) {
 }
 
 export async function fetchMeetConsent() {
-  return request<{ consented: boolean }>("/api/meetings/consent")
+  return fetchJsonCached("meet-consent", 60_000, () =>
+    request<{ consented: boolean }>("/api/meetings/consent"),
+  )
 }
 
 export async function grantMeetConsent() {
@@ -174,6 +216,8 @@ export interface ActiveMeetingLive {
   title?: string
   meet_url?: string
   status?: string
+  calendar_start?: string
+  calendar_end?: string
   transcript_tail?: string
   live_notes?: string
   suggestions?: Array<{ id: string; text: string; rationale?: string }>
@@ -188,8 +232,82 @@ export async function fetchMeetingDetail(meetingId: string) {
     meeting: import("@/types/dashboard").MeetingRecord
     transcript_raw?: string
     pending_followups?: PendingAction[]
+    media?: MeetingMedia
     error?: string
   }>(`/api/meetings/${meetingId}`)
+}
+
+export async function fetchMeetingWaveform(meetingId: string, bars = 72) {
+  return request<MeetingWaveform>(`/api/meetings/${meetingId}/waveform?bars=${bars}`)
+}
+
+export async function fetchMeetingStoryboard(meetingId: string) {
+  return request<VideoStoryboard>(`/api/meetings/${meetingId}/storyboard`)
+}
+
+export interface MeetingMedia {
+  has_audio: boolean
+  has_video: boolean
+  has_transcript: boolean
+  audio_url: string
+  video_url: string
+  transcript_url: string
+  duration_seconds?: number
+  video_duration_seconds?: number
+  storyboard_url?: string
+}
+
+export interface MeetingWaveform {
+  available: boolean
+  duration_seconds: number
+  peaks: number[]
+  error?: string
+}
+
+export interface VideoStoryboard {
+  available: boolean
+  duration_seconds?: number
+  interval_seconds?: number
+  tile_width?: number
+  tile_height?: number
+  columns?: number
+  rows?: number
+  count?: number
+  sprite_url?: string
+  error?: string
+}
+
+const API_BASE_EXPORT = import.meta.env.VITE_TEMPA_API ?? ""
+
+export function meetingDownloadUrl(path: string): string {
+  if (!path) return ""
+  if (path.startsWith("http")) return path
+  return `${API_BASE_EXPORT}${path}`
+}
+
+export async function transcribeMeeting(meetingId: string) {
+  return request<{
+    status: string
+    detail?: string
+    transcript_segments?: number
+    meeting?: import("@/types/dashboard").MeetingRecord
+  }>(`/api/meetings/${meetingId}/transcribe`, { method: "POST" })
+}
+
+export async function summarizeMeeting(meetingId: string) {
+  return request<{
+    status: string
+    detail?: string
+    meeting?: import("@/types/dashboard").MeetingRecord
+  }>(`/api/meetings/${meetingId}/summarize`, { method: "POST" })
+}
+
+export async function processMeeting(meetingId: string) {
+  return request<{
+    status: string
+    detail?: string
+    meeting?: import("@/types/dashboard").MeetingRecord
+  }>(`/api/meetings/${meetingId}/process`, { method: "POST" })
 }
 
 export async function sendMeetingChat(meetingId: string, text: string) {
@@ -201,13 +319,15 @@ export async function sendMeetingChat(meetingId: string, text: string) {
 }
 
 export async function fetchMeetReadiness() {
-  return request<{
-    ready: boolean
-    consent: boolean
-    meet_auth: boolean
-    google_connected: boolean
-    detail: string
-  }>("/api/meetings/readiness")
+  return fetchJsonCached("meet-readiness", 60_000, () =>
+    request<{
+      ready: boolean
+      consent: boolean
+      meet_auth: boolean
+      google_connected: boolean
+      detail: string
+    }>("/api/meetings/readiness"),
+  )
 }
 
 export async function fetchGroqModels() {
@@ -328,6 +448,9 @@ export interface ChatMessageRecord {
   paused?: boolean
   pending_actions?: PendingActionPreview[]
   artifacts?: ChatArtifact[]
+  steps?: StepEvent[]
+  activity?: Array<{ agent: string; action: string; detail: string; timestamp: string }>
+  planned_steps?: Array<{ agent?: string; task?: string }>
 }
 
 export interface PendingActionPreview {
@@ -406,6 +529,7 @@ export type ChatStreamEvent =
       session_id: string | null
       pending_actions: PendingActionPreview[]
       artifacts: ChatArtifact[]
+      planned_steps?: Array<{ agent?: string; task?: string }>
       run_id: string | null
     }
   | { type: "error"; error: string; code?: string; recoverable?: boolean }
@@ -483,6 +607,7 @@ export async function* streamChat(
         session_id: (data.session_id as string) ?? null,
         pending_actions: (data.pending_actions as PendingActionPreview[]) ?? [],
         artifacts: (data.artifacts as ChatArtifact[]) ?? [],
+        planned_steps: (data.planned_steps as Array<{ agent?: string; task?: string }>) ?? [],
         run_id: (data.run_id as string) ?? null,
       }
     }
@@ -620,7 +745,9 @@ export interface QaJob {
 }
 
 export async function fetchQaRepos() {
-  return request<{ repos: QaRepoEntry[] }>("/api/qa/repos")
+  return fetchJsonCached("qa-repos", 30_000, () =>
+    request<{ repos: QaRepoEntry[] }>("/api/qa/repos"),
+  )
 }
 
 export async function postQaRepo(repo: string) {
@@ -638,20 +765,27 @@ export async function deleteQaRepo(repo: string) {
 }
 
 export async function fetchQaSummary() {
-  return request<QaSummary>("/api/qa/summary")
+  return fetchJsonCached("qa-summary", 30_000, () => request<QaSummary>("/api/qa/summary"))
 }
 
 export async function fetchQaBranches(repo?: string) {
   const qs = repo ? `?repo=${encodeURIComponent(repo)}` : ""
-  return request<{ branches: QaBranchStatus[] }>(`/api/qa/branches${qs}`)
+  const key = `qa-branches${qs}`
+  return fetchJsonCached(key, 30_000, () =>
+    request<{ branches: QaBranchStatus[] }>(`/api/qa/branches${qs}`),
+  )
 }
 
 export async function fetchQaFindings() {
-  return request<{ findings: QaFinding[] }>("/api/qa/findings")
+  return fetchJsonCached("qa-findings", 30_000, () =>
+    request<{ findings: QaFinding[] }>("/api/qa/findings"),
+  )
 }
 
 export async function fetchQaJobs() {
-  return request<{ jobs: QaJob[] }>("/api/qa/jobs")
+  return fetchJsonCached("qa-jobs", 30_000, () =>
+    request<{ jobs: QaJob[] }>("/api/qa/jobs"),
+  )
 }
 
 export async function postQaScan(repo: string, branch?: string, prNumber?: number) {
@@ -692,5 +826,17 @@ export async function fetchQaAgentPlaybook(findingId: string, target: "claude" |
 }
 
 export async function fetchOrchestrator() {
-  return request<import("@/types/dashboard").OrchestratorManifest>("/api/orchestrator")
+  return fetchJsonCached("orchestrator", 60_000, () =>
+    request<import("@/types/dashboard").OrchestratorManifest>("/api/orchestrator"),
+  )
+}
+
+export async function fetchDashboard(full = false, force = false) {
+  const qs = new URLSearchParams()
+  if (force) qs.set("refresh", "1")
+  const suffix = qs.size ? `?${qs}` : ""
+  const path = full ? `/api/dashboard${suffix}` : `/api/dashboard/summary${suffix}`
+  return request<import("@/types/dashboard").DashboardPayload | import("@/types/dashboard").DashboardSummary>(
+    path,
+  )
 }

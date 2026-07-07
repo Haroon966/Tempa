@@ -118,7 +118,12 @@ async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
 
     if event in {"MESSAGES_UPSERT", "MESSAGES.UPSERT"}:
         from tempa.channels.whatsapp.conversation import has_assistant_reply_for
-        from tempa.channels.whatsapp.numbers import get_bridge_whatsapp_phone, remember_message_lid_mapping
+        from tempa.channels.whatsapp.numbers import (
+            get_bridge_whatsapp_phone,
+            is_bridge_self_chat,
+            remember_message_lid_mapping,
+        )
+        from tempa.channels.whatsapp.reply import handle_forwarded_voice_note
 
         _bootstrap_seen_from_history()
         bootstrap_dedupe()
@@ -135,6 +140,8 @@ async def handle_webhook(payload: dict[str, Any]) -> dict[str, Any]:
                 message_id=out.message_id,
                 chat_id=out.chat_id,
             )
+            if out.text == "[voice note]" and is_bridge_self_chat(out.chat_id):
+                asyncio.create_task(handle_forwarded_voice_note(out.raw_item, out.message_id))
 
         messages = parse_messages_upsert(payload)
         queued = 0

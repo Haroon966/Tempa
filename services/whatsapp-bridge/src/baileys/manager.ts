@@ -39,6 +39,105 @@ type LiveInstance = {
 };
 
 const instances = new Map<string, LiveInstance>();
+const recentInbound = new Map<string, proto.IWebMessageInfo[]>();
+const contactIndex = new Map<string, Record<string, { jid: string; pushName: string; phone: string; updatedAt: number }>>();
+const MAX_RECENT_INBOUND = 100;
+
+function contactIndexPath(instanceName: string): string {
+  return path.join(config.instanceDir, `contacts-${instanceName}.json`);
+}
+
+async function loadContactIndex(instanceName: string): Promise<void> {
+  if (contactIndex.has(instanceName)) return;
+  try {
+    const raw = await fs.readFile(contactIndexPath(instanceName), "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, { jid: string; pushName: string; phone: string; updatedAt: number }>;
+    contactIndex.set(instanceName, parsed);
+  } catch {
+    contactIndex.set(instanceName, {});
+  }
+}
+
+async function persistContactIndex(instanceName: string): Promise<void> {
+  const data = contactIndex.get(instanceName);
+  if (!data) return;
+  await fs.writeFile(contactIndexPath(instanceName), JSON.stringify(data, null, 2));
+}
+
+function rememberContact(instanceName: string, msg: proto.IWebMessageInfo): void {
+  const jid = msg.key?.remoteJid || "";
+  if (!jid || jid.includes("@g.us") || jid.includes("@broadcast")) return;
+  const pushName = (msg.pushName || "").trim();
+  const phone = jid.split("@")[0]?.split(":")[0] || "";
+  const idx = contactIndex.get(instanceName) || {};
+  idx[jid] = { jid, pushName, phone, updatedAt: Date.now() };
+  if (pushName) {
+    idx[`name:${pushName.toLowerCase()}`] = { jid, pushName, phone, updatedAt: Date.now() };
+  }
+  contactIndex.set(instanceName, idx);
+  void persistContactIndex(instanceName);
+}
+
+function rememberInbound(instanceName: string, msg: proto.IWebMessageInfo): void {
+  if (!hasAudio(msg.message) && !hasText(msg.message)) return;
+  rememberContact(instanceName, msg);
+  const list = recentInbound.get(instanceName) || [];
+  list.unshift(msg);
+  if (list.length > MAX_RECENT_INBOUND) list.length = MAX_RECENT_INBOUND;
+  recentInbound.set(instanceName, list);
+}
+
+function unwrapMessageContent(message: proto.IMessage | null | undefined): proto.IMessage | null | undefined {
+  let current = message;
+  for (let i = 0; i < 5; i++) {
+    if (!current) return current;
+    const inner =
+      current.ephemeralMessage?.message ||
+      current.viewOnceMessage?.message ||
+      current.viewOnceMessageV2?.message ||
+      current.viewOnceMessageV2Extension?.message ||
+      current.documentWithCaptionMessage?.message ||
+      current.editedMessage?.message;
+    if (!inner) break;
+    current = inner;
+  }
+  return current;
+}
+
+function hasAudio(message: proto.IMessage | null | undefined): boolean {
+  return Boolean(unwrapMessageContent(message)?.audioMessage);
+}
+
+function extractText(message: proto.IMessage | null | undefined): string {
+  const content = unwrapMessageContent(message);
+  if (!content) return "";
+  if (content.conversation) return content.conversation;
+  if (content.extendedTextMessage?.text) return content.extendedTextMessage.text;
+  if (content.imageMessage?.caption) return content.imageMessage.caption || "";
+  if (content.videoMessage?.caption) return content.videoMessage.caption || "";
+  if (content.buttonsMessage?.contentText) return content.buttonsMessage.contentText;
+  return "";
+}
+
+function hasText(message: proto.IMessage | null | undefined): boolean {
+  return Boolean(extractText(message).trim());
+}
+
+function jidMatches(remoteJid: string | null | undefined, targetJid: string): boolean {
+  const jid = remoteJid || "";
+  if (!jid) return false;
+  if (jid === targetJid) return true;
+  const local = jid.split("@")[0]?.split(":")[0] || "";
+  const targetLocal = targetJid.split("@")[0]?.split(":")[0] || "";
+  return Boolean(local && targetLocal && (local.endsWith(targetLocal) || targetLocal.endsWith(local)));
+}
+
+function matchesHint(pushName: string | null | undefined, hint: string): boolean {
+  const words = hint.toLowerCase().split(/\s+/).filter(Boolean);
+  const name = (pushName || "").toLowerCase();
+  if (!words.length) return true;
+  return words.every((w) => name.includes(w));
+}
 
 const FALLBACK_WA_VERSION: [number, number, number] = [2, 3000, 1033893291];
 let cachedWaVersion: [number, number, number] | null = null;
@@ -74,6 +173,7 @@ export async function ensureInstanceLoaded(name: string): Promise<LiveInstance |
     pairingActive: false,
   };
   instances.set(name, live);
+  await loadContactIndex(name);
   return live;
 }
 
@@ -358,6 +458,7 @@ async function connectSocket(name: string, phoneNumber?: string): Promise<WASock
       const autoRead = await shouldAutoReadMessages(live.db.id);
       for (const msg of messages) {
         if (type === "notify") {
+          rememberInbound(name, msg);
           await emitWebhook(live.webhook, {
             event: "MESSAGES_UPSERT",
             instance: name,
@@ -726,4 +827,299 @@ export async function getBase64FromMediaMessage(
   else if (msg?.videoMessage?.mimetype) mimetype = msg.videoMessage.mimetype;
   else if (msg?.documentMessage?.mimetype) mimetype = msg.documentMessage.mimetype;
   return { base64: b64, mimetype };
+}
+
+export function listRecentInboundVoice(instanceName: string, limit = 20): Array<{
+  pushName: string;
+  jid: string;
+  id: string;
+  timestamp: number | null | undefined;
+}> {
+  const list = recentInbound.get(instanceName) || [];
+  const out: Array<{
+    pushName: string;
+    jid: string;
+    id: string;
+    timestamp: number | null | undefined;
+  }> = [];
+  for (const msg of list) {
+    if (!hasAudio(msg.message)) continue;
+    const ts = msg.messageTimestamp;
+    out.push({
+      pushName: msg.pushName || "",
+      jid: msg.key?.remoteJid || "",
+      id: msg.key?.id || "",
+      timestamp: typeof ts === "number" ? ts : ts != null ? Number(ts) : undefined,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+export function findRecentVoiceByHint(
+  instanceName: string,
+  hint: string,
+  options?: { latest?: boolean },
+): proto.IWebMessageInfo | null {
+  const latest = Boolean(options?.latest);
+  const list = recentInbound.get(instanceName) || [];
+  if (latest && !hint.trim()) {
+    for (const msg of list) {
+      if (hasAudio(msg.message)) return msg;
+    }
+    return null;
+  }
+  for (const msg of list) {
+    if (!hasAudio(msg.message)) continue;
+    if (matchesHint(msg.pushName, hint)) return msg;
+  }
+  if (latest) {
+    for (const msg of list) {
+      if (hasAudio(msg.message)) return msg;
+    }
+  }
+  for (const msg of list) {
+    if (!hasAudio(msg.message)) continue;
+    if (!hint.trim()) return msg;
+    const jid = msg.key?.remoteJid || "";
+    if (jid.toLowerCase().includes(hint.replace(/\s+/g, ""))) return msg;
+  }
+  return null;
+}
+
+export async function fetchVoiceHistoryForJid(
+  instanceName: string,
+  jid: string,
+  hint: string,
+  options?: { fromMe?: boolean },
+): Promise<proto.IWebMessageInfo | null> {
+  const live = instances.get(instanceName);
+  if (!live?.socket) throw new Error("Instance not connected");
+  const sock = live.socket;
+  const targetJid = jid.includes("@") ? jid : createJid(jid);
+  const fromMe = Boolean(options?.fromMe);
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve(findRecentVoiceByHint(instanceName, hint, { latest: true }));
+    }, 15000);
+
+    const onHistory = (events: { "messaging.history-set"?: { messages?: proto.IWebMessageInfo[] } }) => {
+      const batch = events["messaging.history-set"]?.messages || [];
+      for (const msg of batch) {
+        if (msg.key?.remoteJid !== targetJid && !targetJid.endsWith(msg.key?.remoteJid || "xxx")) continue;
+        if (!hasAudio(msg.message)) continue;
+        if (fromMe && !msg.key?.fromMe) continue;
+        if (!fromMe && msg.key?.fromMe) continue;
+        if (hint.trim() && !matchesHint(msg.pushName, hint)) continue;
+        cleanup();
+        resolve(msg);
+        return;
+      }
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      sock.ev.off("messaging.history-set", onHistory);
+    };
+
+    sock.ev.on("messaging.history-set", onHistory);
+    sock
+      .fetchMessageHistory(30, { remoteJid: targetJid, fromMe, id: "", participant: undefined }, 0)
+      .catch(() => {
+        cleanup();
+        resolve(findRecentVoiceByHint(instanceName, hint, { latest: true }));
+      });
+  });
+}
+
+export function findJidByNameHint(
+  instanceName: string,
+  hint: string,
+): { jid: string; pushName: string } | null {
+  const words = hint.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  const list = recentInbound.get(instanceName) || [];
+  for (const msg of list) {
+    const jid = msg.key?.remoteJid || "";
+    if (!jid || jid.includes("@g.us") || jid.includes("@broadcast")) continue;
+    if (!matchesHint(msg.pushName, hint)) continue;
+    return { jid, pushName: msg.pushName || hint };
+  }
+  const idx = contactIndex.get(instanceName) || {};
+  for (const entry of Object.values(idx)) {
+    if (entry?.pushName && matchesHint(entry.pushName, hint)) {
+      return { jid: entry.jid, pushName: entry.pushName };
+    }
+  }
+  return null;
+}
+
+export function listKnownContacts(instanceName: string): Array<{ jid: string; pushName: string; phone: string }> {
+  const idx = contactIndex.get(instanceName) || {};
+  const seen = new Set<string>();
+  const out: Array<{ jid: string; pushName: string; phone: string }> = [];
+  for (const entry of Object.values(idx)) {
+    if (!entry?.jid || seen.has(entry.jid)) continue;
+    seen.add(entry.jid);
+    out.push({ jid: entry.jid, pushName: entry.pushName || "", phone: entry.phone || "" });
+  }
+  out.sort((a, b) => a.pushName.localeCompare(b.pushName));
+  return out;
+}
+
+async function fetchHistoryBatch(
+  sock: ReturnType<typeof makeWASocket>,
+  targetJid: string,
+  fromMe: boolean,
+  count: number,
+): Promise<proto.IWebMessageInfo[]> {
+  return new Promise((resolve) => {
+    const collected: proto.IWebMessageInfo[] = [];
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve(collected);
+    }, 15000);
+
+    const onHistory = (events: { "messaging.history-set"?: { messages?: proto.IWebMessageInfo[] } }) => {
+      const batch = events["messaging.history-set"]?.messages || [];
+      for (const msg of batch) {
+        if (!jidMatches(msg.key?.remoteJid, targetJid)) continue;
+        if (Boolean(msg.key?.fromMe) !== fromMe) continue;
+        if (!hasText(msg.message) && !hasAudio(msg.message)) continue;
+        collected.push(msg);
+      }
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      sock.ev.off("messaging.history-set", onHistory);
+    };
+
+    sock.ev.on("messaging.history-set", onHistory);
+    sock
+      .fetchMessageHistory(count, { remoteJid: targetJid, fromMe, id: "", participant: undefined }, 0)
+      .catch(() => {
+        cleanup();
+        resolve(collected);
+      });
+  });
+}
+
+export type ContactTextMessage = {
+  text: string;
+  fromMe: boolean;
+  pushName: string;
+  jid: string;
+  id: string;
+  timestamp: number | null;
+};
+
+export async function fetchContactTextHistory(
+  instanceName: string,
+  options: { hint?: string; number?: string; jid?: string; limit?: number },
+): Promise<{ contact: string; jid: string; messages: ContactTextMessage[] }> {
+  const live = instances.get(instanceName);
+  if (!live?.socket) throw new Error("Instance not connected");
+  const sock = live.socket;
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const hint = String(options.hint || "").trim();
+
+  let targetJid = String(options.jid || "").trim();
+  let contact = hint || "Contact";
+  if (!targetJid && options.number) {
+    targetJid = createJid(options.number);
+  }
+  if (!targetJid && hint) {
+    const found = findJidByNameHint(instanceName, hint);
+    if (found) {
+      targetJid = found.jid;
+      contact = found.pushName || hint;
+    }
+  }
+  if (!targetJid) {
+    throw new Error(`Could not find WhatsApp chat for '${hint || options.number || "contact"}'`);
+  }
+  if (!targetJid.includes("@")) {
+    targetJid = createJid(targetJid);
+  }
+
+  const batches = await Promise.all([
+    fetchHistoryBatch(sock, targetJid, false, limit),
+    fetchHistoryBatch(sock, targetJid, true, limit),
+  ]);
+  const byId = new Map<string, ContactTextMessage>();
+  const ingest = (msg: proto.IWebMessageInfo) => {
+    const id = msg.key?.id || "";
+    if (!id || byId.has(id)) return;
+    const text = extractText(msg.message);
+    if (!text.trim()) return;
+    const ts = msg.messageTimestamp;
+    byId.set(id, {
+      text: text.trim(),
+      fromMe: Boolean(msg.key?.fromMe),
+      pushName: msg.pushName || contact,
+      jid: msg.key?.remoteJid || targetJid,
+      id,
+      timestamp: typeof ts === "number" ? ts : ts != null ? Number(ts) : null,
+    });
+  };
+  for (const msg of recentInbound.get(instanceName) || []) {
+    if (!jidMatches(msg.key?.remoteJid, targetJid)) continue;
+    ingest(msg);
+  }
+  for (const msg of [...batches[0], ...batches[1]]) ingest(msg);
+
+  const messages = [...byId.values()].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  if (messages.length && !hint) {
+    contact = messages.find((m) => !m.fromMe)?.pushName || contact;
+  }
+  return { contact, jid: targetJid, messages: messages.slice(-limit) };
+}
+
+export async function fetchVoiceByKey(
+  instanceName: string,
+  key: { remoteJid: string; id: string; fromMe?: boolean },
+  timestampMs = 0,
+): Promise<proto.IWebMessageInfo | null> {
+  const live = instances.get(instanceName);
+  if (!live?.socket) throw new Error("Instance not connected");
+  const sock = live.socket;
+  const targetKey = {
+    remoteJid: key.remoteJid,
+    id: key.id,
+    fromMe: Boolean(key.fromMe),
+    participant: undefined as string | undefined,
+  };
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve(null);
+    }, 15000);
+
+    const onHistory = (events: { "messaging.history-set"?: { messages?: proto.IWebMessageInfo[] } }) => {
+      const batch = events["messaging.history-set"]?.messages || [];
+      for (const msg of batch) {
+        if (msg.key?.id !== targetKey.id) continue;
+        if (msg.key?.remoteJid !== targetKey.remoteJid) continue;
+        if (!hasAudio(msg.message)) continue;
+        cleanup();
+        resolve(msg);
+        return;
+      }
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      sock.ev.off("messaging.history-set", onHistory);
+    };
+
+    sock.ev.on("messaging.history-set", onHistory);
+    sock.fetchMessageHistory(30, targetKey, timestampMs).catch(() => {
+      cleanup();
+      resolve(null);
+    });
+  });
 }

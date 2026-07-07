@@ -21,14 +21,44 @@ class EvolutionWebhookPayload(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+def _unwrap_message(message: dict[str, Any] | None) -> dict[str, Any]:
+    """Unwrap ephemeral/view-once wrappers (ponytail: max 5 hops like baileys)."""
+    if not isinstance(message, dict):
+        return {}
+    current: dict[str, Any] = message
+    for _ in range(5):
+        inner = None
+        for key in (
+            "ephemeralMessage",
+            "viewOnceMessage",
+            "viewOnceMessageV2",
+            "viewOnceMessageV2Extension",
+            "documentWithCaptionMessage",
+            "editedMessage",
+        ):
+            wrapped = current.get(key)
+            if isinstance(wrapped, dict) and isinstance(wrapped.get("message"), dict):
+                inner = wrapped["message"]
+                break
+        if not inner:
+            break
+        current = inner
+    return current
+
+
 def _extract_text(message: dict[str, Any]) -> str:
+    msg = _unwrap_message(message)
     return (
-        message.get("conversation")
-        or message.get("extendedTextMessage", {}).get("text")
-        or message.get("imageMessage", {}).get("caption")
-        or message.get("documentMessage", {}).get("caption")
+        msg.get("conversation")
+        or msg.get("extendedTextMessage", {}).get("text")
+        or msg.get("imageMessage", {}).get("caption")
+        or msg.get("documentMessage", {}).get("caption")
         or ""
     )
+
+
+def _has_audio(message: dict[str, Any]) -> bool:
+    return bool(_unwrap_message(message).get("audioMessage"))
 
 
 def _iter_messages_upsert_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -70,9 +100,10 @@ def parse_messages_upsert(payload: dict[str, Any]) -> list[WhatsAppMessage]:
             else effective_jid.split("@")[0].split(":")[0] if effective_jid else ""
         )
         message = item.get("message", item)
-        text = _extract_text(message if isinstance(message, dict) else {})
-        has_audio = bool(isinstance(message, dict) and message.get("audioMessage"))
-        if not text and not has_audio:
+        if not isinstance(message, dict):
+            continue
+        text = _extract_text(message)
+        if not text and not _has_audio(message):
             continue
         messages.append(
             WhatsAppMessage(
@@ -101,9 +132,10 @@ def parse_outbound_messages_upsert(payload: dict[str, Any]) -> list[WhatsAppMess
         if is_group:
             continue
         message = item.get("message", item)
-        text = _extract_text(message if isinstance(message, dict) else {})
-        has_audio = bool(isinstance(message, dict) and message.get("audioMessage"))
-        if not text and not has_audio:
+        if not isinstance(message, dict):
+            continue
+        text = _extract_text(message)
+        if not text and not _has_audio(message):
             continue
         peer = effective_jid.split("@")[0].split(":")[0] if effective_jid else ""
         messages.append(

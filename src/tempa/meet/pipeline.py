@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from tempa.meet.audio_capture import audio_capture_script
 from tempa.meet.audio_writer import AudioDumpWriter
 from tempa.meet.config import AudioConfig, SttConfig
 from tempa.meet.manifest_writer import ManifestWriter
@@ -48,260 +49,6 @@ async def _connect_stt_with_retries(
                 err,
             )
             await asyncio.sleep(delay_s)
-
-
-def _audio_capture_script(sample_rate: int, chunk_ms: int, debug: bool) -> str:
-    return f"""
-(() => {{
-  if (window.__gmeetAudioCaptureRunning) return;
-  window.__gmeetAudioCaptureRunning = true;
-  window.__gmeetAudioCaptureStopped = false;
-
-  const targetSampleRate = {sample_rate};
-  const chunkMs = {chunk_ms};
-  const chunkFrames = Math.max(1, Math.floor(targetSampleRate * chunkMs / 1000));
-
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const sources = new Map();
-  const streamSources = new Map();
-  let attachedCount = 0;
-  const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-  const intervalIds = [];
-  let sampleBuffer = [];
-  let lastDebugTs = 0;
-  const debugEnabled = {str(debug).lower()};
-
-  function downsampleBuffer(buffer, inRate, outRate) {{
-    if (outRate === inRate) {{
-      return buffer;
-    }}
-    const ratio = inRate / outRate;
-    const newLength = Math.floor(buffer.length / ratio);
-    const result = new Float32Array(newLength);
-    for (let i = 0; i < newLength; i++) {{
-      const start = Math.floor(i * ratio);
-      const end = Math.floor((i + 1) * ratio);
-      let sum = 0;
-      let count = 0;
-      for (let j = start; j < end && j < buffer.length; j++) {{
-        sum += buffer[j];
-        count++;
-      }}
-      result[i] = count ? sum / count : 0;
-    }}
-    return result;
-  }}
-
-  function floatTo16BitPCM(float32) {{
-    const output = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++) {{
-      let s = Math.max(-1, Math.min(1, float32[i]));
-      output[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }}
-    return output;
-  }}
-
-  function base64FromBytes(bytes) {{
-    let binary = "";
-    const len = bytes.length;
-    for (let i = 0; i < len; i++) {{
-      binary += String.fromCharCode(bytes[i]);
-    }}
-    return btoa(binary);
-  }}
-
-  function emitSamples(int16Samples, floatSamples) {{
-    if (window.__gmeetAudioCaptureStopped) return;
-    for (let i = 0; i < int16Samples.length; i++) {{
-      sampleBuffer.push(int16Samples[i]);
-    }}
-    while (sampleBuffer.length >= chunkFrames) {{
-      const chunk = sampleBuffer.splice(0, chunkFrames);
-      const pcm = new Int16Array(chunk);
-      const bytes = new Uint8Array(pcm.buffer);
-      const b64 = base64FromBytes(bytes);
-      try {{
-        window.onAudioChunk({{ pcm16_b64: b64, sample_rate: targetSampleRate }});
-      }} catch (_err) {{
-        // Ignore callback errors during shutdown races.
-      }}
-    }}
-
-    if (debugEnabled) {{
-      const now = Date.now();
-      if (now - lastDebugTs >= 1000) {{
-        lastDebugTs = now;
-        let sumSquares = 0;
-        let peak = 0;
-        let floatPeak = 0;
-        for (let i = 0; i < int16Samples.length; i++) {{
-          const v = int16Samples[i];
-          const abs = Math.abs(v);
-          if (abs > peak) peak = abs;
-          sumSquares += v * v;
-        }}
-        for (let i = 0; i < floatSamples.length; i++) {{
-          const abs = Math.abs(floatSamples[i]);
-          if (abs > floatPeak) floatPeak = abs;
-        }}
-        const rms = Math.sqrt(sumSquares / Math.max(1, int16Samples.length));
-        window.onAudioDebug({{
-          event: "rms",
-          rms,
-          peak,
-          float_peak: floatPeak,
-          audio_elements: document.querySelectorAll("audio").length,
-          audio_state: audioCtx.state,
-        }});
-      }}
-    }}
-  }}
-
-  processor.onaudioprocess = (event) => {{
-    if (window.__gmeetAudioCaptureStopped) return;
-    const input = event.inputBuffer.getChannelData(0);
-    const downsampled = downsampleBuffer(input, audioCtx.sampleRate, targetSampleRate);
-    const pcm16 = floatTo16BitPCM(downsampled);
-    emitSamples(pcm16, downsampled);
-    const output = event.outputBuffer.getChannelData(0);
-    output.fill(0);
-  }};
-
-  processor.connect(audioCtx.destination);
-
-  function attachStream(stream, label) {{
-    if (!stream || streamSources.has(stream)) return;
-    try {{
-      const source = audioCtx.createMediaStreamSource(stream);
-      source.connect(processor);
-      streamSources.set(stream, source);
-      attachedCount += 1;
-      if (debugEnabled) {{
-        window.onAudioDebug({{
-          event: "attach_stream",
-          label: label || "stream",
-          attached_count: attachedCount,
-          track_count: stream.getAudioTracks ? stream.getAudioTracks().length : 0,
-        }});
-      }}
-    }} catch (err) {{
-      console.debug("GMeet stream attach failed", err);
-    }}
-  }}
-
-  function attachAudio(el) {{
-    if (sources.has(el)) return;
-    try {{
-      if (el.srcObject) {{
-        attachStream(el.srcObject, "audio_element");
-        sources.set(el, el.srcObject);
-        return;
-      }}
-      const source = audioCtx.createMediaElementSource(el);
-      source.connect(processor);
-      sources.set(el, source);
-      attachedCount += 1;
-    }} catch (err) {{
-      console.debug("GMeet audio attach failed", err);
-    }}
-  }}
-
-  function hookPeerConnections() {{
-    if (window.__gmeetPcHooked) return;
-    window.__gmeetPcHooked = true;
-    const OrigPC = window.RTCPeerConnection;
-    if (!OrigPC) return;
-    window.RTCPeerConnection = function(...args) {{
-      const pc = new OrigPC(...args);
-      pc.addEventListener("track", (ev) => {{
-        if (ev.track && ev.track.kind === "audio" && ev.streams && ev.streams[0]) {{
-          attachStream(ev.streams[0], "ontrack");
-        }}
-      }});
-      return pc;
-    }};
-    window.RTCPeerConnection.prototype = OrigPC.prototype;
-  }}
-
-  function scan() {{
-    document.querySelectorAll("audio").forEach(attachAudio);
-    if (debugEnabled) {{
-      const details = Array.from(document.querySelectorAll("audio")).map((el) => {{
-        const srcObject = el.srcObject;
-        const tracks = srcObject && srcObject.getAudioTracks ? srcObject.getAudioTracks() : [];
-        return {{
-          muted: el.muted,
-          volume: el.volume,
-          paused: el.paused,
-          track_count: tracks.length,
-          track_state: tracks.map((t) => t.readyState || "unknown"),
-          track_enabled: tracks.map((t) => t.enabled),
-        }};
-      }});
-      window.onAudioDebug({{
-        event: "scan",
-        audio_elements: document.querySelectorAll("audio").length,
-        attached_count: attachedCount,
-        audio_state: audioCtx.state,
-        elements: details,
-      }});
-    }}
-  }}
-
-  hookPeerConnections();
-  scan();
-  try {{
-    const observer = new MutationObserver(() => scan());
-    observer.observe(document.documentElement, {{ childList: true, subtree: true }});
-    intervalIds.push(setInterval(() => observer.takeRecords(), 30000));
-  }} catch (_err) {{}}
-  let scanDelay = 500;
-  const scanLoop = () => {{
-    scan();
-    if (attachedCount === 0 && scanDelay < 5000) {{
-      scanDelay = Math.min(5000, scanDelay + 500);
-    }}
-    intervalIds.push(setTimeout(scanLoop, scanDelay));
-  }};
-  scanLoop();
-  function ensureRunning() {{
-    if (audioCtx.state !== "running") {{
-      audioCtx.resume().catch(() => {{}});
-    }}
-  }}
-
-  ensureRunning();
-  intervalIds.push(setInterval(ensureRunning, 2000));
-
-  window.__gmeetStopAudioCapture = async () => {{
-    if (window.__gmeetAudioCaptureStopped) return true;
-    window.__gmeetAudioCaptureStopped = true;
-    window.__gmeetAudioCaptureRunning = false;
-
-    for (const id of intervalIds) {{
-      clearInterval(id);
-    }}
-
-    try {{
-      processor.onaudioprocess = null;
-      processor.disconnect();
-    }} catch (_err) {{}}
-
-    try {{
-      for (const source of sources.values()) {{
-        source.disconnect();
-      }}
-      sources.clear();
-    }} catch (_err) {{}}
-
-    try {{
-      await audioCtx.close();
-    }} catch (_err) {{}}
-
-    return true;
-  }};
-}})();
-"""
 
 
 @dataclass
@@ -367,6 +114,7 @@ async def setup_pipeline(
     output_dir: str = "./generated",
     storage_adapter: Optional[ArtifactStorageAdapter] = None,
     stt_adapter: Optional[STTStreamingAdapter] = None,
+    use_browser_audio: bool = True,
 ) -> PipelineSession:
     if audio is None:
         audio = AudioConfig()
@@ -383,7 +131,7 @@ async def setup_pipeline(
     speaker_attribution = None
     transcript_writer = None
 
-    if audio.dump_enabled:
+    if audio.dump_enabled and use_browser_audio:
         try:
             audio_writer = AudioDumpWriter(
                 meeting_id=meeting_id,
@@ -494,8 +242,8 @@ async def setup_pipeline(
             _logger.exception("GMEET: failed to start STT (%s)", stt.provider)
             stt_adapter = None
 
-    # --- Audio capture JS ---
-    if audio_writer or stt_adapter or speaker_attribution:
+    # --- Browser audio capture JS (skipped when system PulseAudio capture is active) ---
+    if use_browser_audio and (audio_writer or stt_adapter or speaker_attribution):
         try:
 
             async def handle_audio_chunk(source, payload):
@@ -521,7 +269,7 @@ async def setup_pipeline(
             await page.expose_binding("onAudioChunk", handle_audio_chunk)
             if audio.debug:
                 await page.expose_binding("onAudioDebug", handle_audio_debug)
-            await page.evaluate(_audio_capture_script(audio.sample_rate, audio.chunk_ms, audio.debug))
+            await page.evaluate(audio_capture_script(audio.sample_rate, audio.chunk_ms, audio.debug))
             _logger.info("GMEET: audio capture initialized")
         except Exception:
             _logger.exception("GMEET: failed to start audio capture")

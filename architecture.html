@@ -1,17 +1,28 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tempa — Architecture</title>
   <meta name="description" content="How Tempa works: WhatsApp, Slack, and Dashboard all connect to one AI agent with unified memory and shared tools." />
+  <meta name="color-scheme" content="dark light" />
+  <script>
+    (function () {
+      var k = 'tempa-arch-theme';
+      var t = localStorage.getItem(k);
+      if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <style>
     /* ── Design tokens ── */
-    :root {
+    :root,
+    [data-theme="dark"] {
+      color-scheme: dark;
       --bg:         #0F172A;
       --surface:    #1E293B;
       --surface-2:  #0d1424;
@@ -34,6 +45,56 @@
 
       --glass-bg:   rgba(30, 41, 59, 0.55);
       --glass-blur: blur(18px);
+      --nav-bg:     rgba(15, 23, 42, 0.75);
+      --grid-line:  rgba(91,141,239,0.04);
+      --orb-opacity: 0.18;
+      --hero-badge-bg: rgba(91,141,239,0.12);
+      --hero-badge-border: rgba(91,141,239,0.3);
+      --hero-badge-color: #93c5fd;
+      --hero-grad-start: #fff;
+      --matrix-head-bg: rgba(30,41,59,0.8);
+      --matrix-row-bg: transparent;
+      --matrix-hover: rgba(91,141,239,0.05);
+      --callout-bg: rgba(91,141,239,0.08);
+      --callout-border: rgba(91,141,239,0.25);
+      --svg-title: #F8FAFC;
+      --svg-sub: #94A3B8;
+      --svg-label: #64748b;
+      --ux-drop: rgba(0, 40, 30, 0.45);
+    }
+
+    [data-theme="light"] {
+      color-scheme: light;
+      --bg:         #f1f5f9;
+      --surface:    #ffffff;
+      --surface-2:  #e2e8f0;
+      --border:     rgba(15, 23, 42, 0.08);
+      --border-hi:  rgba(15, 23, 42, 0.12);
+      --text:       #0f172a;
+      --muted:      #64748b;
+      --accent:     #3b6fd4;
+      --green:      #16a34a;
+      --purple:     #7c3aed;
+      --pink:       #db2777;
+      --teal:       #0d9488;
+
+      --glass-bg:   rgba(255, 255, 255, 0.82);
+      --nav-bg:     rgba(255, 255, 255, 0.88);
+      --grid-line:  rgba(59, 130, 246, 0.07);
+      --orb-opacity: 0.14;
+      --hero-badge-bg: rgba(59, 130, 246, 0.1);
+      --hero-badge-border: rgba(59, 130, 246, 0.22);
+      --hero-badge-color: #2563eb;
+      --hero-grad-start: #0f172a;
+      --matrix-head-bg: rgba(241, 245, 249, 0.98);
+      --matrix-row-bg: #ffffff;
+      --matrix-hover: rgba(59, 130, 246, 0.06);
+      --callout-bg: rgba(59, 130, 246, 0.07);
+      --callout-border: rgba(59, 130, 246, 0.2);
+      --svg-title: #0f172a;
+      --svg-sub: #475569;
+      --svg-label: #64748b;
+      --ux-drop: rgba(15, 23, 42, 0.18);
     }
 
     /* ── Reset ── */
@@ -48,6 +109,7 @@
       line-height: 1.6;
       -webkit-font-smoothing: antialiased;
       overflow-x: hidden;
+      transition: background-color 0.25s ease, color 0.25s ease;
     }
 
     /* ── Background grid ── */
@@ -57,8 +119,8 @@
       inset: 0;
       pointer-events: none;
       background-image:
-        linear-gradient(rgba(91,141,239,0.04) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(91,141,239,0.04) 1px, transparent 1px);
+        linear-gradient(var(--grid-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
       background-size: 48px 48px;
       z-index: 0;
     }
@@ -69,19 +131,19 @@
       border-radius: 50%;
       pointer-events: none;
       filter: blur(100px);
-      opacity: 0.18;
+      opacity: var(--orb-opacity);
       z-index: 0;
     }
 
     .orb-1 { width: 600px; height: 600px; background: #5b8def; top: -200px; left: -150px; }
     .orb-2 { width: 500px; height: 500px; background: #a78bfa; bottom: -150px; right: -100px; }
-    .orb-3 { width: 350px; height: 350px; background: #22C55E; top: 50%; left: 50%; transform: translate(-50%,-50%); opacity: 0.08; }
+    .orb-3 { width: 350px; height: 350px; background: #22C55E; top: 50%; left: 50%; transform: translate(-50%,-50%); opacity: calc(var(--orb-opacity) * 0.45); }
 
     /* ── Utility ── */
     .container {
       position: relative;
       z-index: 1;
-      max-width: 1020px;
+      max-width: 1200px;
       margin: 0 auto;
       padding: 0 1.5rem;
     }
@@ -92,6 +154,7 @@
       -webkit-backdrop-filter: var(--glass-blur);
       border: 1px solid var(--border-hi);
       border-radius: var(--radius);
+      transition: background-color 0.25s ease, border-color 0.25s ease;
     }
 
     /* ── Nav ── */
@@ -102,12 +165,12 @@
       transform: translateX(-50%);
       z-index: 100;
       width: calc(100% - 3rem);
-      max-width: 1020px;
+      max-width: 1200px;
       padding: 0.6rem 1.25rem;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      background: rgba(15, 23, 42, 0.75);
+      background: var(--nav-bg);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
       border: 1px solid var(--border-hi);
@@ -164,7 +227,38 @@
       transition: border-color 0.2s, background 0.2s;
     }
 
-    .nav-links .btn-gh:hover { border-color: var(--accent); background: rgba(91,141,239,0.1); cursor: pointer; }
+    .nav-links .btn-gh:hover { border-color: var(--accent); background: var(--matrix-hover); cursor: pointer; }
+
+    .btn-theme {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid var(--border-hi);
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s, background 0.2s;
+    }
+
+    .btn-theme:hover { color: var(--text); border-color: var(--accent); }
+
+    .btn-theme svg {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    [data-theme="dark"] .btn-theme .icon-moon { display: none; }
+    [data-theme="light"] .btn-theme .icon-sun { display: none; }
+
+    .btn-theme .icon-moon path { fill: currentColor; stroke: none; }
 
     /* ── Hero ── */
     .hero {
@@ -178,9 +272,9 @@
       display: inline-flex;
       align-items: center;
       gap: 0.4rem;
-      background: rgba(91,141,239,0.12);
-      border: 1px solid rgba(91,141,239,0.3);
-      color: #93c5fd;
+      background: var(--hero-badge-bg);
+      border: 1px solid var(--hero-badge-border);
+      color: var(--hero-badge-color);
       font-size: 0.75rem;
       font-weight: 600;
       letter-spacing: 0.06em;
@@ -212,7 +306,7 @@
     }
 
     .hero h1 .grad {
-      background: linear-gradient(135deg, #fff 30%, var(--accent) 75%, var(--purple) 100%);
+      background: linear-gradient(135deg, var(--hero-grad-start) 30%, var(--accent) 75%, var(--purple) 100%);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
@@ -260,6 +354,79 @@
     .ch-agent { background: rgba(167,139,250,0.1); border-color: rgba(167,139,250,0.35); color: var(--purple); }
     .ch-mem { background: rgba(244,114,182,0.1); border-color: rgba(244,114,182,0.35); color: var(--pink); }
     .ch-tool { background: rgba(34,197,94,0.1); border-color: rgba(34,197,94,0.35); color: var(--green); }
+
+    /* ── Hero video reveal (scroll-driven: 1:1 square → full page → 0) ── */
+    .hero-video-stage {
+      position: relative;
+      z-index: 1;
+      height: 320vh;
+    }
+
+    .hero-video-sticky {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    .hero-video-frame {
+      position: relative;
+      width: min(72vmin, 440px);
+      aspect-ratio: 1 / 1;
+      border-radius: 24px;
+      overflow: hidden;
+      transform-origin: center center;
+      will-change: transform;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.45), 0 0 0 1px var(--border-hi);
+    }
+
+    .hero-video-frame video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .hero-video-frame::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      box-shadow: inset 0 0 120px rgba(0,0,0,0.25);
+    }
+
+    .scroll-hint {
+      position: absolute;
+      bottom: 2rem;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.7rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      transition: opacity 0.3s ease;
+    }
+
+    .scroll-hint svg {
+      width: 18px; height: 18px;
+      stroke: currentColor; stroke-width: 2; fill: none;
+      animation: hint-bob 1.6s ease-in-out infinite;
+    }
+
+    @keyframes hint-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(5px); } }
+
+    @media (prefers-reduced-motion: reduce) {
+      .hero-video-stage { height: auto; }
+      .hero-video-sticky { position: static; height: auto; padding: 1rem 0 3rem; }
+      .hero-video-frame { transform: none !important; }
+      .scroll-hint { display: none; }
+    }
 
     /* ── Section headings ── */
     .section-label {
@@ -320,9 +487,11 @@
 
     .arch-svg text { font-family: 'DM Sans', system-ui, sans-serif; }
 
-    .t-title { font-size: 13px; font-weight: 600; fill: #F8FAFC; text-anchor: middle; }
-    .t-sub   { font-size: 10px; fill: #94A3B8; text-anchor: middle; }
-    .t-label { font-size: 9px; fill: #64748b; text-anchor: middle; letter-spacing: 0.06em; text-transform: uppercase; }
+    .t-title { font-size: 13px; font-weight: 600; fill: var(--svg-title); text-anchor: middle; }
+    .t-sub   { font-size: 10px; fill: var(--svg-sub); text-anchor: middle; }
+    .t-label { font-size: 9px; fill: var(--svg-label); text-anchor: middle; letter-spacing: 0.06em; text-transform: uppercase; }
+
+    [data-theme="light"] .arch-svg .t-title[fill] { fill: currentColor; }
 
     /* ── Access matrix ── */
     .matrix-wrap {
@@ -335,10 +504,11 @@
       width: 100%;
       border-collapse: collapse;
       font-size: 0.875rem;
+      background: var(--matrix-row-bg);
     }
 
     table.matrix thead th {
-      background: rgba(30,41,59,0.8);
+      background: var(--matrix-head-bg);
       padding: 0.75rem 1rem;
       text-align: center;
       font-family: 'Space Grotesk', sans-serif;
@@ -358,7 +528,7 @@
     }
 
     table.matrix tbody tr:last-child { border-bottom: none; }
-    table.matrix tbody tr:hover { background: rgba(91,141,239,0.05); }
+    table.matrix tbody tr:hover { background: var(--matrix-hover); }
 
     table.matrix tbody td {
       padding: 0.9rem 1rem;
@@ -402,65 +572,245 @@
 
     .check-icon svg { width: 10px; height: 10px; stroke: #22C55E; stroke-width: 2.5; fill: none; }
 
-    /* ── Flow steps ── */
+    /* ── Flow steps (DepthFold 3D cards) ── */
     .steps-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 1rem;
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+      gap: clamp(1.1rem, 2.8vw, 1.65rem);
+      align-items: stretch;
+    }
+
+    @media (min-width: 900px) {
+      .steps-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     }
 
     @media (max-width: 768px) {
-      .steps-grid { grid-template-columns: 1fr 1fr; }
       nav { top: 10px; width: calc(100% - 2rem); }
     }
 
-    @media (max-width: 480px) {
-      .steps-grid { grid-template-columns: 1fr; }
+    .ux-parent {
+      width: 100%;
+      max-width: 400px;
+      height: 280px;
+      margin-inline: auto;
+      perspective: 1000px;
+      perspective-origin: 50% 50%;
+      filter: drop-shadow(0 28px 50px var(--ux-drop));
     }
 
-    .step-card {
-      padding: 1.4rem;
-      border-radius: var(--radius);
-      background: var(--glass-bg);
-      backdrop-filter: var(--glass-blur);
-      -webkit-backdrop-filter: var(--glass-blur);
-      border: 1px solid var(--border-hi);
-      transition: border-color 0.25s, transform 0.25s, box-shadow 0.25s;
-      cursor: default;
+    .ux-card {
+      position: relative;
+      height: 100%;
+      border-radius: 50px;
+      background: var(--ux-grad);
+      transform-style: preserve-3d;
+      transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.55s ease;
+      box-shadow:
+        rgba(5, 71, 17, 0) 40px 50px 25px -40px,
+        rgba(5, 71, 17, 0.28) 0 25px 25px -5px;
     }
 
-    .step-card:hover {
-      border-color: rgba(91,141,239,0.4);
-      transform: translateY(-3px);
-      box-shadow: 0 12px 32px rgba(0,0,0,0.3);
+    .ux-parent:hover .ux-card {
+      transform: rotate3d(1, 1, 0, 28deg);
+      box-shadow:
+        rgba(5, 71, 17, 0.45) 28px 48px 28px -38px,
+        rgba(0, 255, 214, 0.12) 0 0 60px -10px,
+        rgba(5, 71, 17, 0.15) 0 25px 35px 0;
     }
 
-    .step-num {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 1.8rem;
-      height: 1.8rem;
+    .ux-parent--mint {
+      --ux-grad: linear-gradient(135deg, #25d366 0%, #08e260 100%);
+      --ux-title: #065f2e;
+      --ux-body: rgba(6, 95, 46, 0.85);
+      --ux-cta: #059669;
+      --ux-orbit: rgba(0, 249, 203, 0.22);
+      --ux-fill: #065f2e;
+    }
+
+    .ux-parent--violet {
+      --ux-grad: linear-gradient(145deg, #5b8def 0%, #6366f1 40%, #818cf8 100%);
+      --ux-title: #1e3a8a;
+      --ux-body: rgba(30, 58, 138, 0.85);
+      --ux-cta: #4338ca;
+      --ux-orbit: rgba(191, 219, 254, 0.35);
+      --ux-fill: #1d4ed8;
+    }
+
+    .ux-parent--solar {
+      --ux-grad: linear-gradient(135deg, #a78bfa 0%, #8b5cf6 45%, #6366f1 100%);
+      --ux-title: #3b0764;
+      --ux-body: rgba(59, 7, 100, 0.88);
+      --ux-cta: #7c3aed;
+      --ux-orbit: rgba(216, 180, 254, 0.4);
+      --ux-fill: #5b21b6;
+    }
+
+    .ux-parent--ocean {
+      --ux-grad: linear-gradient(155deg, #22d3ee 0%, #0284c7 50%, #1e3a8a 100%);
+      --ux-title: #0c4a6e;
+      --ux-body: rgba(12, 74, 110, 0.88);
+      --ux-cta: #0369a1;
+      --ux-orbit: rgba(125, 211, 252, 0.35);
+      --ux-fill: #0e7490;
+    }
+
+    .ux-glass {
+      transform-style: preserve-3d;
+      position: absolute;
+      inset: 8px;
+      border-radius: 55px;
+      border-top-right-radius: 100%;
+      background: linear-gradient(0deg, rgba(255, 255, 255, 0.38) 0%, rgba(255, 255, 255, 0.82) 100%);
+      transform: translate3d(0, 0, 25px);
+      border-inline-start: 1px solid rgba(255, 255, 255, 0.85);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.75);
+      transition: all 0.5s ease-in-out;
+      pointer-events: none;
+    }
+
+    .ux-logo {
+      position: absolute;
+      inset-inline-end: 0;
+      top: 0;
+      transform-style: preserve-3d;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .ux-circle {
+      display: block;
+      position: absolute;
+      aspect-ratio: 1;
       border-radius: 50%;
-      background: linear-gradient(135deg, var(--accent), var(--purple));
-      color: #fff;
-      font-family: 'Space Grotesk', sans-serif;
-      font-size: 0.75rem;
-      font-weight: 700;
-      margin-bottom: 0.75rem;
+      top: 0;
+      inset-inline-end: 0;
+      background: var(--ux-orbit);
+      box-shadow: rgba(100, 100, 111, 0.25) -10px 10px 24px 0;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      transition: all 0.5s ease-in-out;
     }
 
-    .step-card h3 {
+    .ux-circle:nth-child(1) { width: 150px; transform: translate3d(0, 0, 20px); top: 8px; inset-inline-end: 8px; }
+    .ux-circle:nth-child(2) { width: 124px; transform: translate3d(0, 0, 40px); top: 10px; inset-inline-end: 10px; transition-delay: 0.05s; }
+    .ux-circle:nth-child(3) { width: 98px; transform: translate3d(0, 0, 60px); top: 17px; inset-inline-end: 17px; transition-delay: 0.1s; }
+    .ux-circle:nth-child(4) { width: 72px; transform: translate3d(0, 0, 80px); top: 23px; inset-inline-end: 23px; transition-delay: 0.15s; }
+    .ux-circle:nth-child(5) {
+      width: 46px;
+      transform: translate3d(0, 0, 100px);
+      top: 30px;
+      inset-inline-end: 30px;
+      display: grid;
+      place-content: center;
+      transition-delay: 0.2s;
+    }
+
+    .ux-circle:nth-child(5) svg { width: 18px; fill: #fff; }
+
+    .ux-parent:hover .ux-circle:nth-child(2) { transform: translate3d(0, 0, 60px); }
+    .ux-parent:hover .ux-circle:nth-child(3) { transform: translate3d(0, 0, 80px); }
+    .ux-parent:hover .ux-circle:nth-child(4) { transform: translate3d(0, 0, 100px); }
+    .ux-parent:hover .ux-circle:nth-child(5) { transform: translate3d(0, 0, 120px); }
+
+    .ux-content {
+      padding: 88px 3rem 0 1.65rem;
+      transform: translate3d(0, 0, 26px);
+      position: relative;
+      z-index: 3;
+    }
+
+    .ux-step-tag {
+      display: inline-block;
+      font-size: 0.65rem;
+      font-weight: 900;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--ux-title);
+      opacity: 0.75;
+      margin-bottom: 0.35rem;
+    }
+
+    .ux-title {
+      display: block;
+      color: var(--ux-title);
       font-family: 'Space Grotesk', sans-serif;
-      font-size: 0.9rem;
+      font-weight: 900;
+      font-size: 1.15rem;
+      letter-spacing: -0.02em;
+    }
+
+    .ux-text {
+      display: block;
+      margin-top: 0.85rem;
+      color: var(--ux-body);
+      font-size: 0.88rem;
+      line-height: 1.5;
       font-weight: 600;
-      margin-bottom: 0.4rem;
     }
 
-    .step-card p {
-      font-size: 0.8rem;
-      color: var(--muted);
-      line-height: 1.55;
+    .ux-bottom {
+      padding: 10px 12px;
+      transform-style: preserve-3d;
+      position: absolute;
+      bottom: 18px;
+      left: 18px;
+      right: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transform: translate3d(0, 0, 26px);
+      z-index: 4;
+    }
+
+    .ux-social { display: flex; gap: 8px; transform-style: preserve-3d; }
+
+    .ux-social-btn {
+      width: 30px;
+      aspect-ratio: 1;
+      padding: 5px;
+      background: #fff;
+      border-radius: 50%;
+      border: none;
+      display: grid;
+      place-content: center;
+      cursor: default;
+      box-shadow: rgba(5, 71, 17, 0.45) 0 8px 6px -5px;
+      transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out, background 0.2s;
+    }
+
+    .ux-social-btn svg { width: 14px; height: 14px; fill: var(--ux-fill); }
+    .ux-social-btn svg[fill="none"] { fill: none; stroke: var(--ux-fill); stroke-width: 2; }
+
+    .ux-social-btn:hover { background: #0f172a; }
+    .ux-social-btn:hover svg { fill: #fff; }
+
+    .ux-parent:hover .ux-social-btn {
+      transform: translate3d(0, 0, 50px);
+      box-shadow: rgba(5, 71, 17, 0.25) -5px 20px 12px 0;
+    }
+
+    .ux-more {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      width: 42%;
+      justify-content: flex-end;
+    }
+
+    .ux-more-label {
+      color: var(--ux-cta);
+      font-weight: 800;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .ux-more svg {
+      fill: none;
+      stroke: var(--ux-cta);
+      stroke-width: 3px;
+      max-height: 14px;
+      width: 16px;
     }
 
     /* ── Mermaid ── */
@@ -476,8 +826,8 @@
       align-items: flex-start;
       gap: 0.85rem;
       padding: 1rem 1.25rem;
-      background: rgba(91,141,239,0.08);
-      border: 1px solid rgba(91,141,239,0.25);
+      background: var(--callout-bg);
+      border: 1px solid var(--callout-border);
       border-radius: var(--radius-sm);
       margin-top: 1.5rem;
       font-size: 0.84rem;
@@ -518,7 +868,7 @@
     }
 
     .footer-inner {
-      max-width: 1020px;
+      max-width: 1200px;
       margin: 0 auto;
       display: flex;
       align-items: center;
@@ -564,7 +914,14 @@
 
     @media (prefers-reduced-motion: reduce) {
       .fade-in { opacity: 1; transform: none; transition: none; }
-      .ch-pill:hover, .step-card:hover { transform: none; }
+      .ch-pill:hover { transform: none; }
+      .ux-card, .ux-circle, .ux-social-btn { transition: none !important; }
+      .ux-parent:hover .ux-card { transform: none; }
+      .ux-parent:hover .ux-circle:nth-child(2),
+      .ux-parent:hover .ux-circle:nth-child(3),
+      .ux-parent:hover .ux-circle:nth-child(4),
+      .ux-parent:hover .ux-circle:nth-child(5) { transform: inherit; }
+      .ux-parent:hover .ux-social-btn { transform: none; }
     }
   </style>
 </head>
@@ -585,6 +942,10 @@
       <a href="#diagram">Diagram</a>
       <a href="#tools">Tools</a>
       <a href="#flow">Flow</a>
+      <button type="button" class="btn-theme" id="theme-toggle" aria-label="Switch to light mode">
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
       <a href="https://github.com/Haroon966/Tempa" class="btn-gh" target="_blank" rel="noopener">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836a9.59 9.59 0 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.741 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/>
@@ -630,6 +991,19 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         Shared Tools
       </span>
+    </div>
+  </div>
+
+  <!-- Hero video reveal: scroll expands the 1:1 crop to full page, then shrinks it away -->
+  <div class="hero-video-stage" id="hero-video-stage">
+    <div class="hero-video-sticky">
+      <div class="hero-video-frame" id="hero-video-frame">
+        <video src="dashboard/src/assets/animated_tempa.mp4" autoplay muted loop playsinline aria-label="Tempa mascot animation"></video>
+      </div>
+      <div class="scroll-hint" id="scroll-hint" aria-hidden="true">
+        Scroll
+        <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
     </div>
   </div>
 
@@ -877,31 +1251,122 @@
       </div>
 
       <div class="steps-grid fade-in">
-        <div class="step-card">
-          <div class="step-num">1</div>
-          <h3>You message</h3>
-          <p>WhatsApp DM, Slack @mention, or Dashboard chat. The channel only decides where the reply lands.</p>
+        <div class="ux-parent ux-parent--mint">
+          <article class="ux-card">
+            <div class="ux-logo" aria-hidden="true">
+              <span class="ux-circle"></span><span class="ux-circle"></span><span class="ux-circle"></span><span class="ux-circle"></span>
+              <span class="ux-circle">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+              </span>
+            </div>
+            <div class="ux-glass"></div>
+            <div class="ux-content">
+              <span class="ux-step-tag">Step 01</span>
+              <span class="ux-title">You message</span>
+              <span class="ux-text">WhatsApp DM, Slack @mention, or Dashboard chat. The channel only decides where the reply lands.</span>
+            </div>
+            <div class="ux-bottom">
+              <div class="ux-social">
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.143.566 4.148 1.546 5.886L0 24l6.267-1.643C7.955 23.404 9.946 24 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0z"/></svg></span>
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></svg></span>
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></span>
+              </div>
+              <div class="ux-more" aria-hidden="true">
+                <span class="ux-more-label">Channels</span>
+                <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+              </div>
+            </div>
+          </article>
         </div>
-        <div class="step-card">
-          <div class="step-num">2</div>
-          <h3>Daemon ingests</h3>
-          <p>Message hits the FastAPI daemon at :8787. It's indexed to ChromaDB instantly so Tempa has context.</p>
+
+        <div class="ux-parent ux-parent--violet">
+          <article class="ux-card">
+            <div class="ux-logo" aria-hidden="true">
+              <span class="ux-circle"></span><span class="ux-circle"></span><span class="ux-circle"></span><span class="ux-circle"></span>
+              <span class="ux-circle">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM8 10h8M8 14h5"/></svg>
+              </span>
+            </div>
+            <div class="ux-glass"></div>
+            <div class="ux-content">
+              <span class="ux-step-tag">Step 02</span>
+              <span class="ux-title">Daemon ingests</span>
+              <span class="ux-text">Message hits the FastAPI daemon at :8787. It's indexed to ChromaDB instantly so Tempa has context.</span>
+            </div>
+            <div class="ux-bottom">
+              <div class="ux-social">
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/></svg></span>
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6"/></svg></span>
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>
+              </div>
+              <div class="ux-more" aria-hidden="true">
+                <span class="ux-more-label">:8787</span>
+                <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+              </div>
+            </div>
+          </article>
         </div>
-        <div class="step-card">
-          <div class="step-num">3</div>
-          <h3>Agent + tools</h3>
-          <p>Coordinator reads memory, picks Varys or LangGraph, and calls Gmail, Calendar, Meet, QA, or Jira as needed.</p>
+
+        <div class="ux-parent ux-parent--solar">
+          <article class="ux-card">
+            <div class="ux-logo" aria-hidden="true">
+              <span class="ux-circle"></span><span class="ux-circle"></span><span class="ux-circle"></span><span class="ux-circle"></span>
+              <span class="ux-circle">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+              </span>
+            </div>
+            <div class="ux-glass"></div>
+            <div class="ux-content">
+              <span class="ux-step-tag">Step 03</span>
+              <span class="ux-title">Agent + tools</span>
+              <span class="ux-text">Coordinator reads memory, picks Varys or LangGraph, and calls Gmail, Calendar, Meet, QA, or Jira as needed.</span>
+            </div>
+            <div class="ux-bottom">
+              <div class="ux-social">
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></span>
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7-11-7z"/></svg></span>
+              </div>
+              <div class="ux-more" aria-hidden="true">
+                <span class="ux-more-label">Tools</span>
+                <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+              </div>
+            </div>
+          </article>
         </div>
-        <div class="step-card">
-          <div class="step-num">4</div>
-          <h3>Reply back</h3>
-          <p>Answer streams to the same channel. Risky actions queue for approval — say <em>go</em> to confirm.</p>
+
+        <div class="ux-parent ux-parent--ocean">
+          <article class="ux-card">
+            <div class="ux-logo" aria-hidden="true">
+              <span class="ux-circle"></span><span class="ux-circle"></span><span class="ux-circle"></span><span class="ux-circle"></span>
+              <span class="ux-circle">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+              </span>
+            </div>
+            <div class="ux-glass"></div>
+            <div class="ux-content">
+              <span class="ux-step-tag">Step 04</span>
+              <span class="ux-title">Reply back</span>
+              <span class="ux-text">Answer streams to the same channel. Risky actions queue for approval — say <em>go</em> to confirm.</span>
+            </div>
+            <div class="ux-bottom">
+              <div class="ux-social">
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+                <span class="ux-social-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+              </div>
+              <div class="ux-more" aria-hidden="true">
+                <span class="ux-more-label">Reply</span>
+                <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+              </div>
+            </div>
+          </article>
         </div>
       </div>
 
       <!-- Sequence diagram -->
       <div class="glass mermaid-wrap fade-in" style="margin-top: 1.5rem;">
-        <pre class="mermaid">
+        <pre class="mermaid" id="sequence-diagram">
 sequenceDiagram
     actor User
     participant Ch as WhatsApp / Slack / Dashboard
@@ -946,22 +1411,128 @@ sequenceDiagram
   </footer>
 
   <script>
-    /* Mermaid */
-    mermaid.initialize({
-      startOnLoad: true,
-      theme: 'dark',
-      themeVariables: {
-        primaryColor: '#1E293B',
-        primaryTextColor: '#F8FAFC',
-        primaryBorderColor: '#5b8def',
-        lineColor: '#3d4f6f',
-        secondaryColor: '#1e1830',
-        tertiaryColor: '#0F172A',
-        fontFamily: "'DM Sans', system-ui, sans-serif",
-        fontSize: '13px',
-      },
-      sequence: { actorMargin: 36, messageMargin: 24, mirrorActors: false },
+    var THEME_KEY = 'tempa-arch-theme';
+
+    function getTheme() {
+      return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    }
+
+    function mermaidConfig(theme) {
+      if (theme === 'light') {
+        return {
+          startOnLoad: false,
+          theme: 'base',
+          themeVariables: {
+            primaryColor: '#e2e8f0',
+            primaryTextColor: '#0f172a',
+            primaryBorderColor: '#3b6fd4',
+            lineColor: '#94a3b8',
+            secondaryColor: '#f1f5f9',
+            tertiaryColor: '#ffffff',
+            actorTextColor: '#0f172a',
+            actorBorder: '#3b6fd4',
+            actorBkg: '#ffffff',
+            signalColor: '#0f172a',
+            signalTextColor: '#0f172a',
+            labelBoxBkgColor: '#e2e8f0',
+            labelBoxBorderColor: '#94a3b8',
+            labelTextColor: '#0f172a',
+            noteBkgColor: '#fef9c3',
+            noteTextColor: '#0f172a',
+            fontFamily: "'DM Sans', system-ui, sans-serif",
+            fontSize: '13px',
+          },
+          sequence: { actorMargin: 36, messageMargin: 24, mirrorActors: false },
+        };
+      }
+      return {
+        startOnLoad: false,
+        theme: 'dark',
+        themeVariables: {
+          primaryColor: '#1E293B',
+          primaryTextColor: '#F8FAFC',
+          primaryBorderColor: '#5b8def',
+          lineColor: '#3d4f6f',
+          secondaryColor: '#1e1830',
+          tertiaryColor: '#0F172A',
+          fontFamily: "'DM Sans', system-ui, sans-serif",
+          fontSize: '13px',
+        },
+        sequence: { actorMargin: 36, messageMargin: 24, mirrorActors: false },
+      };
+    }
+
+    var mermaidSource = null;
+
+    async function renderMermaid() {
+      var el = document.getElementById('sequence-diagram');
+      if (!el || typeof mermaid === 'undefined') return;
+      if (mermaidSource === null) mermaidSource = el.textContent.trim();
+      el.textContent = mermaidSource;
+      el.removeAttribute('data-processed');
+      mermaid.initialize(mermaidConfig(getTheme()));
+      await mermaid.run({ nodes: [el] });
+    }
+
+    function updateThemeToggleLabel(theme) {
+      var btn = document.getElementById('theme-toggle');
+      if (!btn) return;
+      btn.setAttribute('aria-label', theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+    }
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem(THEME_KEY, theme);
+      updateThemeToggleLabel(theme);
+      renderMermaid();
+    }
+
+    document.getElementById('theme-toggle').addEventListener('click', function () {
+      applyTheme(getTheme() === 'dark' ? 'light' : 'dark');
     });
+
+    updateThemeToggleLabel(getTheme());
+    renderMermaid();
+
+    /* Hero video scroll reveal: 1:1 square → full-bleed → shrink to 0 */
+    (function () {
+      var stage = document.getElementById('hero-video-stage');
+      var frame = document.getElementById('hero-video-frame');
+      var hint = document.getElementById('scroll-hint');
+      if (!stage || !frame) return;
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+      var ticking = false;
+
+      function update() {
+        ticking = false;
+        var total = stage.offsetHeight - window.innerHeight;
+        if (total <= 0) return;
+        var p = Math.min(1, Math.max(0, -stage.getBoundingClientRect().top / total));
+
+        // scale that makes the square fully cover the viewport (both dimensions)
+        var base = frame.offsetWidth || 1;
+        var cover = (Math.max(window.innerWidth, window.innerHeight) / base) * 1.08;
+
+        var scale;
+        if (p < 0.4)      scale = 1 + (cover - 1) * (p / 0.4);   // grow to full page
+        else if (p < 0.6) scale = cover;                         // dwell at full page
+        else              scale = cover * (1 - (p - 0.6) / 0.4); // shrink toward 0
+
+        scale = Math.max(0, scale);
+        frame.style.transform = 'scale(' + scale.toFixed(4) + ')';
+        frame.style.borderRadius = (24 / Math.max(scale, 0.001)) + 'px';
+        if (hint) hint.style.opacity = p > 0.04 ? '0' : '1';
+      }
+
+      function onScroll() {
+        if (!ticking) { ticking = true; requestAnimationFrame(update); }
+      }
+
+      window.addEventListener('scroll', onScroll, { passive: true });
+      window.addEventListener('resize', onScroll);
+      update();
+    })();
 
     /* Scroll fade-in */
     const obs = new IntersectionObserver(
