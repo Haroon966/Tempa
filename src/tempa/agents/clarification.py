@@ -22,11 +22,30 @@ _TIME_HINT_RE = re.compile(
 CLARIFICATION_INSTRUCTION = (
     "If the user's request cannot be completed without missing details "
     "(recipient, time, repo URL, issue key, file path, etc.), ask one clear "
-    "question stating exactly what you need. Never invent or assume missing facts."
+    "question stating exactly what you need. Never invent or assume missing facts. "
+    "Never ask for credentials, passwords, tokens, or API keys. "
+    "If they named a known product/app, shared a Jira issue link, or a GitHub PR/repo, "
+    "use that context and investigate — do not ask for steps you can infer."
 )
 
 
-def clarification_response(question: str) -> dict[str, Any]:
+def clarification_response(
+    question: str,
+    *,
+    context: dict[str, Any] | None = None,
+    slot: str = "",
+    hint: str = "",
+    register_open: bool = False,
+) -> dict[str, Any]:
+    if register_open:
+        from tempa.rag.procedural import _infer_slot_from_question, register_open_clarification
+
+        register_open_clarification(
+            question,
+            slot=slot or _infer_slot_from_question(question),
+            context=context,
+            hint=hint,
+        )
     return {
         "response": question,
         "sources": [],
@@ -34,6 +53,27 @@ def clarification_response(question: str) -> dict[str, Any]:
         "pending_actions": [],
         "artifacts": [],
     }
+
+
+def apply_durable_slot_fills(user_message: str, context: dict[str, Any]) -> None:
+    """Fill missing slots from durable memory into context (mutates context)."""
+    from tempa.rag.procedural import find_default_repo, find_person_email
+
+    combined = _combined_text(user_message, context)
+    if _wants_send_email(user_message) and not _has_email_address(combined) and not context.get(
+        "known_recipient_email"
+    ):
+        hint = _name_hint_from_combined(combined)
+        if hint:
+            email = find_person_email(hint)
+            if email:
+                context["known_recipient_email"] = email
+                context["known_recipient_name"] = hint
+
+    if not _has_repo_target(combined) and not context.get("known_repo"):
+        repo = find_default_repo()
+        if repo:
+            context["known_repo"] = repo
 
 
 def _combined_text(user_message: str, context: dict[str, Any]) -> str:
@@ -88,7 +128,8 @@ def detect_missing_context(user_message: str, context: dict[str, Any] | None = N
     if not text:
         return None
 
-    ctx = dict(context or {})
+    # Mutate caller's context in place so durable slot fills stick for planners.
+    ctx = context if isinstance(context, dict) else {}
     combined = _combined_text(text, ctx)
     lower = text.lower()
 
@@ -106,11 +147,23 @@ def detect_missing_context(user_message: str, context: dict[str, Any] | None = N
     if is_go_signal(text) or is_casual_greeting(text):
         return None
 
-    if _wants_send_email(text) and not _has_email_address(combined):
+    if _wants_send_email(text) and not _has_email_address(combined) and not ctx.get(
+        "known_recipient_email"
+    ):
         hint = _name_hint_from_combined(combined)
-        if hint:
+        try:
+            from tempa.rag.procedural import find_person_email
+
+            email = find_person_email(hint) if hint else None
+        except Exception:
+            email = None
+        if email:
+            ctx["known_recipient_email"] = email
+            ctx["known_recipient_name"] = hint
+        elif hint:
             return f"You mentioned {hint} — what's their email address?"
-        return "Who should I send the email to? Please share the recipient's email address."
+        else:
+            return "Who should I send the email to? Please share the recipient's email address."
 
     from tempa.channels.calendar.events import wants_create_event, wants_send_calendar_invite
 
@@ -128,8 +181,17 @@ def detect_missing_context(user_message: str, context: dict[str, Any] | None = N
         any(k in lower for k in ("scan repo", "scan this", "repo scan", "branch scan"))
         and any(k in lower for k in ("scan", "qa", "audit", "check"))
     )
-    if scan_intent and not _has_repo_target(combined):
-        return "Which repository should I scan? Share the GitHub URL or owner/repo name."
+    if scan_intent and not _has_repo_target(combined) and not ctx.get("known_repo"):
+        try:
+            from tempa.rag.procedural import find_default_repo
+
+            repo = find_default_repo()
+        except Exception:
+            repo = None
+        if repo:
+            ctx["known_repo"] = repo
+        else:
+            return "Which repository should I scan? Share the GitHub URL or owner/repo name."
 
     if wants_jira(text) and not extract_jira_issue_key(text):
         if any(
@@ -149,11 +211,19 @@ def detect_missing_context(user_message: str, context: dict[str, Any] | None = N
     if pc_write_intent and not re.search(r"[/\\][\w.\-/]+|\.\w{1,6}\b", text):
         return "Which file path should I use? Please provide the full path or filename."
 
-    slack_send = any(k in lower for k in ("message ", "dm ", "slack ")) and any(
+    slack_send = any(k in lower for k in ("message ", "dm ", "slack ", "messege")) and any(
         k in lower for k in ("send", "tell", "notify", "ping")
     )
     if slack_send and not re.search(r"<@[A-Z0-9]+>|#\w+|channel ", text, re.I):
-        if not any(k in lower for k in ("team", "channel", "everyone")):
+        from tempa.channels.slack.recipients import extract_slack_recipient_name
+        from tempa.core.cross_channel_conversation import last_assistant_text
+
+        # "send this to Zeeshan" — recipient name + last reply is enough
+        if extract_slack_recipient_name(text) and last_assistant_text(ctx):
+            return None
+        if not any(k in lower for k in ("team", "channel", "everyone")) and not extract_slack_recipient_name(
+            text
+        ):
             return "Who should I message on Slack — a person, channel, or thread?"
 
     return None

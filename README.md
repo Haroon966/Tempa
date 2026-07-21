@@ -387,11 +387,12 @@ In-repo **Baileys bridge** at [`services/whatsapp-bridge/`](services/whatsapp-br
 - `app_mentions:read`
 - `chat:write`
 - `im:history`
-- `im:read` ← **missing on many setups; required for DMs**
+- `im:read` ← required to list existing DMs
+- `im:write` ← **required to open a new DM** (`conversations.open`); without it, “send this to …” fails
 - `users:read`
 - `channels:history`, `channels:read` (for @mentions in public channels)
 
-**Required for DMs:** App Home → **Messages Tab** ON + allow user messages. **Event Subscriptions** → bot events **`message.im`** and **`app_mention`**. After changing scopes/events, **reinstall the app** to the workspace.
+**Required for DMs:** App Home → **Messages Tab** ON + allow user messages. **Event Subscriptions** → bot events **`message.im`** and **`app_mention`**. After changing scopes/events, **reinstall the app** to the workspace (OAuth → Install App).
 
 DM the bot or `@mention` it in a channel. Outbound sends from the coordinator go through pending-action approval.
 

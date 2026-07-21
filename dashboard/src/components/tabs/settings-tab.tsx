@@ -6,6 +6,7 @@ import {
   MessageCircleIcon,
   RefreshCwIcon,
   TicketIcon,
+  UploadCloudIcon,
   VideoIcon,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -41,7 +42,10 @@ import {
   syncAll,
   startGmailOAuth,
   startGoogleOAuth,
+  fetchYoutubeStatus,
+  runYoutubeBackfill,
   type WhatsAppStatus,
+  type YoutubeUploadStatus,
 } from "@/lib/api"
 
 export function SettingsTab({
@@ -89,6 +93,9 @@ export function SettingsTab({
   const [jiraProject, setJiraProject] = useState("")
   const [jiraBusy, setJiraBusy] = useState(false)
   const [identitySyncBusy, setIdentitySyncBusy] = useState(false)
+
+  const [youtube, setYoutube] = useState<YoutubeUploadStatus | null>(null)
+  const [youtubeBusy, setYoutubeBusy] = useState(false)
 
   const googleCredsConfigured =
     "credentials_configured" in google && google.credentials_configured === true
@@ -200,6 +207,40 @@ export function SettingsTab({
   useEffect(() => {
     void loadMeetStatus()
   }, [loadMeetStatus])
+
+  const loadYoutube = useCallback(async () => {
+    try {
+      setYoutube(await fetchYoutubeStatus())
+    } catch {
+      setYoutube(null)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadYoutube()
+  }, [loadYoutube])
+
+  async function handleYoutubeBackfill() {
+    setYoutubeBusy(true)
+    try {
+      const r = await runYoutubeBackfill()
+      if (r.status === "disabled") {
+        toast.error("Enable MEET_YOUTUBE_UPLOAD_ENABLED first")
+      } else if (r.status === "no_credentials") {
+        toast.error("Reconnect Google to grant YouTube upload access")
+      } else {
+        toast.success(
+          `Uploaded ${r.uploaded}, already on YouTube ${r.already}, failed ${r.failed} of ${r.total}`,
+        )
+      }
+      await loadYoutube()
+      onRefresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "YouTube backfill failed")
+    } finally {
+      setYoutubeBusy(false)
+    }
+  }
 
   useEffect(() => {
     if (jira?.base_url) setJiraBaseUrl(String(jira.base_url))
@@ -811,6 +852,82 @@ export function SettingsTab({
             </Button>
             <Button variant="outline" className="cursor-pointer" onClick={() => void handleConsentRevoke()} disabled={consentBusy || consent !== true}>
               Revoke
+            </Button>
+          </div>
+        </PanelCard>
+
+        {/* YouTube upload */}
+        <PanelCard
+          title="YouTube upload"
+          description="Upload meeting recordings to YouTube, then remove the local copy"
+          icon={UploadCloudIcon}
+          action={
+            <StatusBadge
+              status={
+                !youtube?.enabled
+                  ? "disconnected"
+                  : youtube.scope_ok
+                    ? "connected"
+                    : "degraded"
+              }
+            />
+          }
+          contentClassName="flex flex-col gap-3"
+        >
+          <p className="text-sm text-muted-foreground">
+            Upload enabled:{" "}
+            <span className="font-semibold text-foreground">
+              {youtube?.enabled ? "yes" : "no"}
+            </span>
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Privacy:{" "}
+            <span className="font-semibold text-foreground">{youtube?.privacy ?? "unlisted"}</span>
+          </p>
+          <p className="text-sm text-muted-foreground">
+            YouTube access:{" "}
+            <span className="font-semibold text-foreground">
+              {youtube?.scope_ok ? "granted" : "not granted"}
+            </span>
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Local videos pending upload:{" "}
+            <span className="font-semibold text-foreground">
+              {youtube?.pending_local_videos ?? 0}
+            </span>
+          </p>
+          {!youtube?.enabled && (
+            <p className="text-xs text-muted-foreground">
+              Set <code>MEET_YOUTUBE_UPLOAD_ENABLED=true</code> and{" "}
+              <code>MEET_YOUTUBE_PRIVACY=unlisted</code> in <code>.env</code>, then restart the
+              daemon.
+            </p>
+          )}
+          {youtube?.enabled && !youtube.scope_ok && (
+            <p className="text-xs text-muted-foreground">
+              Reconnect Google in the Calendar panel so the token includes YouTube upload access.
+              YouTube Data API v3 must be enabled in Google Cloud Console.
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              className="cursor-pointer"
+              onClick={() => void handleYoutubeBackfill()}
+              disabled={
+                youtubeBusy ||
+                !youtube?.enabled ||
+                !youtube?.scope_ok ||
+                (youtube?.pending_local_videos ?? 0) === 0
+              }
+            >
+              {youtubeBusy ? (
+                <>
+                  <RefreshCwIcon className="mr-1.5 size-3.5 animate-spin" />
+                  Uploading…
+                </>
+              ) : (
+                "Upload all & remove local"
+              )}
             </Button>
           </div>
         </PanelCard>

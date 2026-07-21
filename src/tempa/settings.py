@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     slack_owner_user_id: str = ""
     slack_allowed_user_ids: str = ""
     slack_allow_all: bool = False
+    slack_presence_channel_id: str = "C0AU4DPFG21"
+    slack_presence_channel_name: str = "presence"
+    slack_presence_llm_model: str = "llama-3.1-8b-instant"
     vector_db: str = "chroma"
     calendar_poll_seconds: int = 30
     meet_trigger_before_minutes: int = 2
@@ -43,6 +46,7 @@ class Settings(BaseSettings):
     meet_retention_days: int = 90
     meet_auto_send_summary_whatsapp: bool = True
     meet_auto_send_summary_slack: bool = True
+    meet_punjab_daily_sync_slack_channel: str = "region-punjab"
     meet_admission_timeout_seconds: int = 600
     meet_record_video: bool = True
     meet_record_video_width: int = 1280
@@ -54,6 +58,8 @@ class Settings(BaseSettings):
     meet_virtual_camera_enabled: bool = True
     meet_virtual_camera_path: Path = Path("config/assets/animated_tempa.mjpeg")
     meet_av_test_enabled: bool = False
+    meet_youtube_upload_enabled: bool = False
+    meet_youtube_privacy: str = "unlisted"
     meet_calendar_lookback_hours: int = 12
     meet_copilot_whatsapp_notify: bool = False
     meet_chat_prefix: str = "[via Tempa]"
@@ -71,7 +77,16 @@ class Settings(BaseSettings):
     tempa_qa_deep_review_mode: str = "lite"
     anthropic_api_key: str = ""
     tempa_qa_claude_model: str = "claude-sonnet-4-20250514"
+    cursor_api_key: str = ""
+    tempa_qa_cursor_model: str = "composer-2.5"
+    tempa_cursor_progress_interval_sec: int = 120
+    tempa_cursor_job_timeout_sec: int = 900
+    tempa_cursor_max_parallel: int = 8
+    tempa_cursor_ci_fix_max: int = 3
+    tempa_cursor_worktree_root: Path = Path("/repos/tempa-worktrees")
+    tempa_cursor_escalate_slack_ids: str = ""
     tempa_coordinator: str = "langgraph"
+    tempa_adk_spike: bool = False
     varys_orchestrator_enabled: bool = False
     varys_tick_seconds: int = 270
     varys_harness_db: Path = Path("./data/harness/harness.db")
@@ -156,9 +171,11 @@ class Settings(BaseSettings):
             self.sessions_dir / "gmail",
             self.sessions_dir / "whatsapp",
             self.sessions_dir / "slack",
+            self.sessions_dir / "presence",
             self.sessions_dir / "jira",
             self.sessions_dir / "qa",
             self.tempa_data_dir / "qa" / "worktrees",
+            self.tempa_data_dir / "cursor_jobs",
             self.db_path.parent,
             self.varys_harness_db.parent,
             self.varys_vault_dir,

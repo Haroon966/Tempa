@@ -184,6 +184,11 @@ def _build_app() -> AsyncApp:
             await ack()
             return
         text = str(event.get("text") or "")
+        # app_mention owns @Tempa messages — skip here to avoid double replies in threads.
+        bot_uid = (_slack_auth_cache or {}).get("bot_user_id")
+        if bot_uid and f"<@{bot_uid}>" in text:
+            await ack()
+            return
         if not _is_dm_event(event):
             if should_handle_channel_thread(event, text):
                 await ack()

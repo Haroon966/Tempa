@@ -60,6 +60,39 @@ def test_detect_skips_casual_greeting():
     assert detect_missing_context("hello") is None
 
 
+def test_bug_report_with_product_name_does_not_force_repo_question():
+    """Plain product bug reports are not scan-intent — don't demand a GitHub URL."""
+    assert (
+        detect_missing_context(
+            "In the compliance tracker, when adding a teacher to PEF-SIS that teacher vanishes"
+        )
+        is None
+    )
+
+
+def test_send_this_message_to_person_uses_last_assistant():
+    """Don't re-ask for body/channel when forwarding the last reply to a named person."""
+    ctx = {
+        "last_assistant_message": (
+            "*QA results for `Orenda-Project/compliancetracker`*\n\n"
+            "Open findings (18): 2 CRITICAL, 9 HIGH."
+        ),
+        "conversation_messages": [
+            {
+                "role": "assistant",
+                "text": "*QA results*\n\nOpen findings (18).",
+            }
+        ],
+    }
+    assert detect_missing_context("send this messege to zeeshan usaid", ctx) is None
+
+
+def test_send_message_still_asks_for_recipient_without_name():
+    q = detect_missing_context("send this message on slack")
+    assert q is not None
+    assert "who" in q.lower() or "slack" in q.lower()
+
+
 def test_coordinator_asks_when_context_missing():
     import asyncio
     from unittest.mock import patch

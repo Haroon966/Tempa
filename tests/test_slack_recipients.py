@@ -13,11 +13,55 @@ from tempa.channels.slack.recipients import (
 )
 
 
+@pytest.mark.asyncio
+async def test_channel_agent_sends_last_assistant_reply_to_named_recipient():
+    """'send this message to X' reuses the last QA/report reply — no re-ask for body."""
+    from tempa.agents.specialists import run_channel_agent
+
+    qa_report = (
+        "*QA results for `Orenda-Project/compliancetracker`*\n\n"
+        "Branch health: 8 branches grade A.\n"
+        "Open findings (18): 2 CRITICAL, 9 HIGH."
+    )
+    with (
+        patch("tempa.channels.slack.recipients.resolve_slack_recipient") as mock_resolve,
+        patch("tempa.channels.slack.outbound.open_dm_for_user", new_callable=AsyncMock) as mock_open,
+        patch("tempa.channels.slack.outbound.send_slack_message", new_callable=AsyncMock) as mock_send,
+    ):
+        mock_resolve.return_value = {"user_id": "U999", "name": "Zeeshan Usaid"}
+        mock_open.return_value = "D999"
+        mock_send.return_value = {"status": "sent"}
+
+        result = await run_channel_agent(
+            "send this messege to zeeshan usaid",
+            {
+                "channel": "slack",
+                "slack_privileged": True,
+                "inbound_slack": True,
+                "user_message": "send this messege to zeeshan usaid",
+                "last_assistant_message": qa_report,
+                "conversation_messages": [
+                    {"role": "assistant", "text": qa_report},
+                    {"role": "user", "text": "send this messege to zeeshan usaid"},
+                ],
+            },
+        )
+
+    payload = __import__("json").loads(result)
+    assert payload["status"] == "sent"
+    mock_send.assert_awaited_once()
+    assert mock_send.await_args.args[0] == "D999"
+    assert "QA results" in mock_send.await_args.args[1]
+    assert "CRITICAL" in mock_send.await_args.args[1]
+
+
 def test_extract_slack_recipient_name():
     assert extract_slack_recipient_name("send message to Sameer saying hello") == "Sameer"
     assert extract_slack_recipient_name("dm john saying hi") == "john"
     assert extract_slack_recipient_name("check latest message from varys what it saying") == ""
     assert extract_slack_recipient_name("message to Sameer saying hello") == "Sameer"
+    assert extract_slack_recipient_name("send this messege to zeeshan usaid") == "zeeshan usaid"
+    assert extract_slack_recipient_name("send this to Zeeshan") == "Zeeshan"
 
 
 def test_wants_slack_send_intent():
@@ -26,6 +70,7 @@ def test_wants_slack_send_intent():
     assert wants_slack_send_intent("check latest message of varys what it saying") is False
     assert wants_slack_send_intent("tell me latest message from varys in regionpunjab-internal channel") is False
     assert wants_slack_send_intent("send this message in region punjab channel") is True
+    assert wants_slack_send_intent("send this messege to zeeshan usaid") is True
 
 
 def test_extract_slack_channel_target():

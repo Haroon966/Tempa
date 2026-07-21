@@ -35,7 +35,12 @@ def should_handle_channel_thread(event: dict[str, Any], text: str) -> bool:
         return False
 
     from tempa.channels.slack.conversation import bot_participated_in_thread
+    from tempa.channels.slack.cursor_threads import is_cursor_thread
     from tempa.channels.slack.varys_bridge import enrich_slack_context
+
+    # Cursor-pinned threads: handle every human follow-up (no @mention required).
+    if is_cursor_thread(channel_id, thread_ts):
+        return True
 
     ctx = enrich_slack_context(event, {})
     conv_key = str(ctx.get("slack_conversation_key") or thread_ts)

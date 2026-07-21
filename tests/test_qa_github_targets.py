@@ -36,6 +36,43 @@ def test_parse_github_target_shorthand_and_branch():
     assert target.branch == "develop"
 
 
+def test_parse_github_target_main_branch_nl():
+    """'main branch' / typo 'completly' must not become the branch name."""
+    target = parse_github_target(
+        "review and test this main github.com/AliAhmed-004/gaming-adda main branch completly"
+    )
+    assert target.repo == "AliAhmed-004/gaming-adda"
+    assert target.branch == "main"
+    assert target.pr_number is None
+
+
+def test_parse_github_target_main_branch_of_repo():
+    target = parse_github_target("review main branch of github.com/acme/widgets")
+    assert target.repo == "acme/widgets"
+    assert target.branch == "main"
+
+
+def test_resolve_repo_alias_from_product_name(monkeypatch: pytest.MonkeyPatch):
+    """'compliance tracker' should resolve to a known allowed repo."""
+    _refresh_settings(monkeypatch, GITHUB_TOKEN="ghp_test", GITHUB_REPOS="")
+    add_repo("Orenda-Project/compliancetracker", source="test")
+    try:
+        from tempa.qa.github.parse import resolve_repo_alias
+
+        assert (
+            resolve_repo_alias(
+                "In the compliance tracker, adding a teacher to PEF-SIS vanishes"
+            )
+            == "Orenda-Project/compliancetracker"
+        )
+        target = parse_github_target(
+            "In the compliance tracker, teachers vanish when added to PEF-SIS"
+        )
+        assert target.repo == "Orenda-Project/compliancetracker"
+    finally:
+        remove_repo("Orenda-Project/compliancetracker")
+
+
 def test_wants_scan_all():
     assert wants_scan_all("please scan all repos")
     assert not wants_scan_all("scan acme/widgets")

@@ -149,9 +149,34 @@ def enrich_conversation_context(
             for row in turns
             if row.get("role") == "user"
         ][-8:]
+        # Last assistant reply — used for "send this" / "forward that" follow-ups.
+        for row in reversed(turns):
+            if row.get("role") != "assistant":
+                continue
+            text = str(row.get("text") or row.get("content") or "").strip()
+            if len(text) < 20:
+                continue
+            ctx["last_assistant_message"] = text
+            ctx.setdefault("draft_reply", text)
+            break
     else:
         ctx.setdefault("conversation_messages", [])
     return ctx
+
+
+def last_assistant_text(context: dict[str, Any] | None = None, *, min_len: int = 20) -> str:
+    """Return the most recent substantial assistant turn from context conversation."""
+    ctx = dict(context or {})
+    cached = str(ctx.get("last_assistant_message") or ctx.get("draft_reply") or "").strip()
+    if len(cached) >= min_len:
+        return cached
+    for row in reversed(ctx.get("conversation_messages") or ctx.get("recent_conversation") or []):
+        if not isinstance(row, dict) or row.get("role") != "assistant":
+            continue
+        text = str(row.get("text") or row.get("content") or "").strip()
+        if len(text) >= min_len:
+            return text
+    return ""
 
 
 def format_conversation_lines(turns: list[dict[str, Any]], *, limit: int = 16) -> list[str]:

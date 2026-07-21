@@ -132,9 +132,61 @@ async def handle_inbound_slack(
     _schedule_ingest(event, user_id=user_id, channel_id=channel_id)
 
     from tempa.channels.jira.tickets import handle_jira_ticket_message, should_route_to_jira_ticket, ticket_feature_enabled
+    from tempa.channels.slack.cursor_threads import handle_cursor_thread_message
     from tempa.channels.slack.varys_bridge import enrich_slack_context
 
     slack_ctx = enrich_slack_context(event, {"slack_privileged": slack_privileged})
+
+    # Pinned Cursor threads: enqueue durable job; worker posts the real answer.
+    from tempa.channels.slack.cursor_threads import is_cursor_thread
+
+    if is_cursor_thread(channel_id, thread_ts):
+        slack_ctx["slack_message_ts"] = message_ts
+        slack_ctx["user_id"] = user_id
+        cursor_reply = await handle_cursor_thread_message(text, slack_ctx)
+        if cursor_reply is not None:
+            await _post_slack_reply(channel_id, cursor_reply, reply_thread=reply_thread, say=say)
+            record_conversation_turn(
+                role="user",
+                text=text,
+                user_id=user_id,
+                channel_id=channel_id,
+                message_id=message_ts,
+                thread_ts=thread_ts,
+                conversation_key=conv_key,
+            )
+            record_conversation_turn(
+                role="assistant",
+                text=cursor_reply,
+                user_id=user_id,
+                channel_id=channel_id,
+                thread_ts=reply_thread,
+                conversation_key=conv_key,
+            )
+            return {
+                "handled": 1,
+                "reply": cursor_reply,
+                "skipped_coordinator": True,
+                "user": user_id,
+                "channel": channel_id,
+                "cursor_thread": True,
+            }
+        # Pinned thread must never fall through to Jira/coordinator.
+        await _post_slack_reply(
+            channel_id,
+            "_Tempa hit a problem: could not start the Cursor job._",
+            reply_thread=reply_thread,
+            say=say,
+        )
+        return {
+            "handled": 1,
+            "skipped_coordinator": True,
+            "user": user_id,
+            "channel": channel_id,
+            "cursor_thread": True,
+            "error": "enqueue_failed",
+        }
+
     if ticket_feature_enabled() and should_route_to_jira_ticket(text, slack_ctx):
         ticket_reply = await handle_jira_ticket_message(text, slack_ctx)
         if ticket_reply:

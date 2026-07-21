@@ -22,6 +22,11 @@ services:
       - ./src:/app/src
       - ./dashboard/dist:/app/dashboard/dist
       - ./data/huggingface:/root/.cache/huggingface
+      # Compliance Tracker checkout for Cursor-pinned Slack threads (local agent).
+      # rw: thread asks include code fixes / push; :ro blocked Agent.prompt writes.
+      - ${COMPLIANCETRACKER_PATH:-/home/olufsen/compliancetracker-main}:/repos/compliancetracker
+      # Isolated git worktrees for parallel Tempa Cursor jobs
+      - ${TEMPA_CURSOR_WORKTREE_HOST:-./data/tempa-worktrees}:/repos/tempa-worktrees
       # Claude Code CLI + auth (host must have `claude` installed and logged in)
       - ${CLAUDE_CLI_BIN:-/home/olufsen/.local/share/claude/versions/2.1.186}:/usr/local/bin/claude:ro
       - ${CLAUDE_CONFIG_DIR:-/home/olufsen/.claude}:/root/.claude

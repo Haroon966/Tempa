@@ -40,6 +40,9 @@ const MailTab = lazy(() =>
 const QaTab = lazy(() =>
   import("@/components/tabs/qa-tab").then((m) => ({ default: m.QaTab })),
 )
+const PresenceTab = lazy(() =>
+  import("@/components/tabs/presence-tab").then((m) => ({ default: m.PresenceTab })),
+)
 
 function TabFallback() {
   return <Skeleton className="h-64 w-full rounded-2xl bg-muted" />
@@ -134,6 +137,14 @@ export default function App() {
           element={
             <LazyRoute>
               <QaTab />
+            </LazyRoute>
+          }
+        />
+        <Route
+          path="presence"
+          element={
+            <LazyRoute>
+              <PresenceTab />
             </LazyRoute>
           }
         />

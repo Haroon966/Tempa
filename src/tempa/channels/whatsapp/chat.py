@@ -160,7 +160,7 @@ def search_chat_memory(query: str, *, top_k: int = 5) -> list[dict[str, Any]]:
         meta = row.get("metadata") or {}
         tags = str(meta.get("tags", ""))
         tool = str(meta.get("tool", ""))
-        if "semantic" in tags:
+        if "semantic" in tags and "knowledge" not in tags:
             continue
         if tool == "core" and "reply" in tags:
             continue

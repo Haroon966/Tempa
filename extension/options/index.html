@@ -6,11 +6,20 @@
   <link rel="stylesheet" href="../shared/theme.css" />
   <style>
     body { max-width: 520px; margin: 24px auto; padding: 0 16px; }
-    label { display: block; margin-top: 12px; color: var(--tempa-muted); font-size: 13px; }
+    label { display: block; margin-top: 12px; color: var(--muted); font-size: 13px; }
     label input[type="checkbox"] { width: auto; margin-right: 8px; }
-    button { margin-top: 16px; }
-    #status { margin-top: 12px; color: var(--tempa-muted); }
-    hr { border: none; border-top: 1px solid var(--tempa-midnight-border); margin: 24px 0; }
+    button {
+      margin-top: 16px;
+      padding: 8px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+    button:hover { background: var(--accent-hover); }
+    #status { margin-top: 12px; color: var(--muted); }
+    hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
   </style>
 </head>
 <body>

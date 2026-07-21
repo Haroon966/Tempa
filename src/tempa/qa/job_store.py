@@ -53,6 +53,7 @@ def enqueue_scan(
     job_type: str = "branch_scan",
     pr_number: int | None = None,
     installation_id: int | None = None,
+    priority: bool = False,
     extra: dict[str, Any] | None = None,
 ) -> str:
     job_id = str(uuid.uuid4())
@@ -63,16 +64,23 @@ def enqueue_scan(
         "job_type": job_type,
         "pr_number": pr_number,
         "installation_id": installation_id,
+        "priority": priority,
         "status": "queued",
         "enqueued_at": _now_iso(),
         **(extra or {}),
     }
+    line = json.dumps(row, ensure_ascii=False) + "\n"
     with _lock:
         statuses = _read_statuses()
         statuses[job_id] = dict(row)
         _write_statuses(statuses)
-        with _queue_path().open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        path = _queue_path()
+        if priority:
+            existing = path.read_text(encoding="utf-8") if path.exists() else ""
+            path.write_text(line + existing, encoding="utf-8")
+        else:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line)
     return job_id
 
 

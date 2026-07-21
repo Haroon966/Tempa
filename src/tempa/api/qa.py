@@ -100,14 +100,26 @@ async def api_qa_findings(
     repo: str | None = None,
     branch: str | None = None,
     status: str | None = "open",
+    scan_job_id: str | None = None,
     limit: int = 100,
 ):
-    return {"findings": list_findings(repo=repo, branch=branch, status=status, limit=limit)}
+    return {
+        "findings": list_findings(
+            repo=repo, branch=branch, status=status, scan_job_id=scan_job_id, limit=limit
+        )
+    }
 
 
 @router.get("/qa/jobs")
 async def api_qa_jobs(limit: int = 50):
     return {"jobs": list_jobs(limit=limit)}
+
+
+@router.get("/cursor/jobs")
+async def api_cursor_jobs(limit: int = 50):
+    from tempa.channels.slack import cursor_jobs as cursor_job_store
+
+    return {"jobs": cursor_job_store.list_jobs(limit=limit)}
 
 
 @router.get("/qa/repos")
@@ -210,7 +222,8 @@ async def api_qa_agent_playbook(finding_id: str, target: str = "claude"):
 
 @router.post("/qa/deep-review")
 async def api_qa_deep_review(body: DeepReviewRequest):
-    """Legacy alias — returns agent playbook instructions instead of running Claude API."""
+    if not qa_enabled():
+        raise HTTPException(status_code=503, detail="qa_disabled")
     repo = body.repo
     pr_number = body.pr_number
     if body.pr_url and not repo:
@@ -221,9 +234,18 @@ async def api_qa_deep_review(body: DeepReviewRequest):
             repo, pr_number = m.group(1), int(m.group(2))
     if not repo:
         raise HTTPException(status_code=400, detail="repo_required")
-    return {
-        "status": "use_terminal_agent",
-        "message": "Deep review runs in Claude Code or Cursor. Use GET /api/qa/findings/{id}/agent-playbook",
-        "repo": repo,
-        "pr_number": pr_number,
-    }
+    if not pr_number:
+        raise HTTPException(status_code=400, detail="pr_number_required")
+
+    from tempa.qa.github.parse import GitHubTarget
+    from tempa.qa.scan_request import handle_github_scan_request
+
+    result = handle_github_scan_request(
+        body.pr_url or f"deep review PR #{pr_number} in {repo}",
+        source_channel="qa_dashboard",
+        requested_by="dashboard",
+        target=GitHubTarget(repo=repo, pr_number=pr_number),
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("message", "deep_review_failed"))
+    return result

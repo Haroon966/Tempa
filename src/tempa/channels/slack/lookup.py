@@ -161,14 +161,17 @@ def find_channel_by_hint(hint: str, *, client=None) -> tuple[str, str]:
         return "", ""
 
     best_score = 0
+    best_member = False
     best: tuple[str, str] = ("", "")
     for channel in _iter_channels(client):
         name = str(channel.get("name") or "")
         if not name:
             continue
         score = _channel_match_score(hint, name)
-        if score > best_score:
+        member = bool(channel.get("is_member"))
+        if score > best_score or (score == best_score and score >= 80 and member and not best_member):
             best_score = score
+            best_member = member
             best = (str(channel.get("id") or ""), name)
     if best_score >= 80:
         return best

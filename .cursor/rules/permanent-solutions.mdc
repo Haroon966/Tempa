@@ -1,0 +1,31 @@
+---
+description: Prefer permanent root-cause fixes over temporary shortcuts and bandaids.
+alwaysApply: true
+---
+
+# Permanent solutions only
+
+Always ship the lasting fix. Do not leave temporary workarounds, bandaids, or "we'll fix it later" shortcuts.
+
+## Required
+
+- Fix the root cause, not the symptom.
+- Prefer the correct architecture, data model, or API even when a hack would be smaller.
+- Remove dead paths and temporary guards once the real fix is in.
+- If a prior shortcut exists (`TODO`, `FIXME`, `hack`, `ponytail:` ceiling), replace it with the permanent fix when you touch that area.
+
+## Forbidden unless the user explicitly asks for a stopgap
+
+- Hardcoded one-off special cases that only cover the reported path
+- Swallowing errors / silent retries that hide the real failure
+- Copy-paste duplicates instead of fixing the shared function
+- Feature flags, kill switches, or comment-out blocks left as the "solution"
+- "Good enough for now" patches that will break the next caller
+
+## When a shortcut is unavoidable
+
+Only if the user asks for a temporary workaround, or an external blocker makes the permanent fix impossible right now:
+
+1. Say so clearly in the reply.
+2. Name the permanent follow-up.
+3. Do not present the shortcut as the finished solution.

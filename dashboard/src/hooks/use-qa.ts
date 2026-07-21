@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   deleteQaRepo,
+  fetchCursorJobs,
   fetchQaAgentPlaybook,
   fetchQaBranches,
   fetchQaFindings,
@@ -12,6 +13,7 @@ import {
   postQaFix,
   postQaRepo,
   postQaScan,
+  type CursorAgentJob,
   type QaAgentPlaybook,
   type QaBranchStatus,
   type QaFinding,
@@ -32,6 +34,7 @@ export function useQa(pollMs = QA_POLL_MS) {
   const [branches, setBranches] = useState<QaBranchStatus[]>([])
   const [findings, setFindings] = useState<QaFinding[]>([])
   const [jobs, setJobs] = useState<QaJob[]>([])
+  const [cursorJobs, setCursorJobs] = useState<CursorAgentJob[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const inFlight = useRef(false)
@@ -46,8 +49,9 @@ export function useQa(pollMs = QA_POLL_MS) {
         fetchQaBranches(),
         fetchQaFindings(),
         fetchQaJobs(),
+        fetchCursorJobs(),
       ])
-      const [s, r, b, f, j] = results
+      const [s, r, b, f, j, cj] = results
       if (s.status === "fulfilled") {
         setSummary((prev) => (qaResultsEqual(prev, s.value) ? prev : s.value))
       }
@@ -62,6 +66,9 @@ export function useQa(pollMs = QA_POLL_MS) {
       }
       if (j.status === "fulfilled") {
         setJobs((prev) => (qaResultsEqual(prev, j.value.jobs) ? prev : j.value.jobs))
+      }
+      if (cj.status === "fulfilled") {
+        setCursorJobs((prev) => (qaResultsEqual(prev, cj.value.jobs) ? prev : cj.value.jobs))
       }
 
       const failed = results.find((res) => res.status === "rejected")
@@ -151,6 +158,7 @@ export function useQa(pollMs = QA_POLL_MS) {
     branches,
     findings,
     jobs,
+    cursorJobs,
     loading,
     error,
     refresh,

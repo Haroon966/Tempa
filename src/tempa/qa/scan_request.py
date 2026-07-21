@@ -18,17 +18,20 @@ def repo_is_allowed(repo: str) -> bool:
     return name in list_repos()
 
 
-def enqueue_target_scan(target: GitHubTarget) -> str:
+def enqueue_target_scan(target: GitHubTarget, *, extra: dict[str, Any] | None = None) -> str:
     repo = normalize_repo(target.repo)
     if not repo:
         raise ValueError("invalid_repo")
     inst_id = installation_id_for_repo(repo)
     if target.pr_number:
+        # User-requested PR reviews jump ahead of scheduled background scans.
         return enqueue_scan(
             repo,
             pr_number=target.pr_number,
             installation_id=inst_id,
             job_type="deep_review",
+            priority=True,
+            extra={**(extra or {}), "pr_url": f"https://github.com/{repo}/pull/{target.pr_number}"},
         )
     if target.branch:
         return enqueue_scan(
@@ -36,8 +39,9 @@ def enqueue_target_scan(target: GitHubTarget) -> str:
             branch=target.branch,
             installation_id=inst_id,
             job_type="branch_scan",
+            extra=extra,
         )
-    return enqueue_scan(repo, installation_id=inst_id, job_type="repo_scan")
+    return enqueue_scan(repo, installation_id=inst_id, job_type="repo_scan", extra=extra)
 
 
 def _scan_title(target: GitHubTarget, *, add_to_allowlist: bool) -> str:
@@ -55,6 +59,8 @@ def handle_github_scan_request(
     text: str,
     *,
     source_channel: str = "coordinator",
+    requested_by: str = "",
+    trusted: bool = False,
     target: GitHubTarget | None = None,
 ) -> dict[str, Any]:
     from tempa.qa.config import qa_enabled
@@ -65,6 +71,11 @@ def handle_github_scan_request(
         return {"status": "error", "message": "GitHub is not configured. Set GITHUB_TOKEN or GitHub App credentials."}
 
     parsed = target or parse_github_target(text)
+    request_meta = {
+        "requested_by": requested_by or source_channel,
+        "source_channel": source_channel,
+        "request_message": (text or "").strip()[:500],
+    }
 
     if wants_scan_all(text) and not parsed.repo:
         repos = list_repos()
@@ -73,7 +84,7 @@ def handle_github_scan_request(
                 "status": "error",
                 "message": "No GitHub repos configured. Add repos in the QA dashboard or set GITHUB_REPOS.",
             }
-        jobs = [enqueue_target_scan(GitHubTarget(repo=r)) for r in repos]
+        jobs = [enqueue_target_scan(GitHubTarget(repo=r), extra=request_meta) for r in repos]
         return {"status": "queued", "jobs": jobs, "repos": repos}
 
     if not parsed.repo:
@@ -93,7 +104,7 @@ def handle_github_scan_request(
         }
 
     add_to_allowlist = github_uses_pat() and not repo_is_allowed(parsed.repo)
-    trusted_source = source_channel in ("qa_dashboard", "api")
+    trusted_source = trusted or source_channel in ("qa_dashboard", "api")
 
     if add_to_allowlist and not trusted_source:
         from tempa.core.pending_actions import create_pending_action
@@ -105,7 +116,7 @@ def handle_github_scan_request(
                 "branch": parsed.branch,
                 "pr_number": parsed.pr_number,
                 "add_to_allowlist": True,
-                "source_channel": source_channel,
+                **request_meta,
             },
             source_channel=source_channel,
             risk_level="medium",
@@ -124,13 +135,22 @@ def handle_github_scan_request(
         }
 
     if add_to_allowlist and trusted_source:
-        add_repo(parsed.repo, source=source_channel)
+        try:
+            add_repo(parsed.repo, source=source_channel)
+        except OSError as exc:
+            # Still queue the scan; allowlist is best-effort for trusted sources.
+            import logging
 
-    job_id = enqueue_target_scan(parsed)
+            logging.getLogger(__name__).warning(
+                "qa.allowlist write failed for %s: %s", parsed.repo, exc
+            )
+
+    job_id = enqueue_target_scan(parsed, extra=request_meta)
     return {
         "status": "queued",
         "job_id": job_id,
         "repo": parsed.repo,
         "branch": parsed.branch,
         "pr_number": parsed.pr_number,
+        "priority": bool(parsed.pr_number),
     }

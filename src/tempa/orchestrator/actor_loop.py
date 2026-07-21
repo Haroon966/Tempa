@@ -200,6 +200,20 @@ async def run_actor_loop(
                 queue = queue[: idx + 1] + _flatten_queue(new_tasks)
             else:
                 clarification = question
+                if question:
+                    try:
+                        from tempa.rag.procedural import (
+                            _infer_slot_from_question,
+                            register_open_clarification,
+                        )
+
+                        register_open_clarification(
+                            question,
+                            slot=_infer_slot_from_question(question),
+                            context=ctx,
+                        )
+                    except Exception:
+                        pass
                 await event_bus.publish_json(
                     "orchestrator",
                     "activity",

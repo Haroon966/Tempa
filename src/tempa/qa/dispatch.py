@@ -50,7 +50,13 @@ def handle_push(payload: dict[str, Any]) -> None:
         return
     branch = ref.removeprefix("refs/heads/")
     inst_id = int((payload.get("installation") or {}).get("id") or 0)
-    enqueue_scan(repo, branch=branch, installation_id=inst_id or None, job_type="branch_scan")
+    enqueue_scan(
+        repo,
+        branch=branch,
+        installation_id=inst_id or None,
+        job_type="branch_scan",
+        extra={"requested_by": "github", "source_channel": "github_webhook"},
+    )
 
 
 def handle_pull_request(payload: dict[str, Any]) -> None:
@@ -64,6 +70,12 @@ def handle_pull_request(payload: dict[str, Any]) -> None:
     branch = str((pr.get("head") or {}).get("ref") or "")
     pr_number = int(pr.get("number") or 0)
     inst_id = int((payload.get("installation") or {}).get("id") or 0)
+    pr_meta = {
+        "requested_by": str((pr.get("user") or {}).get("login") or "github"),
+        "source_channel": "github_webhook",
+        "pr_url": str(pr.get("html_url") or ""),
+        "request_message": str(pr.get("title") or "")[:500],
+    }
     label_name = load_qa_config().get("deep_review_on_label") or "tempa-deep-review"
     if action == "labeled":
         label = str((payload.get("label") or {}).get("name") or "")
@@ -74,7 +86,20 @@ def handle_pull_request(payload: dict[str, Any]) -> None:
                 pr_number=pr_number,
                 installation_id=inst_id or None,
                 job_type="deep_review",
+                extra=pr_meta,
             )
+        return
+    if pr_number and load_qa_config().get("deep_review_on_pr", True):
+        # The deep_review job also runs the branch scan (lint/tests/security),
+        # so no separate branch_scan is needed for PR events.
+        enqueue_scan(
+            repo,
+            branch=branch,
+            pr_number=pr_number,
+            installation_id=inst_id or None,
+            job_type="deep_review",
+            extra=pr_meta,
+        )
         return
     enqueue_scan(
         repo,
@@ -82,6 +107,7 @@ def handle_pull_request(payload: dict[str, Any]) -> None:
         pr_number=pr_number,
         installation_id=inst_id or None,
         job_type="branch_scan",
+        extra=pr_meta,
     )
 
 

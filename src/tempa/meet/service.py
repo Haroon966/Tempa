@@ -223,9 +223,35 @@ async def _finalize_meeting(
         meeting_id,
         audio_path_hint=str(audio_path or ""),
     )
+
+    from tempa.settings import get_settings
+
+    yt: dict[str, Any] | None = None
+    if get_settings().meet_youtube_upload_enabled:
+        from tempa.meet.youtube_upload import maybe_upload_meeting_to_youtube
+
+        yt = await asyncio.to_thread(
+            maybe_upload_meeting_to_youtube,
+            meeting_id,
+            title or f"Meeting {meeting_id[:8]}",
+            meet_link=meet_url,
+            audio_path_hint=str(audio_path or ""),
+        )
+        if yt and yt.get("youtube_video_id"):
+            record["youtube_video_id"] = yt["youtube_video_id"]
+            record["youtube_url"] = yt.get("youtube_url") or f"https://youtu.be/{yt['youtube_video_id']}"
+
     write_meeting_artifacts(meeting_dir, record, followups)
 
     await save_meeting_archive(record)
+
+    # Only drop the local copy once the YouTube id is persisted above, so a crash
+    # never leaves us with a deleted recording and no link on record.
+    if yt and yt.get("confirmed") and record.get("youtube_video_id"):
+        from tempa.meet.media import delete_local_meeting_video
+
+        await asyncio.to_thread(delete_local_meeting_video, meeting_id)
+
     if transcript_text.strip():
         await index_meeting_to_rag(record, transcript_text)
 

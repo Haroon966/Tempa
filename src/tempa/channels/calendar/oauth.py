@@ -10,7 +10,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
-from tempa.channels.calendar.client import DEFAULT_SCOPES, GoogleCalendar
+from tempa.channels.calendar.client import GoogleCalendar, google_oauth_scopes
 from tempa.settings import get_settings
 
 REDIRECT_PATH = "/api/connections/google/callback"
@@ -123,7 +123,7 @@ def get_oauth_flow() -> Flow:
     secret = client_secret_path()
     return Flow.from_client_secrets_file(
         str(secret),
-        scopes=list(DEFAULT_SCOPES),
+        scopes=list(google_oauth_scopes()),
         redirect_uri=f"http://localhost:{settings.tempa_daemon_port}{REDIRECT_PATH}",
     )
 

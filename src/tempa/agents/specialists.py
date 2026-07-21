@@ -39,6 +39,7 @@ def _extract_meet_url(text: str) -> str | None:
 
 def _slack_send_body_from_context(user_message: str, task: str, context: dict[str, Any]) -> str:
     from tempa.channels.slack.recipients import extract_slack_message_body
+    from tempa.core.cross_channel_conversation import last_assistant_text
 
     body = (
         extract_slack_message_body(user_message)
@@ -49,8 +50,16 @@ def _slack_send_body_from_context(user_message: str, task: str, context: dict[st
         return body
 
     lower = f"{user_message} {task}".lower()
-    if not any(k in lower for k in ("this", "summary", "meeting", "above", "that")):
+    # "send this / that / the above / the summary" → last assistant reply (QA report, etc.)
+    if not any(
+        k in lower
+        for k in ("this", "that", "above", "summary", "report", "findings", "results", "it ")
+    ):
         return ""
+
+    prior = last_assistant_text(context, min_len=40)
+    if prior:
+        return prior
 
     channel_id = str(context.get("slack_channel_id") or "")
     conv_key = str(context.get("slack_conversation_key") or context.get("slack_thread_ts") or "")
@@ -60,9 +69,7 @@ def _slack_send_body_from_context(user_message: str, task: str, context: dict[st
         if row.get("role") != "assistant":
             continue
         text = str(row.get("text") or "").strip()
-        if len(text) < 40:
-            continue
-        if " ended." in text or "*Action items*" in text or "Decisions" in text:
+        if len(text) >= 40:
             return text
     return ""
 
@@ -933,25 +940,19 @@ async def run_qa_agent(task: str, context: dict[str, Any]) -> str:
     stats = summary_stats()
     findings = list_findings(limit=10)
 
-    if any(k in lower for k in ("deep review", "deep-review", "review pr", "pr review", "claude", "cursor")):
-        return json.dumps(
-            {
-                "status": "use_terminal_agent",
-                "message": (
-                    "Open the QA dashboard tab and use 'Fix in Claude' or 'Fix in Cursor' on a finding. "
-                    "Or call GET /api/qa/findings/{id}/agent-playbook?target=claude"
-                ),
-                "open_findings": [f.get("id") for f in findings[:5]],
-            },
-            ensure_ascii=False,
-        )
-
-    if any(k in lower for k in ("scan", "check branch", "run qa", "audit")):
+    scan_hints = ("scan", "check branch", "run qa", "audit", "review", "deep review", "deep-review", "pull/")
+    if any(k in lower for k in scan_hints):
         from tempa.qa.scan_request import handle_github_scan_request
 
         channel = str(context.get("channel") or context.get("source_channel") or "coordinator")
+        requested_by = str(
+            context.get("slack_user_id")
+            or context.get("whatsapp_number")
+            or context.get("from_number")
+            or channel
+        )
         combined = f"{task} {context.get('user_message', '')}"
-        result = handle_github_scan_request(combined, source_channel=channel)
+        result = handle_github_scan_request(combined, source_channel=channel, requested_by=requested_by)
         await event_bus.publish_json("qa", "completed", str(result.get("status", "")))
         return json.dumps(result, ensure_ascii=False)
 
@@ -1396,6 +1397,15 @@ def plan_subtasks(user_message: str, context: dict[str, Any] | None = None) -> l
         context_lines.append(
             "Conversation history:\n" + "\n".join(format_conversation_lines(conv, limit=12))
         )
+    if context.get("procedural_memory"):
+        context_lines.append(str(context["procedural_memory"])[:1200])
+    if context.get("known_recipient_email"):
+        name = context.get("known_recipient_name") or ""
+        context_lines.append(
+            f"Known recipient email: {name} <{context['known_recipient_email']}>".strip()
+        )
+    if context.get("known_repo"):
+        context_lines.append(f"Known repository: {context['known_repo']}")
     context_block = "\n".join(context_lines)
 
     prompt = (

@@ -357,7 +357,14 @@ async def _run_executor(action_type: str, payload: dict[str, Any]) -> dict[str, 
             branch=payload.get("branch"),
             pr_number=int(payload["pr_number"]) if payload.get("pr_number") else None,
         )
-        job_id = enqueue_target_scan(target)
+        job_id = enqueue_target_scan(
+            target,
+            extra={
+                k: payload[k]
+                for k in ("requested_by", "source_channel", "request_message")
+                if payload.get(k)
+            },
+        )
         return {"status": "queued", "job_id": job_id, "repo": repo}
     if action_type == "varys_ticket":
         from tempa.varys.harness import approve_varys_ticket

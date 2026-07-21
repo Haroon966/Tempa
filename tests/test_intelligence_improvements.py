@@ -9,7 +9,9 @@ import pytest
 def test_procedural_memory_add_list_delete(tmp_path, monkeypatch):
     from tempa.rag import procedural
 
-    monkeypatch.setattr(procedural, "_store_path", lambda: tmp_path / "memory" / "procedural.json")
+    mem = tmp_path / "memory"
+    mem.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(procedural, "_memory_dir", lambda: mem)
     monkeypatch.setattr(
         "tempa.rag.procedural.ingest_text",
         lambda *args, **kwargs: {"chunks_created": 0},
@@ -98,7 +100,9 @@ def test_builtin_plugin_tools_registered(monkeypatch):
     _REGISTRY.clear()
     load_builtin_plugins()
     names = {t["name"] for t in list_tools()}
+    assert "memory.add_preference" in names or "memory.search" in names
     assert "memory.search" in names
+    assert "memory.add_fact" in names
     assert "gmail.search" in names
     assert "calendar.list_events" in names
     assert "meet.join" in names

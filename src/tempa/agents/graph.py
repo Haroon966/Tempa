@@ -189,22 +189,27 @@ async def plan_node(state: CoordinatorState) -> dict[str, Any]:
     _check_cancelled(context)
     await event_bus.publish_json("coordinator", "plan", state["user_message"][:120])
     from tempa.core.task_store import create_task, format_active_tasks_summary
-    from tempa.rag.procedural import format_preferences_for_prompt, maybe_capture_from_message
+    from tempa.core.cross_channel_conversation import enrich_conversation_context, last_assistant_text
+    from tempa.rag.procedural import (
+        format_preferences_for_prompt,
+        maybe_capture_from_message,
+        resolve_open_clarification,
+    )
 
     context = dict(state.get("context") or {})
     active = format_active_tasks_summary()
     if active:
         context["active_tasks"] = active
 
-    prefs = format_preferences_for_prompt()
+    context = enrich_conversation_context(context)
+
+    resolve_open_clarification(state["user_message"], context)
+    after_bot = bool(last_assistant_text(context))
+    maybe_capture_from_message(state["user_message"], after_bot=after_bot)
+
+    prefs = format_preferences_for_prompt(query=state["user_message"])
     if prefs:
         context["procedural_memory"] = prefs
-
-    maybe_capture_from_message(state["user_message"])
-
-    from tempa.core.cross_channel_conversation import enrich_conversation_context
-
-    context = enrich_conversation_context(context)
 
     subtasks = plan_subtasks(state["user_message"], context)
     from tempa.agents.tool_policy import filter_subtasks
@@ -620,6 +625,13 @@ async def run_coordinator_full(user_message: str, context: dict[str, Any] | None
         runtime_prefetch = "\n\n".join(block for block in (prefetch, runtime) if block)
         channel = str(ctx.get("channel") or "dashboard")
         append_session_log(f"[{channel}] Q: {user_message[:80]}")
+
+    from tempa.settings import get_settings
+
+    if get_settings().tempa_adk_spike:
+        from tempa.adk import run_adk_orchestrator
+
+        return await run_adk_orchestrator(user_message, ctx)
 
     return await run_orchestrator(
         user_message,

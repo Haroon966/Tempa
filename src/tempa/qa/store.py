@@ -124,6 +124,7 @@ def list_findings(
     repo: str | None = None,
     branch: str | None = None,
     status: str | None = "open",
+    scan_job_id: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     with _lock:
@@ -132,6 +133,8 @@ def list_findings(
         items = [f for f in items if f.get("repo") == repo]
     if branch:
         items = [f for f in items if f.get("branch") == branch]
+    if scan_job_id:
+        items = [f for f in items if f.get("scan_job_id") == scan_job_id]
     if status:
         items = [f for f in items if f.get("status") == status]
     items.sort(key=lambda f: (_severity_rank(str(f.get("severity"))), f.get("created_at", "")), reverse=True)

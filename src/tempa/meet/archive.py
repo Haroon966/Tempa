@@ -53,6 +53,8 @@ async def _ensure_schema(db: aiosqlite.Connection) -> None:
         "calendar_event_start": "TEXT",
         "minutes_status": "TEXT",
         "followups_json": "TEXT",
+        "youtube_video_id": "TEXT",
+        "youtube_url": "TEXT",
     }
     for col, col_type in migrations.items():
         if col not in existing:
@@ -246,8 +248,8 @@ async def save_meeting_archive(record: dict[str, Any]) -> str:
             INSERT OR REPLACE INTO meetings
             (id, title, meet_link, started_at, ended_at, participants, attendee_emails,
              calendar_event_id, calendar_event_start, audio_path, transcript_path,
-             minutes_json, minutes_status, followups_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             minutes_json, minutes_status, followups_json, youtube_video_id, youtube_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 meeting_id,
@@ -264,6 +266,8 @@ async def save_meeting_archive(record: dict[str, Any]) -> str:
                 json.dumps(record.get("minutes", {})),
                 record.get("minutes_status", ""),
                 json.dumps(record.get("followups", [])),
+                record.get("youtube_video_id", ""),
+                record.get("youtube_url", ""),
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -288,6 +292,8 @@ def write_meeting_artifacts(
         "calendar_event_id": record.get("calendar_event_id"),
         "calendar_event_start": record.get("calendar_event_start"),
         "minutes_status": record.get("minutes_status"),
+        "youtube_video_id": record.get("youtube_video_id"),
+        "youtube_url": record.get("youtube_url"),
     }
     (meeting_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     minutes = record.get("minutes") or {}

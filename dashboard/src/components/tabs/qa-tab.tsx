@@ -11,6 +11,8 @@ import {
 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { QaAgentPlaybookSheet } from "@/components/qa/qa-agent-playbook-sheet"
+import { CursorJobsBoard } from "@/components/qa/cursor-jobs-board"
+import { QaReviewBoard } from "@/components/qa/qa-review-board"
 import { PageHeader } from "@/components/dashboard/page-header"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { StatCard } from "@/components/dashboard/stat-card"
@@ -57,6 +59,7 @@ export function QaTab() {
     branches,
     findings,
     jobs,
+    cursorJobs,
     loading,
     error,
     scanRepo,
@@ -294,13 +297,27 @@ export function QaTab() {
         </div>
       </PanelCard>
 
-      <div className="grid gap-4 xl:grid-cols-3">
-        <PanelCard
-          title="Branches"
-          description="CI, lint, tests, and security grade per branch"
-          icon={GitBranchIcon}
-          className="xl:col-span-2"
-        >
+      <PanelCard
+        title="Tempa agent jobs"
+        description="Pinned Slack Cursor threads — user, PR, phase, CI fix count"
+        icon={WrenchIcon}
+      >
+        <CursorJobsBoard jobs={cursorJobs} />
+      </PanelCard>
+
+      <PanelCard
+        title="Review requests"
+        description="Who asked for what, from which channel, and where each request is"
+        icon={ListTodoIcon}
+      >
+        <QaReviewBoard jobs={jobs} />
+      </PanelCard>
+
+      <PanelCard
+        title="Branches"
+        description="CI, lint, tests, and security grade per branch"
+        icon={GitBranchIcon}
+      >
           {branches.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No branch scans yet. Configure GitHub (PAT or App) and trigger a scan.
@@ -372,31 +389,6 @@ export function QaTab() {
             </div>
           )}
         </PanelCard>
-
-        <PanelCard title="Scan queue" description="Queued and running jobs" icon={GitBranchIcon}>
-          {jobs.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Queue is empty.</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {jobs.slice(0, 12).map((job) => (
-                <li key={job.id} className="rounded-lg border border-border/60 px-3 py-2 text-sm">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-medium">{job.repo}</span>
-                    <Badge variant="outline" className="shrink-0 text-xs capitalize">
-                      {job.status}
-                    </Badge>
-                  </div>
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {job.job_type}
-                    {job.branch ? ` · ${job.branch}` : ""}
-                  </p>
-                  {job.error && <p className="mt-1 text-xs text-red-600">{job.error}</p>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </PanelCard>
-      </div>
 
       <PanelCard title="Problems" description="Open findings across all branches" icon={MessageSquareIcon}>
         {findings.length === 0 ? (

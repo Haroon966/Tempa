@@ -318,6 +318,27 @@ export async function sendMeetingChat(meetingId: string, text: string) {
   })
 }
 
+export interface YoutubeUploadStatus {
+  enabled: boolean
+  privacy: string
+  scope_ok: boolean
+  pending_local_videos: number
+}
+
+export async function fetchYoutubeStatus() {
+  return request<YoutubeUploadStatus>("/api/meetings/youtube-status")
+}
+
+export async function runYoutubeBackfill() {
+  return request<{
+    status: string
+    total: number
+    uploaded: number
+    already: number
+    failed: number
+  }>("/api/meetings/youtube-backfill", { method: "POST" })
+}
+
 export async function fetchMeetReadiness() {
   return fetchJsonCached("meet-readiness", 60_000, () =>
     request<{
@@ -741,6 +762,42 @@ export interface QaJob {
   job_type?: string
   status: string
   enqueued_at?: string
+  started_at?: string
+  completed_at?: string
+  updated_at?: string
+  error?: string
+  pr_number?: number | null
+  priority?: boolean
+  requested_by?: string
+  source_channel?: string
+  request_message?: string
+  pr_url?: string
+  result?: {
+    findings_created?: number
+    branch?: string
+    provider?: string
+    comment_url?: string
+    branch_scan_job_id?: string
+    [key: string]: unknown
+  }
+}
+
+export interface CursorAgentJob {
+  id: string
+  status: string
+  phase?: string
+  user_id?: string
+  channel_id?: string
+  thread_ts?: string
+  repo?: string
+  branch?: string | null
+  pr_url?: string | null
+  pr_number?: number | null
+  label?: string
+  ask_text?: string
+  ci_fix_count?: number
+  enqueued_at?: string
+  updated_at?: string
   error?: string
 }
 
@@ -788,6 +845,18 @@ export async function fetchQaJobs() {
   )
 }
 
+export async function fetchCursorJobs() {
+  return fetchJsonCached("cursor-jobs", 15_000, () =>
+    request<{ jobs: CursorAgentJob[] }>("/api/cursor/jobs"),
+  )
+}
+
+export async function fetchQaJobFindings(scanJobId: string) {
+  return request<{ findings: QaFinding[] }>(
+    `/api/qa/findings?status=&scan_job_id=${encodeURIComponent(scanJobId)}`,
+  )
+}
+
 export async function postQaScan(repo: string, branch?: string, prNumber?: number) {
   return request<{ status: string; job_id?: string; action_id?: string; message?: string }>("/api/qa/scan", {
     method: "POST",
@@ -823,6 +892,63 @@ export async function fetchQaAgentPlaybook(findingId: string, target: "claude" |
   return request<QaAgentPlaybook>(
     `/api/qa/findings/${findingId}/agent-playbook?target=${encodeURIComponent(target)}`,
   )
+}
+
+export type PresenceStatus =
+  | "leave"
+  | "half_day"
+  | "leave_early"
+  | "remote"
+  | "late"
+  | "partial_away"
+  | "ooo"
+  | "back"
+  | "office"
+  | "field_visit"
+  | "travel"
+  | "limited"
+  | "other"
+
+export type PresenceLocation = "i10" | "niete" | "h9" | "rawalpindi" | "moawin_hq" | "other_site"
+
+export interface PresenceEntry {
+  date: string
+  user_id: string
+  name: string
+  image?: string
+  status: PresenceStatus
+  location: PresenceLocation | null
+  location_raw: string | null
+  reason: string | null
+  half: "first" | "second" | null
+  note: string
+  raw_text: string
+  source: "llm" | "rules" | string
+  ts: string
+  message_ts: string
+  updated_at?: string
+}
+
+export interface PresencePayload {
+  date: string
+  channel: { id: string; name: string }
+  updated_at: string
+  llm_model: string
+  counts: Record<PresenceStatus, number>
+  groups: Record<PresenceStatus, PresenceEntry[]>
+  by_location: Record<PresenceLocation, PresenceEntry[]>
+}
+
+export async function fetchPresence(date?: string) {
+  const qs = date ? `?date=${encodeURIComponent(date)}` : ""
+  const key = `presence${qs}`
+  return fetchJsonCached(key, 15_000, () => request<PresencePayload>(`/api/presence${qs}`))
+}
+
+export async function postPresenceSync() {
+  return request<{ sync: Record<string, unknown>; presence: PresencePayload }>("/api/presence/sync", {
+    method: "POST",
+  })
 }
 
 export async function fetchOrchestrator() {

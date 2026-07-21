@@ -25,8 +25,35 @@ _EDIT_RE = re.compile(
     r"re-?assign|"
     r"never\s+mind|"
     r"cancel(\s+ticket|\s+this|\s+draft)?|"
-    r"add\s+comment"
+    r"add\s+comments?|"
+    r"add\s+reference|"
+    r"link\s+(the\s+)?pr|"
+    r"reference\s+to\s+(the\s+)?pr|"
+    r"use\s+the\s+same\s+ticket|"
+    r"on\s+the\s+same\s+ticket|"
+    r"update\s+(the\s+)?ticket|"
+    r"update\s+(the\s+)?issue"
     r")\b",
+    re.I,
+)
+
+_UPDATE_RE = re.compile(
+    r"\b("
+    r"add\s+comments?|"
+    r"add\s+reference|"
+    r"link\s+(the\s+)?pr|"
+    r"reference\s+to\s+(the\s+)?pr|"
+    r"use\s+the\s+same\s+ticket|"
+    r"on\s+the\s+same\s+ticket|"
+    r"update\s+(the\s+)?ticket|"
+    r"update\s+(the\s+)?issue|"
+    r"comment\s+on\s+(the\s+)?(ticket|issue)"
+    r")\b",
+    re.I,
+)
+
+_PR_URL_RE = re.compile(
+    r"https?://github\.com/[\w.-]+/[\w.-]+/pull/\d+",
     re.I,
 )
 
@@ -45,7 +72,7 @@ _READ_RE = re.compile(
     re.I,
 )
 _ASSIGNEE_RE = re.compile(
-    r"\b(?:assign(?:ed)?\s+(?:to|for)|for)\s+([A-Za-z][\w.\- ]{1,40})",
+    r"\b(?:assign(?:ed)?\s+(?:to|for))\s+([A-Za-z][\w.\- ]{1,40})",
     re.I,
 )
 _URGENT_RE = re.compile(r"\b(urgent|asap|critical|p0|p1|high\s+priority|blocker)\b", re.I)
@@ -71,11 +98,17 @@ def wants_jira_ticket_create(text: str) -> bool:
         return False
     if _READ_RE.search(t):
         return False
+    # Sharing an existing ticket/PR is lookup/work — not "create a ticket".
+    # "This is the jira ticket MC20-19085" used to false-positive into create.
+    from tempa.agents.intent import extract_jira_issue_key
+
+    if extract_jira_issue_key(t) and not _CREATE_RE.search(t):
+        return False
     if _CREATE_RE.search(t):
         return True
     lower = t.lower()
-    if "jira" in lower and any(k in lower for k in ("ticket", "issue", "assign")):
-        return True
+    # Require an explicit create verb for the loose "jira + ticket" path —
+    # bare "jira ticket" links are shares, not create intents.
     if _SELF_ASSIGN_RE.search(t) and any(k in lower for k in ("ticket", "issue", "bug", "task")):
         return True
     return False
@@ -83,6 +116,16 @@ def wants_jira_ticket_create(text: str) -> bool:
 
 def wants_jira_ticket_edit(text: str) -> bool:
     return bool(_EDIT_RE.search(text or ""))
+
+
+def wants_jira_ticket_update(text: str) -> bool:
+    """True when the user wants to update an existing ticket (comment/PR link), not create one."""
+    return bool(_UPDATE_RE.search(text or ""))
+
+
+def extract_github_pr_url(text: str) -> str:
+    matches = _PR_URL_RE.findall(text or "")
+    return matches[-1] if matches else ""
 
 
 def is_ticket_confirm(text: str) -> bool:

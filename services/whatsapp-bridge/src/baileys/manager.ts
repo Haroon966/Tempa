@@ -1053,11 +1053,12 @@ export async function fetchContactTextHistory(
   const ingest = (msg: proto.IWebMessageInfo) => {
     const id = msg.key?.id || "";
     if (!id || byId.has(id)) return;
-    const text = extractText(msg.message);
-    if (!text.trim()) return;
+    const audio = hasAudio(msg.message);
+    const text = extractText(msg.message).trim() || (audio ? "[voice note]" : "");
+    if (!text) return;
     const ts = msg.messageTimestamp;
     byId.set(id, {
-      text: text.trim(),
+      text,
       fromMe: Boolean(msg.key?.fromMe),
       pushName: msg.pushName || contact,
       jid: msg.key?.remoteJid || targetJid,

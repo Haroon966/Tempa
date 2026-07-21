@@ -317,6 +317,21 @@ def add_comment(issue_key: str, body: str) -> dict[str, Any]:
     return {"status": "ok", "comment_id": str(data.get("id") or ""), "issue_key": issue_key}
 
 
+def add_remote_link(issue_key: str, url: str, title: str = "") -> dict[str, Any]:
+    """Attach an external URL (e.g. GitHub PR) to a Jira issue."""
+    link_title = (title or url).strip() or url
+    payload = {
+        "object": {
+            "url": url.strip(),
+            "title": link_title[:255],
+        }
+    }
+    _, data = jira_request("POST", f"/rest/api/3/issue/{issue_key}/remotelink", json_body=payload)
+    if isinstance(data, dict) and data.get("id") is not None:
+        return {"status": "ok", "issue_key": issue_key, "link_id": str(data.get("id")), "url": url}
+    return {"status": "ok", "issue_key": issue_key, "url": url}
+
+
 def transition_issue(issue_key: str, transition_name: str) -> dict[str, Any]:
     _, transitions_data = jira_request("GET", f"/rest/api/3/issue/{issue_key}/transitions")
     if not isinstance(transitions_data, dict):

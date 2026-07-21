@@ -2,15 +2,14 @@
   "manifest_version": 3,
   "name": "Tempa",
   "version": "0.1.0",
-  "description": "AI personal core agent — chat, connections, meetings",
+  "description": "Tempa AI agent — chat, live steps, approvals, and memory",
   "permissions": ["sidePanel", "storage", "notifications"],
   "host_permissions": ["http://localhost:8787/*", "http://127.0.0.1:8787/*"],
   "background": {
     "service_worker": "background/service-worker.js"
   },
   "action": {
-    "default_title": "Open Tempa",
-    "default_popup": "popup/index.html"
+    "default_title": "Open Tempa"
   },
   "options_ui": {
     "page": "options/index.html",
