@@ -39,6 +39,11 @@ def handle_comment(payload: dict[str, Any]) -> None:
     issue_number = int(issue.get("number") or 0)
     if not repo or not installation_id:
         return
+    comment_meta = {
+        "requested_by": str((comment.get("user") or {}).get("login") or "github"),
+        "source_channel": "github_comment",
+        "request_message": body[:500],
+    }
 
     try:
         if github_uses_pat():
@@ -50,7 +55,7 @@ def handle_comment(payload: dict[str, Any]) -> None:
         return
 
     if cmd == "/scan":
-        enqueue_scan(repo, installation_id=installation_id, job_type="repo_scan")
+        enqueue_scan(repo, installation_id=installation_id, job_type="repo_scan", extra=comment_meta)
         gh_post(
             f"/repos/{repo}/issues/{issue_number}/comments",
             token,
@@ -61,7 +66,14 @@ def handle_comment(payload: dict[str, Any]) -> None:
     if cmd == "/deep-review":
         pr_match = re.search(r"/pull/(\d+)", str(issue.get("pull_request", {}).get("url") or ""))
         pr_number = int(pr_match.group(1)) if pr_match else issue_number
-        enqueue_scan(repo, pr_number=pr_number, installation_id=installation_id, job_type="deep_review")
+        enqueue_scan(
+            repo,
+            pr_number=pr_number,
+            installation_id=installation_id,
+            job_type="deep_review",
+            priority=True,
+            extra={**comment_meta, "pr_url": f"https://github.com/{repo}/pull/{pr_number}"},
+        )
         gh_post(
             f"/repos/{repo}/issues/{issue_number}/comments",
             token,

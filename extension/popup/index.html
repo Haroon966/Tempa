@@ -5,18 +5,16 @@
   <title>Tempa</title>
   <link rel="stylesheet" href="../shared/theme.css" />
   <style>
-    body { margin: 12px; width: 280px; }
-    img { max-width: 100%; border-radius: 8px; }
-    button { margin-top: 8px; width: 100%; }
-    h2 { margin: 0 0 8px; font-size: 16px; }
+    body { margin: 12px; width: 260px; }
+    h2 { margin: 0 0 6px; font-size: 16px; }
+    #health { margin: 0 0 12px; font-size: 13px; }
+    button { width: 100%; }
   </style>
 </head>
 <body>
   <h2>Tempa</h2>
-  <p id="health">Checking…</p>
-  <img id="qr" alt="WhatsApp QR" style="display:none" />
-  <button id="open-panel">Open side panel</button>
-  <button id="refresh">Refresh</button>
+  <p id="health" class="muted">Checking…</p>
+  <button id="open-panel">Open chat</button>
   <script src="popup.js"></script>
 </body>
 </html>

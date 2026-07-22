@@ -108,3 +108,34 @@ async def test_unrelated_message_clears_preview_draft(ticket_env):
         cleared = await handle_jira_ticket_message("hi", _ctx())
         assert cleared == ""
         assert load_draft(context_key_from_slack("C1", "111.222")) is None
+
+
+@pytest.mark.asyncio
+async def test_share_existing_ticket_does_not_ask_jira_email(ticket_env):
+    """Sharing MC20-19085 + PR must not steal into create → 'their Jira email'."""
+    from tempa.channels.jira.tickets import should_route_to_jira_ticket
+
+    text = (
+        "This is the ticket on notion: "
+        "https://orendatrust.atlassian.net/browse/MC20-19085 "
+        "https://github.com/Orenda-Project/compliancetracker/pull/435 "
+        "Apparently its fixed, but not according to requirements."
+    )
+    assert should_route_to_jira_ticket(text, _ctx()) is False
+    with patch("tempa.channels.jira.tickets.ticket_feature_enabled", return_value=True):
+        reply = await handle_jira_ticket_message(text, _ctx())
+    assert reply == ""
+    assert "jira email" not in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_create_without_assignee_asks_who_not_email(ticket_env):
+    with patch("tempa.channels.jira.tickets.ticket_feature_enabled", return_value=True), patch(
+        "tempa.channels.jira.tickets.ensure_jira_users_fresh", new_callable=AsyncMock, return_value=None
+    ), patch("tempa.channels.jira.tickets.ensure_contacts_fresh", new_callable=AsyncMock, return_value=None), patch(
+        "tempa.channels.jira.tickets.find_similar_issues", return_value=[]
+    ):
+        reply = await handle_jira_ticket_message("create a jira ticket for the login bug", _ctx())
+    assert "Who should I assign" in reply
+    assert "couldn't find that person" not in reply.lower()
+    assert "jira email" not in reply.lower()

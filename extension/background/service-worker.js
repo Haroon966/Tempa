@@ -1,8 +1,6 @@
 const DEFAULT_DAEMON = "http://localhost:8787";
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
-});
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 async function getDaemonUrl() {
   const { daemonUrl } = await chrome.storage.local.get({ daemonUrl: DEFAULT_DAEMON });
@@ -24,7 +22,7 @@ async function updateBadge() {
     } catch {}
     if (pendingCount > 0) {
       chrome.action.setBadgeText({ text: String(pendingCount) });
-      chrome.action.setBadgeBackgroundColor({ color: "#3d6cb9" });
+      chrome.action.setBadgeBackgroundColor({ color: "#2563eb" });
     } else if (connected === total) {
       chrome.action.setBadgeText({ text: "" });
       chrome.action.setBadgeBackgroundColor({ color: "#0a0" });

@@ -23,7 +23,6 @@ from tempa.meet.archive import (
 from tempa.meet.audio_convert import resolve_audio_path
 from tempa.meet.config import AudioConfig, JoinConfig, SttConfig, VideoConfig, WorkerConfig
 from tempa.meet.consent import has_recording_consent
-from tempa.meet.followups import create_followup_pending_actions, generate_followup_drafts
 from tempa.meet.job_store import (
     enqueue_meet_job,
     get_all_job_statuses,
@@ -53,12 +52,18 @@ def build_worker_config(
     calendar_event_start: str | None = None,
     calendar_event_end: str | None = None,
     attendee_emails: list[str] | None = None,
+    organizer_email: str | None = None,
     started_at: str | None = None,
     av_test_youtube_url: str | None = None,
+    display: str | None = None,
+    pulse_sink: str | None = None,
+    pulse_monitor_source: str | None = None,
 ) -> WorkerConfig:
     settings = get_settings()
     mid = meeting_id or str(uuid.uuid4())
-    display = os.environ.get("DISPLAY", "").strip()
+    display = (display or os.environ.get("DISPLAY", "")).strip()
+    if display and not display.startswith(":"):
+        display = f":{display}"
     virtual_cam = settings.resolved_virtual_camera_path()
     if av_test_youtube_url:
         virtual_cam = None
@@ -81,13 +86,17 @@ def build_worker_config(
             disable_mic=True,
             disable_camera=virtual_cam is None,
             virtual_camera_path=str(virtual_cam) if virtual_cam else None,
+            display=display or None,
+            pulse_sink=pulse_sink,
         ),
         calendar_event_id=calendar_event_id,
         calendar_event_start=calendar_event_start,
         calendar_event_end=calendar_event_end,
         attendee_emails=attendee_emails or [],
+        organizer_email=organizer_email,
         started_at=started_at or datetime.now(timezone.utc).isoformat(),
         av_test_youtube_url=av_test_youtube_url,
+        pulse_monitor_source=pulse_monitor_source,
     )
 
 
@@ -183,16 +192,8 @@ async def _finalize_meeting(
     started_at = config.started_at or ended_at
 
     followups: list[dict[str, Any]] = []
-    if minutes:
-        try:
-            followups = await generate_followup_drafts(
-                minutes,
-                title=title,
-                attendee_emails=config.attendee_emails,
-                transcript_excerpt=transcript_text[-8000:],
-            )
-        except Exception:
-            logger.exception("Follow-up draft generation failed for %s", meeting_id)
+    # Attendee-wide email/WhatsApp follow-up drafts are disabled — notes go to
+    # organizer + owner only via notify_meeting_completed.
 
     record: dict[str, Any] = {
         "id": meeting_id,
@@ -202,6 +203,7 @@ async def _finalize_meeting(
         "ended_at": ended_at,
         "participants": participants,
         "attendee_emails": config.attendee_emails,
+        "organizer_email": config.organizer_email,
         "calendar_event_id": config.calendar_event_id,
         "calendar_event_start": config.calendar_event_start,
         "audio_path": str(wav_path or audio_path or ""),
@@ -223,13 +225,39 @@ async def _finalize_meeting(
         meeting_id,
         audio_path_hint=str(audio_path or ""),
     )
+
+    from tempa.settings import get_settings
+
+    yt: dict[str, Any] | None = None
+    if get_settings().meet_youtube_upload_enabled:
+        from tempa.meet.youtube_upload import maybe_upload_meeting_to_youtube
+
+        yt = await asyncio.to_thread(
+            maybe_upload_meeting_to_youtube,
+            meeting_id,
+            title or f"Meeting {meeting_id[:8]}",
+            meet_link=meet_url,
+            audio_path_hint=str(audio_path or ""),
+        )
+        if yt and yt.get("youtube_video_id"):
+            record["youtube_video_id"] = yt["youtube_video_id"]
+            record["youtube_url"] = yt.get("youtube_url") or f"https://youtu.be/{yt['youtube_video_id']}"
+
     write_meeting_artifacts(meeting_dir, record, followups)
 
     await save_meeting_archive(record)
+
+    # Only drop the local copy once the YouTube id is persisted above, so a crash
+    # never leaves us with a deleted recording and no link on record.
+    if yt and yt.get("confirmed") and record.get("youtube_video_id"):
+        from tempa.meet.media import delete_local_meeting_video
+
+        await asyncio.to_thread(delete_local_meeting_video, meeting_id)
+
     if transcript_text.strip():
         await index_meeting_to_rag(record, transcript_text)
 
-    pending_ids = create_followup_pending_actions(meeting_id, followups, title=title)
+    pending_ids: list[str] = []
 
     from tempa.meet.notify import notify_meeting_completed
 
@@ -409,6 +437,8 @@ async def run_meeting_worker_with_session(
         record_video_size=(config.video.width, config.video.height) if video_save_path else None,
         virtual_camera_path=config.join.virtual_camera_path,
         screen_share_test=bool(config.av_test_youtube_url),
+        display=config.join.display,
+        pulse_sink=config.join.pulse_sink,
     )
     admitted = await wait_for_meet_admission(
         session.page,
@@ -444,6 +474,8 @@ async def run_meeting_worker_with_session(
             config.av_test_youtube_url,
             av_dir,
             duration_seconds=config.duration_seconds,
+            display=config.join.display,
+            pulse_sink=config.join.pulse_sink,
         )
 
     pipeline = await setup_pipeline(
@@ -459,12 +491,17 @@ async def run_meeting_worker_with_session(
 
     system_recorder: SystemMeetingRecorder | None = None
     if system_capture:
+        slot_display = (config.join.display or os.environ.get("DISPLAY", ":99")).strip() or ":99"
+        if not slot_display.startswith(":"):
+            slot_display = f":{slot_display}"
         system_recorder = SystemMeetingRecorder(
             config.meeting_id,
             Path(meeting_base_dir),
             width=config.video.width,
             height=config.video.height,
             fps=settings.meet_system_capture_fps,
+            display=slot_display,
+            pulse_source=config.pulse_monitor_source or "",
         )
 
         async def _on_system_pcm(chunk: bytes) -> None:
@@ -494,8 +531,18 @@ async def run_meeting_worker_with_session(
                 session.page, tracker=end_tracker, event_start_ts=event_start_ts
             ):
                 break
-            if time.time() - start_time >= config.duration_seconds:
+            elapsed = time.time() - start_time
+            from tempa.meet.lifecycle import MEET_HARD_MAX_SECONDS, get_human_participant_count
+
+            if elapsed >= MEET_HARD_MAX_SECONDS:
+                logger.info("GMEET: hard max duration reached (%.0fs)", elapsed)
                 break
+            if elapsed >= config.duration_seconds:
+                # Soft calendar duration: stay if humans are still present.
+                humans = await get_human_participant_count(session.page)
+                if humans <= 0:
+                    logger.info("GMEET: calendar duration reached and no humans left")
+                    break
     finally:
         if audio_monitor:
             audio_monitor.cancel()
@@ -555,6 +602,7 @@ async def schedule_meeting_join_async(
     calendar_event_start: str | None = None,
     calendar_event_end: str | None = None,
     attendee_emails: list[str] | None = None,
+    organizer_email: str | None = None,
     duration_seconds: int = 3600,
     av_test_youtube_url: str | None = None,
 ) -> str:
@@ -569,6 +617,7 @@ async def schedule_meeting_join_async(
         "calendar_event_start": calendar_event_start,
         "calendar_event_end": calendar_event_end,
         "attendee_emails": attendee_emails or [],
+        "organizer_email": organizer_email,
         "duration_seconds": duration_seconds,
         "av_test_youtube_url": av_test_youtube_url,
     }
@@ -593,6 +642,7 @@ async def schedule_meeting_join_async(
         calendar_event_start=calendar_event_start,
         calendar_event_end=calendar_event_end,
         attendee_emails=attendee_emails,
+        organizer_email=organizer_email,
         av_test_youtube_url=av_test_youtube_url,
     )
     if config.meeting_id in _active_jobs:
@@ -618,6 +668,7 @@ def schedule_meeting_join(
     calendar_event_start: str | None = None,
     calendar_event_end: str | None = None,
     attendee_emails: list[str] | None = None,
+    organizer_email: str | None = None,
     duration_seconds: int = 3600,
     av_test_youtube_url: str | None = None,
 ) -> str:
@@ -632,6 +683,7 @@ def schedule_meeting_join(
         "calendar_event_start": calendar_event_start,
         "calendar_event_end": calendar_event_end,
         "attendee_emails": attendee_emails or [],
+        "organizer_email": organizer_email,
         "duration_seconds": duration_seconds,
         "av_test_youtube_url": av_test_youtube_url,
     }
@@ -655,6 +707,7 @@ def schedule_meeting_join(
         calendar_event_start=calendar_event_start,
         calendar_event_end=calendar_event_end,
         attendee_emails=attendee_emails,
+        organizer_email=organizer_email,
         av_test_youtube_url=av_test_youtube_url,
     )
     if config.meeting_id in _active_jobs:

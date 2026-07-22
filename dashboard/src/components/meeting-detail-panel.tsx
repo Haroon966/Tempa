@@ -128,7 +128,12 @@ export function MeetingDetailPanel({ meeting }: MeetingDetailPanelProps) {
   const media = detail?.media
   const artifacts = m.artifacts ?? {}
   const hasAudio = media?.has_audio ?? artifacts.audio
-  const hasVideo = media?.has_video ?? artifacts.video
+  const hasLocalVideo = media?.has_video ?? artifacts.video
+  const youtubeUrl = m.youtube_url
+  const youtubeEmbedUrl = m.youtube_video_id
+    ? `https://www.youtube.com/embed/${m.youtube_video_id}`
+    : null
+  const hasVideo = hasLocalVideo || Boolean(youtubeUrl)
   const hasTranscript = media?.has_transcript ?? artifacts.transcript
 
   return (
@@ -140,11 +145,33 @@ export function MeetingDetailPanel({ meeting }: MeetingDetailPanelProps) {
               <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                 Video
               </p>
-              <VideoPlayer
-                meetingId={meeting.id}
-                src={media?.video_url || `/api/meetings/${meeting.id}/video`}
-                initialDuration={media?.video_duration_seconds}
-              />
+              {hasLocalVideo ? (
+                <VideoPlayer
+                  meetingId={meeting.id}
+                  src={media?.video_url || `/api/meetings/${meeting.id}/video`}
+                  initialDuration={media?.video_duration_seconds}
+                />
+              ) : youtubeEmbedUrl ? (
+                <div className="aspect-video overflow-hidden rounded-xl border border-border/60 bg-black">
+                  <iframe
+                    src={youtubeEmbedUrl}
+                    title="Meeting recording on YouTube"
+                    className="h-full w-full"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                  />
+                </div>
+              ) : null}
+              {youtubeUrl && (
+                <a
+                  href={youtubeUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-block text-sm text-primary underline-offset-4 hover:underline"
+                >
+                  Open on YouTube
+                </a>
+              )}
             </div>
           )}
           {hasAudio && (
@@ -170,7 +197,7 @@ export function MeetingDetailPanel({ meeting }: MeetingDetailPanelProps) {
                 <DownloadIcon className="mr-1 size-3" /> Audio
               </a>
             )}
-            {hasVideo && (
+            {hasLocalVideo && (
               <a
                 href={meetingDownloadUrl(media?.video_url || `/api/meetings/${meeting.id}/video`)}
                 download

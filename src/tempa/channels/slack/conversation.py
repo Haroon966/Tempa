@@ -82,12 +82,150 @@ def get_recent_messages(
     return msgs[-limit:]
 
 
+def list_thread_messages(
+    *,
+    channel_id: str = "",
+    thread_ts: str = "",
+    conversation_key: str = "",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Read Slack conversation turns from disk for dashboard session detail.
+
+    Unlike get_recent_messages (in-memory deque, maxlen 100), this scans the
+    jsonl history so older thread turns stay visible.
+    """
+    path = _history_path()
+    if not path.exists():
+        return []
+    key = (conversation_key or thread_ts or "").strip()
+    ch = (channel_id or "").strip()
+    matched: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict) or not row.get("text"):
+                continue
+            if ch and str(row.get("channel_id") or "") != ch:
+                continue
+            if key and not _matches_conversation(row, key):
+                continue
+            matched.append(row)
+    except Exception:
+        return []
+    return matched[-max(1, limit) :]
+
+
+def thread_key(*, channel_id: str = "", thread_ts: str = "") -> str:
+    ch = (channel_id or "").strip()
+    ts = (thread_ts or "").strip()
+    if ch and ts:
+        return f"{ch}:{ts}"
+    return ts or ch
+
+
+def participants_for_threads(
+    threads: list[tuple[str, str]],
+) -> dict[str, list[str]]:
+    """One jsonl scan → {channel:thread_ts → ordered unique human user ids}.
+
+    Assistant/bot turns are skipped. Order is first appearance in the file.
+    """
+    wanted = {
+        thread_key(channel_id=ch, thread_ts=ts)
+        for ch, ts in threads
+        if (ch or "").strip() or (ts or "").strip()
+    }
+    if not wanted:
+        return {}
+    path = _history_path()
+    if not path.exists():
+        return {}
+    out: dict[str, list[str]] = {k: [] for k in wanted}
+    seen: dict[str, set[str]] = {k: set() for k in wanted}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("role") or "") == "assistant":
+                continue
+            uid = str(row.get("user_id") or "").strip()
+            if not uid:
+                continue
+            ch = str(row.get("channel_id") or "").strip()
+            ts = str(row.get("thread_ts") or row.get("conversation_key") or "").strip()
+            key = thread_key(channel_id=ch, thread_ts=ts)
+            if key not in wanted:
+                # DM rows may key by channel only
+                if ch and ch in wanted:
+                    key = ch
+                else:
+                    continue
+            if uid in seen[key]:
+                continue
+            seen[key].add(uid)
+            out[key].append(uid)
+    except Exception:
+        return out
+    return out
+
+
+def participants_from_turns(
+    turns: list[dict[str, Any]],
+    *,
+    starter_user_id: str = "",
+) -> list[str]:
+    """Ordered unique humans from turns, starter first when known."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    starter = (starter_user_id or "").strip()
+    if starter:
+        ordered.append(starter)
+        seen.add(starter)
+    for turn in turns:
+        if str(turn.get("role") or "") == "assistant":
+            continue
+        uid = str(turn.get("user_id") or "").strip()
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        ordered.append(uid)
+    return ordered
+
+
 def bot_participated_in_thread(channel_id: str, thread_ts: str) -> bool:
-    """True when Tempa already replied in this Slack thread or DM."""
+    """True when Tempa already replied in this Slack thread or DM.
+
+    Sources (any one is enough):
+    1. In-memory conversation turns
+    2. Disk conversation.jsonl (Cursor sync posts land here)
+    3. A Cursor job already bound to this channel+thread
+    """
     if not channel_id or not thread_ts:
         return False
     msgs = get_recent_messages(limit=100, channel_id=channel_id, conversation_key=thread_ts)
-    return any(m.get("role") == "assistant" for m in msgs)
+    if any(m.get("role") == "assistant" for m in msgs):
+        return True
+    try:
+        disk = list_thread_messages(channel_id=channel_id, thread_ts=thread_ts, limit=50)
+        if any(m.get("role") == "assistant" for m in disk):
+            return True
+    except Exception:
+        pass
+    try:
+        from tempa.channels.slack.cursor_jobs import thread_has_cursor_job
+
+        if thread_has_cursor_job(channel_id=channel_id, thread_ts=thread_ts):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def has_assistant_reply_for(message_id: str) -> bool:
@@ -139,3 +277,18 @@ def record_conversation_turn(
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+    # Permanent: keep Cursor job participant_ids in sync with everyone who speaks.
+    if role == "user" and user_id and channel_id and thread_ts:
+        try:
+            from tempa.channels.slack.cursor_jobs import add_thread_participants
+            from tempa.channels.slack.profiles import remember_profile
+
+            add_thread_participants(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                user_ids=[user_id],
+            )
+            remember_profile(user_id)
+        except Exception:
+            pass

@@ -10,6 +10,7 @@ from typing import Any
 from tempa.channels.jira.audit import log_ticket_event
 from tempa.channels.jira.client import (
     add_comment,
+    add_remote_link,
     assign_issue,
     create_issue,
     find_similar_issues,
@@ -28,11 +29,13 @@ from tempa.channels.jira.drafts import (
 )
 from tempa.channels.jira.intent import (
     TicketFields,
+    extract_github_pr_url,
     is_ticket_cancel,
     is_ticket_confirm,
     parse_ticket_request,
     wants_jira_ticket_create,
     wants_jira_ticket_edit,
+    wants_jira_ticket_update,
 )
 from tempa.channels.jira.profiles import remember_jira_email, save_profile
 from tempa.channels.jira.sync import ensure_contacts_fresh, ensure_jira_users_fresh
@@ -88,6 +91,9 @@ def is_draft_followup(text: str, draft: dict[str, Any] | None) -> bool:
     t = (text or "").strip()
     if not t:
         return False
+    # Explicit update of an existing ticket abandons create/gathering drafts.
+    if wants_jira_ticket_update(t) and str(draft.get("state") or "") != "created":
+        return False
     if is_ticket_confirm(t) or is_ticket_cancel(t) or wants_jira_ticket_edit(t):
         return True
 
@@ -98,30 +104,62 @@ def is_draft_followup(text: str, draft: dict[str, Any] | None) -> bool:
         lower = t.lower()
         return any(
             k in lower
-            for k in ("change assignee", "reassign", "update summary", "edit summary", "add comment")
+            for k in (
+                "change assignee",
+                "reassign",
+                "update summary",
+                "edit summary",
+                "add comment",
+                "add comments",
+                "link pr",
+                "add reference",
+            )
         )
     if state == "preview":
         lower = t.lower()
         if wants_jira_ticket_create(t):
             return True
+        # Require clear edit verbs — bare "assign"/"update" in eng chatter must not stick.
         return any(
             k in lower
             for k in (
-                "change ",
-                "update ",
-                "set ",
-                "summary",
-                "assign",
-                "description",
-                "project",
-                "priority",
+                "change assignee",
+                "reassign",
+                "update summary",
+                "edit summary",
+                "set summary",
+                "set assignee",
+                "change project",
+                "change priority",
+                "set priority",
+                "set description",
             )
         )
     return state in {"gathering", "confirmed"}
 
 
 def should_route_to_jira_ticket(text: str, context: dict[str, Any]) -> bool:
-    if wants_jira_ticket_create(text) or wants_jira_ticket_edit(text):
+    # Cursor-pinned Slack threads never enter Jira create/assignee loops.
+    channel_id = str(context.get("slack_channel_id") or "")
+    thread_ts = str(context.get("slack_thread_ts") or context.get("thread_ts") or "")
+    if channel_id and thread_ts:
+        try:
+            from tempa.channels.slack.cursor_threads import is_cursor_thread
+
+            if is_cursor_thread(channel_id, thread_ts):
+                key = _context_key(context)
+                if key:
+                    from tempa.channels.jira.drafts import clear_draft
+
+                    clear_draft(key)
+                return False
+        except Exception:
+            pass
+    if (
+        wants_jira_ticket_create(text)
+        or wants_jira_ticket_edit(text)
+        or wants_jira_ticket_update(text)
+    ):
         return True
     key = _context_key(context)
     if not key or not has_active_draft(key):
@@ -191,6 +229,134 @@ def _fetch_slack_thread(context: dict[str, Any], *, limit: int = 8) -> str:
         return ""
 
 
+def _context_blob(text: str, context: dict[str, Any], draft: dict[str, Any] | None = None) -> str:
+    parts = [text or ""]
+    if draft and draft.get("issue_key"):
+        parts.append(str(draft.get("issue_key")))
+    for msg in context.get("recent_user_messages") or []:
+        parts.append(str(msg))
+    for turn in context.get("conversation_messages") or []:
+        if isinstance(turn, dict):
+            parts.append(str(turn.get("text") or ""))
+        else:
+            parts.append(str(turn))
+    thread = _fetch_slack_thread(context, limit=20)
+    if thread:
+        parts.append(thread)
+    return "\n".join(parts)
+
+
+def resolve_issue_key_from_context(
+    text: str,
+    context: dict[str, Any],
+    draft: dict[str, Any] | None = None,
+) -> str:
+    from tempa.agents.intent import extract_jira_issue_key
+
+    key = extract_jira_issue_key(text or "")
+    if key:
+        return key
+    if draft and draft.get("issue_key"):
+        return str(draft["issue_key"])
+    return extract_jira_issue_key(_context_blob(text, context, draft))
+
+
+def _default_status_comment(text: str, pr_url: str = "") -> str:
+    lower = (text or "").lower()
+    lines = [
+        "Slack update:",
+        "- Document completed work vs remaining work on this ticket.",
+    ]
+    if "comment" in lower or "work that needs" in lower or "what completed" in lower:
+        lines.append(
+            "- Priority: fix Add Teacher (PEFSIS photo upload) first; Resign is a symptom "
+            "until teachers have a real TeacherID."
+        )
+    if pr_url:
+        lines.append(f"- Working PR: {pr_url}")
+    else:
+        lines.append("- Attach/link the PR where this work will land.")
+    return "\n".join(lines)
+
+
+def try_existing_ticket_update(
+    text: str,
+    context: dict[str, Any],
+    draft: dict[str, Any] | None,
+    *,
+    context_key: str = "",
+) -> str | None:
+    """Handle comment/PR-link updates on an existing ticket. Returns reply or None."""
+    if not wants_jira_ticket_update(text) and not (
+        wants_jira_ticket_edit(text) and ("comment" in text.lower() or "reference" in text.lower())
+    ):
+        return None
+
+    blob = _context_blob(text, context, draft)
+    issue_key = resolve_issue_key_from_context(text, context, draft)
+    if not issue_key:
+        return (
+            "Which Jira issue should I update? Share the key (e.g. MC20-19085) "
+            "or link the ticket in this thread."
+        )
+
+    # Abandon stale create drafts so we don't keep asking for assignee.
+    if context_key and draft and str(draft.get("state") or "") != "created":
+        clear_draft(context_key)
+
+    pr_url = extract_github_pr_url(text) or extract_github_pr_url(blob)
+    lower = text.lower()
+    done: list[str] = []
+
+    wants_comment = any(
+        k in lower
+        for k in ("comment", "comments", "what completed", "work that needs", "status")
+    ) or wants_jira_ticket_update(text)
+    if wants_comment:
+        # Prefer explicit "add comment <body>" when present; else write a status note.
+        body = re.sub(r"(?i)^add\s+comments?\s*", "", text).strip()
+        if (
+            not body
+            or body.lower().startswith("for the work")
+            or "use the same ticket" in body.lower()
+            or "add reference" in body.lower()
+            or len(body) > 500
+        ):
+            body = _default_status_comment(text, pr_url)
+        try:
+            add_comment(issue_key, body)
+            done.append("comment")
+        except Exception as exc:
+            logger.exception("Failed to add Jira comment")
+            return f"Couldn't add a comment to {issue_key}: {exc}"
+
+    if pr_url or any(k in lower for k in ("reference", "link pr", "pr that")):
+        if not pr_url:
+            return (
+                f"Updated {issue_key} ({', '.join(done) or 'no changes'}) — "
+                "share the GitHub PR URL to attach as a reference."
+            )
+        title = pr_url.rstrip("/").split("/")[-1]
+        if title.isdigit():
+            title = f"PR #{title}"
+        try:
+            add_remote_link(issue_key, pr_url, title=title)
+            done.append(f"PR link ({pr_url})")
+        except Exception as exc:
+            logger.exception("Failed to add Jira remote link")
+            return f"Comment added to {issue_key}, but linking the PR failed: {exc}"
+
+    if not done:
+        return None
+
+    from tempa.channels.jira.session import load_jira_session_config
+
+    base = str(load_jira_session_config().get("base_url") or get_settings().jira_base_url or "").rstrip("/")
+    url = f"{base}/browse/{issue_key}" if base else issue_key
+    link = f"<{url}|{issue_key}>" if str(url).startswith("http") else issue_key
+    return f"Updated *{issue_key}*: {link}\n• " + "\n• ".join(done)
+
+
 def _format_preview(draft: dict[str, Any]) -> str:
     lines = [
         "*Jira ticket preview*",
@@ -251,6 +417,17 @@ def _resolve_assignee(draft: dict[str, Any], context: dict[str, Any]) -> str | N
             return None
 
     self_assign = bool(draft.get("self_assign"))
+    # Empty hint with no self-assign → ask who, never "their Jira email" (no person named).
+    if not self_assign and not hint.strip():
+        draft["pending_question"] = "assignee"
+        return "Who should I assign this ticket to? Say a name, email, or 'assign me'."
+
+    # Reject phrase-like "assignees" (e.g. "the work that needs to be done…").
+    if not self_assign and (len(hint.split()) > 4 or len(hint) > 48):
+        draft["pending_question"] = "assignee"
+        draft["assignee_hint"] = ""
+        return "Who should I assign this ticket to? Say a name, email, or 'assign me'."
+
     result = resolve_jira_user(
         hint,
         slack_user_id=slack_id,
@@ -283,10 +460,6 @@ def _resolve_assignee(draft: dict[str, Any], context: dict[str, Any]) -> str | N
         draft["assignee_email"] = result.email
         return None
 
-    if not self_assign and not hint:
-        draft["pending_question"] = "assignee"
-        return "Who should I assign this ticket to? Say a name, email, or 'assign me'."
-
     return "I couldn't resolve the assignee. Please provide a Jira email or full name."
 
 
@@ -318,12 +491,19 @@ def _handle_created_followup(draft: dict[str, Any], text: str, context: dict[str
             return f"Updated {issue_key} summary."
         return "What should the new summary be?"
 
-    if lower.startswith("add comment") or "add comment" in lower:
-        body = re.sub(r"^add\s+comment\s*", "", text, flags=re.I).strip()
+    if lower.startswith("add comment") or "add comment" in lower or "add comments" in lower:
+        body = re.sub(r"^add\s+comments?\s*", "", text, flags=re.I).strip()
         if body:
             add_comment(issue_key, body)
             return f"Comment added to {issue_key}."
         return "What should the comment say?"
+
+    if any(k in lower for k in ("link pr", "add reference", "reference to the pr")):
+        pr_url = extract_github_pr_url(text)
+        if not pr_url:
+            return "Share the GitHub PR URL to attach."
+        add_remote_link(issue_key, pr_url, title=f"PR #{pr_url.rstrip('/').split('/')[-1]}")
+        return f"Linked PR on {issue_key}: {pr_url}"
 
     return None
 
@@ -343,6 +523,11 @@ async def handle_jira_ticket_message(user_message: str, context: dict[str, Any] 
     requester = _requester_key(ctx)
     draft = load_draft(context_key)
     text = (user_message or "").strip()
+
+    # Existing-ticket updates (comment / PR link) — never fall into create+assignee.
+    update_reply = try_existing_ticket_update(text, ctx, draft, context_key=context_key)
+    if update_reply is not None:
+        return update_reply
 
     if draft and not is_draft_followup(text, draft) and not wants_jira_ticket_create(text):
         clear_draft(context_key)
@@ -416,7 +601,8 @@ async def handle_jira_ticket_message(user_message: str, context: dict[str, Any] 
             f'You can say "change assignee to …", "update summary to …", or "add comment …".'
         )
 
-    is_new = wants_jira_ticket_create(text) or (draft is None and wants_jira_ticket_edit(text))
+    # Create only — never treat "add comments / update ticket" as a new draft.
+    is_new = wants_jira_ticket_create(text)
     if draft is None and not is_new and not has_active_draft(context_key):
         return ""
 
@@ -434,6 +620,18 @@ async def handle_jira_ticket_message(user_message: str, context: dict[str, Any] 
             draft["assignee_name"] = resolved.display_name
             draft["assignee_email"] = email
             draft["pending_question"] = ""
+            try:
+                from tempa.rag.procedural import add_durable
+
+                name = resolved.display_name or ""
+                add_durable(
+                    f"{name} email is {email}".strip() if name else f"Email address: {email}",
+                    kind="person",
+                    source="jira_clarification",
+                    tags=["clarification", "jira", "email"],
+                )
+            except Exception:
+                pass
         else:
             remember_jira_email(
                 slack_user_id=str(ctx.get("slack_user_id") or ""),
@@ -442,6 +640,17 @@ async def handle_jira_ticket_message(user_message: str, context: dict[str, Any] 
             )
             draft["assignee_email"] = email
             draft["pending_question"] = ""
+            try:
+                from tempa.rag.procedural import add_durable
+
+                add_durable(
+                    f"Email address: {email}",
+                    kind="person",
+                    source="jira_clarification",
+                    tags=["clarification", "jira", "email"],
+                )
+            except Exception:
+                pass
             return f"I saved {email} but couldn't find a Jira account yet. I'll use it next time — who should I assign this ticket to?"
 
     if not draft.get("project"):

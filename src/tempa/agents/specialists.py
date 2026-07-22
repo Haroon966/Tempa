@@ -39,6 +39,7 @@ def _extract_meet_url(text: str) -> str | None:
 
 def _slack_send_body_from_context(user_message: str, task: str, context: dict[str, Any]) -> str:
     from tempa.channels.slack.recipients import extract_slack_message_body
+    from tempa.core.cross_channel_conversation import last_assistant_text
 
     body = (
         extract_slack_message_body(user_message)
@@ -49,8 +50,16 @@ def _slack_send_body_from_context(user_message: str, task: str, context: dict[st
         return body
 
     lower = f"{user_message} {task}".lower()
-    if not any(k in lower for k in ("this", "summary", "meeting", "above", "that")):
+    # "send this / that / the above / the summary" → last assistant reply (QA report, etc.)
+    if not any(
+        k in lower
+        for k in ("this", "that", "above", "summary", "report", "findings", "results", "it ")
+    ):
         return ""
+
+    prior = last_assistant_text(context, min_len=40)
+    if prior:
+        return prior
 
     channel_id = str(context.get("slack_channel_id") or "")
     conv_key = str(context.get("slack_conversation_key") or context.get("slack_thread_ts") or "")
@@ -60,9 +69,7 @@ def _slack_send_body_from_context(user_message: str, task: str, context: dict[st
         if row.get("role") != "assistant":
             continue
         text = str(row.get("text") or "").strip()
-        if len(text) < 40:
-            continue
-        if " ended." in text or "*Action items*" in text or "Decisions" in text:
+        if len(text) >= 40:
             return text
     return ""
 
@@ -933,25 +940,19 @@ async def run_qa_agent(task: str, context: dict[str, Any]) -> str:
     stats = summary_stats()
     findings = list_findings(limit=10)
 
-    if any(k in lower for k in ("deep review", "deep-review", "review pr", "pr review", "claude", "cursor")):
-        return json.dumps(
-            {
-                "status": "use_terminal_agent",
-                "message": (
-                    "Open the QA dashboard tab and use 'Fix in Claude' or 'Fix in Cursor' on a finding. "
-                    "Or call GET /api/qa/findings/{id}/agent-playbook?target=claude"
-                ),
-                "open_findings": [f.get("id") for f in findings[:5]],
-            },
-            ensure_ascii=False,
-        )
-
-    if any(k in lower for k in ("scan", "check branch", "run qa", "audit")):
+    scan_hints = ("scan", "check branch", "run qa", "audit", "review", "deep review", "deep-review", "pull/")
+    if any(k in lower for k in scan_hints):
         from tempa.qa.scan_request import handle_github_scan_request
 
         channel = str(context.get("channel") or context.get("source_channel") or "coordinator")
+        requested_by = str(
+            context.get("slack_user_id")
+            or context.get("whatsapp_number")
+            or context.get("from_number")
+            or channel
+        )
         combined = f"{task} {context.get('user_message', '')}"
-        result = handle_github_scan_request(combined, source_channel=channel)
+        result = handle_github_scan_request(combined, source_channel=channel, requested_by=requested_by)
         await event_bus.publish_json("qa", "completed", str(result.get("status", "")))
         return json.dumps(result, ensure_ascii=False)
 
@@ -1396,6 +1397,15 @@ def plan_subtasks(user_message: str, context: dict[str, Any] | None = None) -> l
         context_lines.append(
             "Conversation history:\n" + "\n".join(format_conversation_lines(conv, limit=12))
         )
+    if context.get("procedural_memory"):
+        context_lines.append(str(context["procedural_memory"])[:1200])
+    if context.get("known_recipient_email"):
+        name = context.get("known_recipient_name") or ""
+        context_lines.append(
+            f"Known recipient email: {name} <{context['known_recipient_email']}>".strip()
+        )
+    if context.get("known_repo"):
+        context_lines.append(f"Known repository: {context['known_repo']}")
     context_block = "\n".join(context_lines)
 
     prompt = (
@@ -1653,86 +1663,6 @@ async def _build_merge_prompt_async(
     return prompt, pack, sources
 
 
-def _build_merge_prompt(
-    user_message: str,
-    results: dict[str, str],
-    context: dict[str, Any],
-    sources: list[dict[str, Any]],
-) -> tuple[str, Any, list[dict[str, Any]]]:
-    """Build merge prompt and grounding pack. Returns (prompt, pack, sources)."""
-    from tempa.agents.grounding import build_grounding_pack, format_grounding_for_prompt
-    from tempa.agents.tool_policy import guest_merge_instruction
-
-    channel = context.get("channel", "")
-    lower = user_message.lower()
-    calendar_intent = any(
-        k in lower
-        for k in (
-            "calendar",
-            "meeting",
-            "schedule",
-            "event",
-            "agenda",
-            "today",
-            "tomorrow",
-            "what time",
-            "standup",
-        )
-    )
-
-    pack = build_grounding_pack(
-        user_message,
-        context,
-        specialist_results=results,
-        memory_answer=context.get("rag_context", ""),
-        include_calendar=calendar_intent,
-        action_notes=list(context.get("action_facts") or []),
-    )
-    grounding_block = format_grounding_for_prompt(
-        pack,
-        owner=context.get("whatsapp_number", "owner"),
-    )
-
-    citation_block = ""
-    if sources:
-        labels = [s.get("label", "") for s in sources[:5] if s.get("label")]
-        if labels:
-            citation_block = (
-                "Cite sources inline using [tool/source] labels when referencing memory: "
-                + ", ".join(labels)
-                + "\n"
-            )
-
-    from tempa.channels.slack.messages import SLACK_MERGE_STYLE
-
-    style = (
-        "Reply on WhatsApp — warm and direct.\n"
-        if channel == "whatsapp"
-        else (
-            SLACK_MERGE_STYLE
-            if channel == "slack" or context.get("inbound_slack")
-            else "Merge specialist outputs into one clear user-facing reply.\n"
-        )
-    )
-    guest_note = guest_merge_instruction(context)
-    from tempa.agents.clarification import CLARIFICATION_INSTRUCTION
-
-    prompt = (
-        f"{guest_note}"
-        f"{CLARIFICATION_INSTRUCTION}\n"
-        f"{_MERGE_FACTUAL_RULE}"
-        f"{style}"
-        f"{citation_block}"
-        f"Grounding facts:\n{grounding_block}\n\n"
-        f"Agent results JSON: {json.dumps(results, ensure_ascii=False)}"
-    )
-    if context.get("procedural_memory"):
-        prompt = f"{context['procedural_memory']}\n\n{prompt}"
-    if context.get("active_skills_prompt"):
-        prompt = f"## Active skills\n{context['active_skills_prompt']}\n\n{prompt}"
-    return prompt, pack, sources
-
-
 def _merge_max_tokens(context: dict[str, Any]) -> int:
     channel = str(context.get("channel") or "")
     if channel == "whatsapp" or context.get("inbound_whatsapp"):
@@ -1766,7 +1696,7 @@ async def merge_results_stream(
     if channel == "whatsapp" and "gmail" in results:
         short = _whatsapp_gmail_reply(results["gmail"])
         if short:
-            _, pack, _ = _build_merge_prompt(user_message, results, context, sources)
+            _, pack, _ = await _build_merge_prompt_async(user_message, results, context, sources)
             ok, verified = verify_reply(short, pack)
             final = verified if not ok else short
             if on_token:
@@ -1776,7 +1706,7 @@ async def merge_results_stream(
     if "calendar" in results:
         short = _calendar_action_reply(results["calendar"])
         if short:
-            _, pack, _ = _build_merge_prompt(user_message, results, context, sources)
+            _, pack, _ = await _build_merge_prompt_async(user_message, results, context, sources)
             ok, verified = verify_reply(short, pack)
             final = verified if not ok else short
             if on_token:
@@ -1790,7 +1720,7 @@ async def merge_results_stream(
             if not short:
                 short = _slack_send_reply(results["channel"])
         if short:
-            _, pack, _ = _build_merge_prompt(user_message, results, context, sources)
+            _, pack, _ = await _build_merge_prompt_async(user_message, results, context, sources)
             ok, verified = verify_reply(short, pack)
             final = verified if not ok else short
             if on_token:

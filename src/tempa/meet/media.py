@@ -310,6 +310,23 @@ def resolve_playable_video_path(meeting_id: str, *, audio_path_hint: str = "") -
     return None
 
 
+def delete_local_meeting_video(meeting_id: str) -> bool:
+    """Remove the local video directory once the recording lives on YouTube.
+
+    Audio and transcript artifacts live in sibling directories and are kept.
+    """
+    video_dir = meeting_dir_for_id(meeting_id) / "video"
+    if not video_dir.exists():
+        return False
+    try:
+        shutil.rmtree(video_dir)
+        _logger.info("GMEET: removed local video for %s (uploaded to YouTube)", meeting_id)
+        return True
+    except Exception:
+        _logger.exception("GMEET: failed to remove local video meeting=%s", meeting_id)
+        return False
+
+
 def resolve_audio_download_path(meeting_id: str, *, audio_path_hint: str = "") -> Path | None:
     if audio_path_hint:
         candidate = Path(audio_path_hint)

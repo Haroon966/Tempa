@@ -10,7 +10,10 @@ async def run_varys_coordinator(
     user_message: str,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Legacy entry — delegates to unified OrchestratorAgent with Claude merge."""
+    """PARKED/legacy entry — delegates to OrchestratorAgent with Claude merge.
+
+    Prefer TEMPA_COORDINATOR=hermes for non-coding, or default langgraph orchestrator.
+    """
     from tempa.orchestrator.hooks import run_pre_hooks
     from tempa.orchestrator.hooks_impl import register_all_hooks
     from tempa.orchestrator.agent import run_orchestrator

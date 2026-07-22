@@ -1,0 +1,34 @@
+# Display-name substrings that identify meeting bots (not humans).
+# Used for leave-when-last-human and participant scraping. Case-insensitive.
+bot_name_substrings:
+  # Google Meet / Gemini
+  - notetaker
+  - note taker
+  - meeting notes
+  - gemini
+  # Common note-taker / recorder bots
+  - rumi
+  - otter
+  - fireflies
+  - read.ai
+  - read ai
+  - granola
+  - fathom
+  - tl;dv
+  - tldv
+  - krisp
+  - equal time
+  - chorus
+  - gong
+  - avoma
+  - fellow
+  - scribe
+  - tactiq
+  - supernormal
+  - nyota
+  - meetgeek
+  - meeto
+  - automation
+  - recorder
+  # Tempa itself (never count as a human)
+  - tempa

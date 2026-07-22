@@ -92,6 +92,14 @@ class PreferenceRequest(BaseModel):
     rule: str
     source: str = "manual"
     tags: list[str] = Field(default_factory=list)
+    kind: str = "preference"
+
+
+class DurableRequest(BaseModel):
+    text: str
+    kind: str = "fact"
+    source: str = "manual"
+    tags: list[str] = Field(default_factory=list)
 
 
 class DaemonSettingsRequest(BaseModel):
@@ -99,10 +107,10 @@ class DaemonSettingsRequest(BaseModel):
     meet_auto_join_on_reminder: bool | None = None
     meet_auto_join_enabled: bool | None = None
     meet_trigger_before_minutes: int | None = None
-    meet_trigger_after_start_minutes: int | None = None
     meet_skip_keywords: list[str] | None = None
     meet_retention_days: int | None = None
     meet_auto_send_summary_whatsapp: bool | None = None
+    meet_auto_send_summary_email: bool | None = None
     meet_copilot_whatsapp_notify: bool | None = None
 
 
@@ -129,6 +137,7 @@ _reminder_task: asyncio.Task | None = None
 _gmail_sync_task: asyncio.Task | None = None
 _calendar_sync_task: asyncio.Task | None = None
 _slack_sync_task: asyncio.Task | None = None
+_presence_sync_task: asyncio.Task | None = None
 _jira_user_sync_task: asyncio.Task | None = None
 _consolidation_task: asyncio.Task | None = None
 _retention_task: asyncio.Task | None = None
@@ -295,6 +304,51 @@ async def _slack_sync_loop() -> None:
         await _run_sync(full=False)
 
 
+async def _presence_sync_loop() -> None:
+    import logging
+
+    from tempa.channels.slack.presence_sync import sync_presence_async
+    from tempa.channels.slack.session import slack_configured
+    from tempa.core.sync_status import record_sync
+
+    logger = logging.getLogger(__name__)
+    if not slack_configured():
+        return
+    if not get_settings().slack_presence_channel_id.strip():
+        return
+
+    interval = 60
+    backoff = interval
+    syncing = False
+
+    async def _run_sync() -> None:
+        nonlocal syncing, backoff
+        if syncing:
+            return
+        syncing = True
+        try:
+            result = await sync_presence_async()
+            status = str(result.get("status", "ok"))
+            if status in {"ok", "skipped"}:
+                record_sync("presence", status=status, details=result)
+                backoff = interval
+            else:
+                err = str(result.get("reason") or result.get("error") or status)
+                record_sync("presence", status="error", error=err, details=result)
+                backoff = min(backoff * 2, interval * 8)
+        except Exception as exc:
+            logger.exception("Presence sync loop failed")
+            record_sync("presence", status="error", error=str(exc))
+            backoff = min(backoff * 2, interval * 8)
+        finally:
+            syncing = False
+
+    asyncio.create_task(_run_sync())
+    while True:
+        await asyncio.sleep(backoff)
+        await _run_sync()
+
+
 async def _jira_user_sync_loop() -> None:
     import logging
 
@@ -392,11 +446,17 @@ async def _consolidation_loop() -> None:
             await asyncio.to_thread(run_consolidation)
         except Exception:
             pass
+        try:
+            from tempa.learning.curator import run_curator
+
+            await asyncio.to_thread(run_curator)
+        except Exception:
+            pass
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
+    global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _presence_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
     from tempa.channels.contacts.store import init_contacts_db
     from tempa.channels.whatsapp.inbound_queue import stop_inbound_worker
     from tempa.channels.whatsapp.webhook import ensure_webhook_worker
@@ -480,14 +540,50 @@ async def lifespan(app: FastAPI):
 
             logging.getLogger(__name__).warning("Slack startup failed: %s", exc)
 
+    # Start Cursor worker in main lifespan (not deferred) so pinned Slack asks never sit unclaimed.
+    try:
+        from tempa.channels.slack.cursor_worker import start_cursor_worker
+        import logging as _log
+
+        await start_cursor_worker()
+        _log.getLogger(__name__).info("Cursor Slack worker started")
+    except Exception:
+        import logging as _log
+
+        _log.getLogger(__name__).exception("Cursor Slack worker failed to start")
+
+    if settings.tempa_hermes_cron_enabled:
+        try:
+            from tempa.hermes.cron import start_hermes_cron
+            import logging as _log
+
+            start_hermes_cron()
+            _log.getLogger(__name__).info("Hermes cron started")
+        except Exception:
+            import logging as _log
+
+            _log.getLogger(__name__).exception("Hermes cron failed to start")
+
     async def _deferred_background() -> None:
-        global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
+        global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _presence_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
+        import logging as _log
+
+        _log.getLogger(__name__).info("Deferred background starting")
         await asyncio.sleep(2)
+        # Cursor worker first — must not wait behind QA install sync / other startup.
+        try:
+            from tempa.channels.slack.cursor_worker import start_cursor_worker
+
+            await start_cursor_worker()
+            _log.getLogger(__name__).info("Cursor Slack worker started")
+        except Exception:
+            _log.getLogger(__name__).exception("Cursor Slack worker failed to start")
         _scheduler_task = asyncio.create_task(_calendar_loop())
         _reminder_task = asyncio.create_task(_reminder_loop())
         _gmail_sync_task = asyncio.create_task(_gmail_sync_loop())
         _calendar_sync_task = asyncio.create_task(_calendar_sync_loop())
         _slack_sync_task = asyncio.create_task(_slack_sync_loop())
+        _presence_sync_task = asyncio.create_task(_presence_sync_loop())
         _jira_user_sync_task = asyncio.create_task(_jira_user_sync_loop())
         _consolidation_task = asyncio.create_task(_consolidation_loop())
         _retention_task = asyncio.create_task(_retention_loop())
@@ -517,8 +613,11 @@ async def lifespan(app: FastAPI):
 
             if qa_enabled():
                 await start_qa_worker()
+                _log.getLogger(__name__).info("QA worker started")
+            else:
+                _log.getLogger(__name__).info("QA worker skipped (disabled)")
         except Exception:
-            pass
+            _log.getLogger(__name__).exception("QA worker failed to start")
         try:
             from tempa.varys.tick import start_varys_tick_loop
 
@@ -538,6 +637,8 @@ async def lifespan(app: FastAPI):
         _calendar_sync_task.cancel()
     if _slack_sync_task:
         _slack_sync_task.cancel()
+    if _presence_sync_task:
+        _presence_sync_task.cancel()
     if _jira_user_sync_task:
         _jira_user_sync_task.cancel()
     try:
@@ -554,14 +655,27 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
+        from tempa.hermes.cron import stop_hermes_cron
+
+        stop_hermes_cron()
+    except Exception:
+        pass
+    try:
+        from tempa.channels.slack.cursor_worker import stop_cursor_worker
+
+        await stop_cursor_worker()
+    except Exception:
+        pass
+    try:
         from tempa.varys.tick import stop_varys_tick_loop
 
         await stop_varys_tick_loop()
     except Exception:
         pass
     try:
-        from tempa.channels.slack.bolt_app import stop_slack_socket_mode
+        from tempa.channels.slack.bolt_app import stop_slack_socket_mode, stop_socket_watchdog
 
+        await stop_socket_watchdog()
         await stop_slack_socket_mode()
     except Exception:
         pass
@@ -572,10 +686,12 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Tempa Daemon", version="0.1.0", lifespan=lifespan)
     from tempa.api.features import router as features_router
+    from tempa.api.presence import router as presence_router
     from tempa.api.qa import router as qa_router
 
     app.include_router(features_router, prefix="/api")
     app.include_router(qa_router, prefix="/api")
+    app.include_router(presence_router, prefix="/api")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.tempa_cors_origin] if settings.tempa_cors_origin != "*" else ["*"],
@@ -635,17 +751,84 @@ def create_app() -> FastAPI:
                 "heartbeat": read_worker_heartbeat(),
             }
 
-        chroma, groq, meet_worker = await asyncio.gather(
+        def _cursor_check() -> dict[str, Any]:
+            from pathlib import Path
+
+            from tempa.channels.slack.cursor_threads import load_cursor_repos, load_cursor_threads
+            from tempa.channels.slack.cursor_worktree import git_available, worktree_root
+            from tempa.channels.slack.cursor_pr import gh_available
+            from tempa.qa.cursor import cursor_configured
+
+            mounts = []
+            for row in list(load_cursor_threads()) + list(load_cursor_repos()):
+                cwd = str(row.get("local_cwd") or "")
+                if not cwd or any(m.get("cwd") == cwd for m in mounts):
+                    continue
+                ok = Path(cwd).is_dir()
+                writable = ok and os.access(cwd, os.W_OK)
+                mounts.append(
+                    {
+                        "cwd": cwd,
+                        "exists": ok,
+                        "writable": writable,
+                        "label": row.get("label") or row.get("id") or cwd,
+                    }
+                )
+            try:
+                wr = worktree_root()
+                wr_ok = wr.is_dir() and os.access(wr, os.W_OK)
+            except Exception as exc:
+                wr_ok = False
+                wr = str(exc)[:120]
+            sdk_ok = False
+            try:
+                import cursor_sdk  # noqa: F401
+
+                sdk_ok = True
+            except Exception:
+                sdk_ok = False
+            status = "ok"
+            if not cursor_configured() or not sdk_ok:
+                status = "degraded"
+            if any(m.get("cwd") and not m.get("writable") for m in mounts):
+                status = "degraded"
+            if not git_available() or not gh_available():
+                status = "degraded"
+            if not wr_ok:
+                status = "degraded"
+            try:
+                from tempa.channels.slack import cursor_worker as cw
+
+                worker_alive = bool(cw._worker_task and not cw._worker_task.done())
+            except Exception:
+                worker_alive = False
+            return {
+                "status": status,
+                "cursor_api_key": cursor_configured(),
+                "cursor_sdk": sdk_ok,
+                "git": git_available(),
+                "gh": gh_available(),
+                "worktree_root": str(wr),
+                "worktree_writable": wr_ok,
+                "worker_alive": worker_alive,
+                "mounts": mounts,
+            }
+
+        chroma, groq, meet_worker, cursor = await asyncio.gather(
             asyncio.to_thread(_chromadb_check),
             asyncio.to_thread(_groq_check),
             asyncio.to_thread(_meet_worker_check),
+            asyncio.to_thread(_cursor_check),
         )
         components["chromadb"] = chroma
         components["groq"] = groq
         components["meet_worker"] = meet_worker
+        components["cursor"] = cursor
 
         overall = "ok"
         if chroma.get("status") == "error" or groq.get("status") == "degraded":
+            overall = "degraded"
+        if cursor.get("status") == "degraded":
             overall = "degraded"
 
         return {
@@ -725,6 +908,132 @@ def create_app() -> FastAPI:
                 for s in load_all_skills()
             ]
         }
+
+    @app.post("/api/skills/reload")
+    async def reload_skills_endpoint():
+        from tempa.skills import reload_skills
+
+        count = reload_skills()
+        return {"reloaded": True, "count": count}
+
+    @app.get("/api/hermes/status")
+    async def hermes_status():
+        from tempa.hermes.coordinator import hermes_available
+        from tempa.hermes.cron import list_cron_jobs
+        from tempa.hermes.goals import list_goals, list_kanban
+        from tempa.hermes.mcp import mcp_status
+        from tempa.hermes.skills_bridge import mirror_learned_to_config, skills_dir
+        from tempa.settings import get_settings
+
+        settings = get_settings()
+        return {
+            "coordinator": settings.tempa_coordinator,
+            "hermes_selected": str(settings.tempa_coordinator or "").lower() == "hermes",
+            "ai_agent_installed": hermes_available(),
+            "skills_dir": str(skills_dir()),
+            "learned_skills": mirror_learned_to_config(),
+            "cron_jobs": list_cron_jobs(),
+            "cron_enabled": settings.tempa_hermes_cron_enabled,
+            "mcp": mcp_status(),
+            "goals": list_goals(status="open"),
+            "kanban": list_kanban(),
+            "adk_spike_parked": True,
+            "adk_spike_flag": settings.tempa_adk_spike,
+        }
+
+    @app.get("/api/hermes/mcp")
+    async def hermes_mcp():
+        from tempa.hermes.mcp import list_mcp_tools, mcp_status
+
+        return {"status": mcp_status(), "tools": await list_mcp_tools()}
+
+    @app.get("/api/hermes/cron")
+    async def hermes_cron_list():
+        from tempa.hermes.cron import list_cron_jobs
+
+        return {"jobs": list_cron_jobs()}
+
+    @app.post("/api/hermes/cron")
+    async def hermes_cron_save(body: dict):
+        from tempa.hermes.cron import save_cron_jobs
+
+        jobs = body.get("jobs") if isinstance(body, dict) else None
+        if not isinstance(jobs, list):
+            return {"error": "jobs list required"}
+        save_cron_jobs(jobs)
+        return {"saved": True, "jobs": jobs}
+
+    @app.get("/api/hermes/goals")
+    async def hermes_goals_list(status: str | None = None):
+        from tempa.hermes.goals import list_goals
+
+        return {"goals": list_goals(status=status)}
+
+    @app.post("/api/hermes/goals")
+    async def hermes_goals_create(body: dict):
+        from tempa.hermes.goals import create_goal
+
+        title = str((body or {}).get("title") or "").strip()
+        if not title:
+            return {"error": "title required"}
+        goal = create_goal(
+            title,
+            prompt=str((body or {}).get("prompt") or ""),
+            notes=str((body or {}).get("notes") or ""),
+        )
+        return {"goal": goal}
+
+    @app.patch("/api/hermes/goals/{goal_id}")
+    async def hermes_goals_update(goal_id: str, body: dict):
+        from tempa.hermes.goals import update_goal
+
+        goal = update_goal(
+            goal_id,
+            title=(body or {}).get("title"),
+            prompt=(body or {}).get("prompt"),
+            notes=(body or {}).get("notes"),
+            status=(body or {}).get("status"),
+            tick=bool((body or {}).get("tick")),
+        )
+        if not goal:
+            return {"error": "not found"}
+        return {"goal": goal}
+
+    @app.get("/api/hermes/kanban")
+    async def hermes_kanban_get():
+        from tempa.hermes.goals import list_kanban
+
+        return list_kanban()
+
+    @app.post("/api/hermes/skills/promote")
+    async def hermes_promote_learned():
+        from tempa.hermes.skills_bridge import promote_learned_to_skills
+
+        paths = promote_learned_to_skills()
+        return {"promoted": [str(p) for p in paths], "count": len(paths)}
+
+    @app.get("/api/learning/status")
+    async def learning_status():
+        from tempa.learning.curator import run_curator
+        from tempa.learning.loop import self_improve_enabled
+        from tempa.learning.store import auto_skills_dir, load_usage
+        from tempa.settings import get_settings
+
+        auto = auto_skills_dir()
+        skills = [p.name for p in auto.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()] if auto.is_dir() else []
+        return {
+            "enabled": self_improve_enabled(),
+            "auto_skills": skills,
+            "auto_skills_dir": str(auto),
+            "usage": load_usage(),
+            "flag": get_settings().tempa_self_improve,
+        }
+
+    @app.post("/api/learning/curator")
+    async def learning_run_curator():
+        from tempa.learning.curator import run_curator
+
+        return run_curator()
 
     @app.get("/api/orchestrator")
     async def orchestrator_manifest():
@@ -1047,6 +1356,15 @@ if (window.opener) {{
 
         return await connection_status()
 
+    @app.post("/api/connections/slack/reconnect")
+    async def slack_reconnect():
+        from tempa.channels.slack.bolt_app import reconnect_slack_socket_mode
+        from tempa.channels.slack.session import connection_status
+
+        ok = await reconnect_slack_socket_mode()
+        status = await connection_status()
+        return {"reconnected": ok, **status}
+
     @app.get("/api/connections/jira")
     async def jira_status():
         from tempa.channels.jira.status import jira_connection_status
@@ -1300,16 +1618,33 @@ if (window.opener) {{
         }
 
     @app.get("/api/memory/preferences")
-    async def memory_preferences_list():
-        from tempa.rag.procedural import list_preferences
+    async def memory_preferences_list(kind: str | None = None):
+        from tempa.rag.procedural import list_durable, list_preferences
 
+        if kind:
+            return {"preferences": list_durable(kinds=[kind])}
         return {"preferences": list_preferences()}
 
     @app.post("/api/memory/preferences")
     async def memory_preferences_add(body: PreferenceRequest):
-        from tempa.rag.procedural import add_preference
+        from tempa.rag.procedural import add_durable, add_preference
 
+        if body.kind and body.kind != "preference":
+            return add_durable(body.rule, kind=body.kind, source=body.source, tags=body.tags)
         return add_preference(body.rule, source=body.source, tags=body.tags)
+
+    @app.get("/api/memory/durable")
+    async def memory_durable_list(kind: str | None = None):
+        from tempa.rag.procedural import list_durable
+
+        kinds = [kind] if kind else None
+        return {"items": list_durable(kinds=kinds)}
+
+    @app.post("/api/memory/durable")
+    async def memory_durable_add(body: DurableRequest):
+        from tempa.rag.procedural import add_durable
+
+        return add_durable(body.text, kind=body.kind, source=body.source, tags=body.tags)
 
     @app.delete("/api/memory/preferences/{pref_id}")
     async def memory_preferences_delete(pref_id: str):
@@ -1334,6 +1669,19 @@ if (window.opener) {{
             "minutes_repaired": repaired,
             "meetings": await list_meetings(),
         }
+
+    @app.get("/api/meetings/youtube-status")
+    async def meetings_youtube_status():
+        from tempa.meet.youtube_upload import youtube_upload_status
+
+        return await asyncio.to_thread(youtube_upload_status)
+
+    @app.post("/api/meetings/youtube-backfill")
+    async def meetings_youtube_backfill():
+        from tempa.meet.youtube_upload import backfill_youtube_uploads
+
+        result = await backfill_youtube_uploads()
+        return {**result, "meetings": await list_meetings()}
 
     @app.post("/api/meetings/process-audio")
     async def meetings_process_audio():

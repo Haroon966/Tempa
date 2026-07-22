@@ -164,6 +164,8 @@ export interface MeetingRecord {
   minutes?: Record<string, unknown>
   minutes_status?: string
   followups?: Record<string, unknown>[]
+  youtube_video_id?: string
+  youtube_url?: string
   artifacts?: Record<string, boolean>
 }
 

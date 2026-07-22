@@ -1,0 +1,32 @@
+# Example Cursor coding config. Copy entries into cursor_threads.yaml (or edit that file).
+#
+# Docker: mount host checkouts at TEMPA_REPOS_HOST (default ./repos) → /repos in the container.
+# Then set local_cwd to /repos/<folder-name>.
+#
+# Prefer local_cwd. Cloud `repo` needs CURSOR_API_KEY's GitHub access to that private repo.
+# required_checks: GitHub check names to wait on after opening a PR. Empty = skip CI wait.
+# Only allowlisted Slack users can enqueue jobs (see SLACK_ALLOWED_USER_IDS).
+
+repos:
+  - id: my-app
+    local_cwd: /repos/my-app
+    repo: org/my-app
+    base_ref: main
+    required_checks: []
+    # required_checks:
+    #   - backend-ci
+    #   - frontend-ci
+    aliases:
+      - my-app
+      - myapp
+
+# Optional: force Cursor on one Slack thread (any follow-up, no coding heuristic).
+# threads:
+#   - channel_id: C0123456789
+#     thread_ts: "1234567890.123456"
+#     local_cwd: /repos/my-app
+#     repo: org/my-app
+#     base_ref: main
+#     required_checks: []
+#     jira_key: ENG-123
+#     label: optional label for operators

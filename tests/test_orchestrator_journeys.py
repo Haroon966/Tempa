@@ -76,9 +76,13 @@ async def test_j5_ci_failed_invokes_qa_worker():
 
 @pytest.mark.asyncio
 async def test_j6_varys_work_request_pauses(monkeypatch):
-    """J6: Coding work request → varys ticket + paused."""
+    """J6: Coding work request → varys ticket + paused (when Cursor does not own coding)."""
     from tempa.orchestrator.hooks_impl import varys_work_request_hook
 
+    monkeypatch.setattr(
+        "tempa.channels.slack.cursor_threads.cursor_owns_coding",
+        lambda: False,
+    )
     monkeypatch.setattr(
         "tempa.varys.harness.create_ticket",
         lambda db, **kw: "T-001",
@@ -97,3 +101,16 @@ async def test_j6_varys_work_request_pauses(monkeypatch):
     result = await varys_work_request_hook("fix the slack reply handler", {"channel": "slack"})
     assert result is not None
     assert result.get("paused") is True
+
+
+@pytest.mark.asyncio
+async def test_j6b_cursor_owns_coding_skips_varys_ticket(monkeypatch):
+    """When Cursor owns coding, Varys harness tickets are not created."""
+    from tempa.orchestrator.hooks_impl import varys_work_request_hook
+
+    monkeypatch.setattr(
+        "tempa.channels.slack.cursor_threads.cursor_owns_coding",
+        lambda: True,
+    )
+    result = await varys_work_request_hook("fix the slack reply handler", {"channel": "slack"})
+    assert result is None

@@ -17,13 +17,14 @@ _READ_MESSAGE_RE = re.compile(
 
 _SEND_TO_PATTERNS = (
     re.compile(
-        r"send(?:\s+a)?\s+message\s+to\s+(.+?)(?:\s+(?:saying|with|that)\b|\s*$)",
+        r"send(?:\s+a)?\s+(?:this\s+)?mess(?:a|e)?ge\s+to\s+(.+?)(?:\s+(?:saying|with|that)\b|\s*$)",
         re.I,
     ),
-    re.compile(r"send\s+(.+?)\s+a\s+message(?:\s+(?:saying|with)\b|\s*$)", re.I),
-    re.compile(r"\bmessage\s+to\s+(.+?)(?:\s+(?:saying|with|on\s+slack)\b|\s*$)", re.I),
+    re.compile(r"send\s+(.+?)\s+a\s+mess(?:a|e)?ge(?:\s+(?:saying|with)\b|\s*$)", re.I),
+    re.compile(r"\bmess(?:a|e)?ge\s+to\s+(.+?)(?:\s+(?:saying|with|on\s+slack)\b|\s*$)", re.I),
     re.compile(r"\bdm\s+(.+?)(?:\s+(?:saying|with)\b|\s*$)", re.I),
     re.compile(r"ping\s+(.+?)(?:\s+(?:saying|with)\b|\s*$)", re.I),
+    re.compile(r"send\s+this\s+to\s+(.+?)(?:\s+(?:saying|with|that)\b|\s*$)", re.I),
 )
 
 _SEND_CHANNEL_PATTERNS = (

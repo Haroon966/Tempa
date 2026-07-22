@@ -21,4 +21,5 @@ credentials.json
 token.json
 client_secret*.json
 *.apps.googleusercontent.com.json
+*.pem
 vendor/

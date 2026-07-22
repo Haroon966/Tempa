@@ -1,127 +1,100 @@
-/* Tempa — midnight blue, white, black + Futura */
-@import url("https://fonts.cdnfonts.com/css/futura-pt");
+/* Tempa extension — light AI-native */
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
 
 :root {
-  --tempa-midnight: #0c1a33;
-  --tempa-midnight-deep: #060d18;
-  --tempa-midnight-card: #122240;
-  --tempa-midnight-border: #1e3a66;
-  --tempa-midnight-accent: #2a4f8f;
-  --tempa-midnight-bright: #3d6cb9;
-  --tempa-white: #ffffff;
-  --tempa-black: #000000;
-  --tempa-muted: #b8c4d9;
-  --tempa-font: "Futura PT", Futura, "Century Gothic", "Trebuchet MS", sans-serif;
-  --tempa-radius: 8px;
+  --bg: #f4f5f3;
+  --bg-elevated: #ffffff;
+  --bg-soft: #eceeea;
+  --ink: #12141a;
+  --ink-secondary: #3d4450;
+  --muted: #6b7280;
+  --border: #e2e5df;
+  --border-strong: #c9cfc6;
+  --accent: #0f766e;
+  --accent-soft: #ccfbf1;
+  --accent-hover: #0d9488;
+  --danger: #dc2626;
+  --danger-soft: #fee2e2;
+  --ok: #059669;
+  --warn: #d97706;
+  --user-bubble: #12141a;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --shadow: 0 1px 2px rgba(18, 20, 26, 0.04), 0 8px 24px rgba(18, 20, 26, 0.06);
+  --font: "Plus Jakarta Sans", "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --header-h: 56px;
+  --nav-h: 58px;
 }
 
-* {
-  box-sizing: border-box;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
 }
 
 body {
-  margin: 0;
-  font-family: var(--tempa-font);
-  background: var(--tempa-midnight-deep);
-  color: var(--tempa-white);
+  font-family: var(--font);
+  background:
+    radial-gradient(120% 80% at 0% -10%, rgba(15, 118, 110, 0.08), transparent 55%),
+    radial-gradient(90% 60% at 100% 0%, rgba(18, 20, 26, 0.04), transparent 50%),
+    var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
 }
 
-h1, h2, h3, h4 {
-  font-family: var(--tempa-font);
-  font-weight: 500;
-  letter-spacing: 0.02em;
+button, input, textarea {
+  font-family: inherit;
 }
 
-a {
-  color: var(--tempa-midnight-bright);
+button {
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input, textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--ink);
 }
 
 code {
-  font-family: ui-monospace, monospace;
-  background: var(--tempa-midnight);
-  color: var(--tempa-white);
+  font-family: var(--mono);
+  background: var(--bg-soft);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.9em;
 }
 
-input, textarea, select {
-  width: 100%;
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--tempa-midnight-border);
-  background: var(--tempa-midnight-deep);
-  color: var(--tempa-white);
-  font-family: var(--tempa-font);
-}
-
-input::placeholder {
-  color: var(--tempa-muted);
-}
-
-button {
-  padding: 8px 14px;
-  border-radius: 6px;
-  border: 1px solid var(--tempa-midnight-accent);
-  background: var(--tempa-midnight-accent);
-  color: var(--tempa-white);
-  font-family: var(--tempa-font);
-  font-weight: 500;
-  letter-spacing: 0.03em;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-button:hover {
-  background: var(--tempa-midnight-bright);
-  border-color: var(--tempa-midnight-bright);
-}
-
-button.secondary {
-  background: transparent;
-  border-color: var(--tempa-midnight-border);
-  color: var(--tempa-muted);
-}
-
-.card {
-  background: var(--tempa-midnight-card);
-  border: 1px solid var(--tempa-midnight-border);
-  border-radius: var(--tempa-radius);
-  padding: 12px;
-  margin-bottom: 12px;
-}
-
-.badge {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 999px;
-  margin: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.badge.ok {
-  background: var(--tempa-midnight-accent);
-  color: var(--tempa-white);
-}
-
-.badge.bad {
-  background: var(--tempa-black);
-  color: var(--tempa-white);
-  border: 1px solid #4a2030;
-}
-
-.muted {
-  font-size: 12px;
-  color: var(--tempa-muted);
-}
-
-.ok {
-  color: #7eb8ff;
-}
-
-.bad {
-  color: #ff8a8a;
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
 }

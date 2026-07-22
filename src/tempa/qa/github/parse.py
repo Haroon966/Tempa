@@ -9,15 +9,118 @@ _REPO_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)", re.I)
 _PR_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)", re.I)
 _TREE_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/tree/([^\s?#]+)", re.I)
 _SHORT_REPO_RE = re.compile(r"\b([\w.-]+/[\w.-]+)\b")
-_BRANCH_RE = re.compile(
-    r"(?:branch|on\s+branch|for\s+branch|scan\s+branch)\s+[`'\"]?([^\s`'\",]+)[`'\"]?",
+# "branch develop" / "on branch feature-x"
+_BRANCH_AFTER_RE = re.compile(
+    r"(?:(?:on|for|scan)\s+)?branch\s+[`'\"]?([^\s`'\",]+)[`'\"]?",
+    re.I,
+)
+# "main branch" / "feature-login branch"
+_BRANCH_BEFORE_RE = re.compile(
+    r"[`'\"]?([A-Za-z0-9._/\-]+)[`'\"]?\s+branch\b",
+    re.I,
+)
+# "main github.com/owner/repo" — branch named immediately before the URL
+_BRANCH_BEFORE_URL_RE = re.compile(
+    r"\b([A-Za-z0-9._/\-]+)\s+(?:https?://)?github\.com/",
     re.I,
 )
 _PR_NUM_RE = re.compile(r"\bpr\s*#?\s*(\d+)\b", re.I)
+# Words that look like branch names but aren't when they follow/precede "branch"
+_BRANCH_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "any",
+        "completly",
+        "completely",
+        "every",
+        "for",
+        "fully",
+        "here",
+        "now",
+        "of",
+        "on",
+        "please",
+        "scan",
+        "the",
+        "this",
+        "that",
+        "to",
+    }
+)
+_COMMON_BRANCHES = frozenset({"main", "master", "develop", "development", "staging", "release"})
 
-_SCAN_HINTS = ("scan", "check branch", "run qa", "audit", "any fixes", "fix it", "review")
+# Strong QA verbs — enough even with a product-name alias ("scan compliance tracker").
+_STRONG_SCAN_HINTS = (
+    "scan",
+    "check branch",
+    "run qa",
+    "do qa",
+    "audit",
+    "deep review",
+    "deep-review",
+    "lint",
+    "security check",
+)
+# Weak verbs — only with an explicit github.com / owner/repo ref (not product aliases).
+_WEAK_SCAN_HINTS = ("review", "test", "any fixes", "fix it", "comment on")
+_SCAN_HINTS = _STRONG_SCAN_HINTS + _WEAK_SCAN_HINTS  # backwards-compat for callers
 _SCAN_ALL_HINTS = ("scan all", "all repos", "every repo", "all repositories")
-_GITHUB_HINTS = ("github.com", "scan repo", "scan this", "pull request", "deep review", "deep-review")
+# Do NOT include bare "github.com" — linking a repo for improve/explore must hit Cursor, not QA.
+_GITHUB_HINTS = ("scan repo", "scan this", "pull request", "deep review", "deep-review")
+# Product/data support — must not become a lint/security scan via repo alias matching.
+_PRODUCT_DATA_SIGNALS = (
+    " count",
+    "dashboard",
+    "should be higher",
+    "should be lower",
+    "seems to be lower",
+    "seems lower",
+    "portal teacher",
+    "school staff",
+    "vanishes",
+    "vanishing",
+    "not visible",
+    "not showing",
+    "wrong number",
+    "incorrect count",
+    "actual, correct count",
+    "correct count",
+)
+_RESULTS_HINTS = (
+    "any error",
+    "any bug",
+    "any issue",
+    "any finding",
+    "what did you find",
+    "errors found",
+    "bugs found",
+    "bugs you found",
+    "error or bug",
+    "errors or bugs",
+    "findings",
+    "qa result",
+    "scan result",
+    "review result",
+    "what failed",
+    "how did the scan",
+    "how did the review",
+    "status of the scan",
+    "status of the qa",
+    "report findings",
+)
+
+
+def _clean_branch(name: str | None) -> str | None:
+    if not name:
+        return None
+    cleaned = name.strip().strip("`'\",/")
+    if not cleaned or cleaned.lower() in _BRANCH_STOPWORDS:
+        return None
+    if cleaned.lower() in ("https", "http"):
+        return None
+    return cleaned
 
 
 @dataclass
@@ -36,9 +139,69 @@ def normalize_repo_name(repo: str) -> str:
     return name
 
 
+def resolve_repo_alias(text: str) -> str:
+    """Map product phrases to known repos — 'compliance tracker' → Orenda-Project/compliancetracker."""
+    from tempa.qa.installations import list_repos
+
+    compact = re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+    if len(compact) < 4:
+        return ""
+    best = ""
+    best_len = 0
+    for repo in list_repos():
+        name = str(repo or "").strip()
+        if name.count("/") != 1:
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "", name.split("/", 1)[1].lower())
+        if len(slug) < 4:
+            continue
+        if slug in compact and len(slug) > best_len:
+            best, best_len = name, len(slug)
+    return best
+
+
+def has_explicit_github_ref(text: str) -> bool:
+    """True when the message names a concrete GitHub URL or owner/repo — not a product alias."""
+    raw = text or ""
+    if _REPO_URL_RE.search(raw) or _PR_URL_RE.search(raw) or _TREE_URL_RE.search(raw):
+        return True
+    for match in _SHORT_REPO_RE.finditer(raw):
+        candidate = normalize_repo_name(match.group(1))
+        if candidate and candidate.count("/") == 1:
+            return True
+    return False
+
+
+def looks_like_product_data_question(text: str) -> bool:
+    """Dashboard/count/data-correctness asks — Cursor/product support, not QA lint scan."""
+    lower = f" {(text or '').lower()} "
+    if any(h in lower for h in (" scan ", " run qa", " do qa", " deep review", " audit ", " lint")):
+        return False
+    return any(s in lower for s in _PRODUCT_DATA_SIGNALS)
+
+
 def wants_github_qa(text: str) -> bool:
+    """True only for real repo/PR QA intent — not product support like 'check if the count…'."""
+    if looks_like_product_data_question(text):
+        return False
     lower = (text or "").lower()
-    return any(h in lower for h in _GITHUB_HINTS) or any(h in lower for h in _SCAN_HINTS)
+    if any(h in lower for h in _GITHUB_HINTS) or any(h in lower for h in _STRONG_SCAN_HINTS):
+        return True
+    # "review" / "test" alone + product alias used to steal teammate bug reports into lint scans.
+    if has_explicit_github_ref(text) and any(h in lower for h in _WEAK_SCAN_HINTS):
+        return True
+    return False
+
+
+def wants_qa_results(text: str) -> bool:
+    lower = (text or "").lower()
+    if any(h in lower for h in _RESULTS_HINTS):
+        return True
+    # Short follow-ups like "any bugs?" / "errors?" after a QA request
+    return bool(
+        re.search(r"\b(error|errors|bug|bugs|issue|issues|finding|findings|result|results)\b", lower)
+        and re.search(r"\b(any|found|find|show|list|what|report|tell)\b", lower)
+    )
 
 
 def wants_scan_all(text: str) -> bool:
@@ -74,9 +237,31 @@ def parse_github_target(text: str) -> GitHubTarget:
                 target.repo = candidate
                 break
 
-    branch_match = _BRANCH_RE.search(raw)
-    if branch_match and not target.branch:
-        target.branch = branch_match.group(1).strip("/") or None
+    if not target.repo:
+        target.repo = resolve_repo_alias(raw)
+
+    if not target.branch:
+        # "branch develop" first — avoids treating "owner/repo branch X" as branch=owner/repo
+        after = _BRANCH_AFTER_RE.search(raw)
+        if after:
+            target.branch = _clean_branch(after.group(1))
+        if not target.branch:
+            before = _BRANCH_BEFORE_RE.search(raw)
+            if before:
+                target.branch = _clean_branch(before.group(1))
+        if not target.branch:
+            before_url = _BRANCH_BEFORE_URL_RE.search(raw)
+            if before_url:
+                candidate = _clean_branch(before_url.group(1))
+                if candidate and candidate.lower() in _COMMON_BRANCHES:
+                    target.branch = candidate
+        if not target.branch:
+            # Last resort: a common default branch name appears in the message
+            lower = raw.lower()
+            for name in ("main", "master", "develop", "staging"):
+                if re.search(rf"\b{name}\b", lower):
+                    target.branch = name
+                    break
 
     if target.pr_number is None:
         pr_num_match = _PR_NUM_RE.search(raw)

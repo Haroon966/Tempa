@@ -36,9 +36,75 @@ def test_parse_github_target_shorthand_and_branch():
     assert target.branch == "develop"
 
 
+def test_parse_github_target_main_branch_nl():
+    """'main branch' / typo 'completly' must not become the branch name."""
+    target = parse_github_target(
+        "review and test this main github.com/AliAhmed-004/gaming-adda main branch completly"
+    )
+    assert target.repo == "AliAhmed-004/gaming-adda"
+    assert target.branch == "main"
+    assert target.pr_number is None
+
+
+def test_parse_github_target_main_branch_of_repo():
+    target = parse_github_target("review main branch of github.com/acme/widgets")
+    assert target.repo == "acme/widgets"
+    assert target.branch == "main"
+
+
+def test_resolve_repo_alias_from_product_name(monkeypatch: pytest.MonkeyPatch):
+    """'compliance tracker' should resolve to a known allowed repo."""
+    _refresh_settings(monkeypatch, GITHUB_TOKEN="ghp_test", GITHUB_REPOS="")
+    add_repo("Orenda-Project/compliancetracker", source="test")
+    try:
+        from tempa.qa.github.parse import resolve_repo_alias
+
+        assert (
+            resolve_repo_alias(
+                "In the compliance tracker, adding a teacher to PEF-SIS vanishes"
+            )
+            == "Orenda-Project/compliancetracker"
+        )
+        target = parse_github_target(
+            "In the compliance tracker, teachers vanish when added to PEF-SIS"
+        )
+        assert target.repo == "Orenda-Project/compliancetracker"
+    finally:
+        remove_repo("Orenda-Project/compliancetracker")
+
+
 def test_wants_scan_all():
     assert wants_scan_all("please scan all repos")
     assert not wants_scan_all("scan acme/widgets")
+
+
+def test_wants_github_qa_rejects_product_count_questions(monkeypatch: pytest.MonkeyPatch):
+    from tempa.qa.github.parse import looks_like_product_data_question, wants_github_qa
+
+    _refresh_settings(monkeypatch, GITHUB_TOKEN="ghp_test", GITHUB_REPOS="")
+    add_repo("Orenda-Project/compliancetracker", source="test")
+    try:
+        msg = (
+            "In compliance tracker, the portal teacher count in Dashboard -> "
+            "School Staff seems to be lower than expected. Check if the count "
+            "shown on the Dashboard is the actual, correct count"
+        )
+        assert looks_like_product_data_question(msg) is True
+        assert wants_github_qa(msg) is False
+        # Strong QA verb still wins even with product wording nearby.
+        assert wants_github_qa("scan compliance tracker for security issues") is True
+        # Weak "review" without an explicit github ref must not fire.
+        assert wants_github_qa("review compliance tracker") is False
+        assert wants_github_qa("review https://github.com/Orenda-Project/compliancetracker/pull/495") is True
+        # Linking a repo to improve/explore must not become a lint scan.
+        assert (
+            wants_github_qa(
+                "https://github.com/Haroon966/Klip-Board how can we improve this project"
+            )
+            is False
+        )
+    finally:
+        remove_repo("Orenda-Project/compliancetracker")
 
 
 def test_dynamic_repo_add_and_remove(monkeypatch: pytest.MonkeyPatch):

@@ -33,6 +33,19 @@ def test_channel_match_score():
     assert _channel_match_score("regionpunjab-internal", "regionpunjab-internal") == 100
 
 
+def test_find_channel_by_hint_prefers_member_on_tie():
+    from tempa.channels.slack.lookup import find_channel_by_hint
+
+    channels = [
+        {"id": "C1", "name": "region-punjab", "is_member": False},
+        {"id": "C2", "name": "region-punjab", "is_member": True},
+    ]
+    with patch("tempa.channels.slack.lookup._iter_channels", return_value=channels):
+        channel_id, name = find_channel_by_hint("region-punjab")
+    assert channel_id == "C2"
+    assert name == "region-punjab"
+
+
 def test_parse_slack_read_query_ignores_stop_words():
     parsed = parse_slack_read_query("latest message from the in regionpunjab-internal channel")
     assert parsed["user"] == ""

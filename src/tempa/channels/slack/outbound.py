@@ -15,6 +15,11 @@ from tempa.router.safety import screen_outbound_message
 logger = logging.getLogger(__name__)
 
 _SLACK_TEXT_LIMIT = 3900
+_DM_SCOPE_HINT = (
+    "Cannot open a Slack DM: bot is missing im:write. "
+    "In api.slack.com → your Tempa app → OAuth & Permissions → Bot Token Scopes, "
+    "add im:write, then Reinstall to Workspace."
+)
 
 
 def _split_text(text: str, limit: int = _SLACK_TEXT_LIMIT) -> list[str]:
@@ -165,17 +170,56 @@ async def open_dm_for_user(user_id: str) -> str:
                 try:
                     return await asyncio.to_thread(open_dm_channel, sync_client, user_id)
                 except Exception:
-                    if "missing_scope" in err:
-                        raise ValueError(
-                            "No existing DM with that user. Add im:write scope to the Slack app and reinstall."
-                        ) from exc
+                    if "missing_scope" in err or "missing_scope" in str(exc):
+                        raise ValueError(_DM_SCOPE_HINT) from exc
                     raise
             if "missing_scope" in err:
-                raise ValueError(
-                    "No existing DM with that user. Add im:write scope to the Slack app and reinstall."
-                ) from exc
+                raise ValueError(_DM_SCOPE_HINT) from exc
             raise
 
     if sync_client is None:
         raise ValueError("Slack not configured")
     return await asyncio.to_thread(open_dm_channel, sync_client, user_id)
+
+
+def send_slack_message_sync(
+    channel: str,
+    text: str,
+    *,
+    thread_ts: str = "",
+    source_channel: str = "cursor_job",
+) -> dict[str, Any]:
+    """Sync Slack post for Cursor worker threads (no event loop required)."""
+    if not channel or not text.strip():
+        return {"status": "error", "reason": "channel and text required"}
+    if not slack_configured():
+        return {"status": "disconnected", "reason": "Slack not configured"}
+    from tempa.channels.slack.client import load_slack_client
+
+    client = load_slack_client()
+    if client is None:
+        return {"status": "error", "reason": "no slack client"}
+    formatted = prepare_slack_reply(text)
+    chunks = _split_text(formatted)
+    for chunk in chunks:
+        kwargs: dict[str, Any] = {"channel": channel, "text": chunk}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        client.chat_postMessage(**kwargs)
+    # Keep session transcript in sync so mid-thread follow-ups see Tempa participation.
+    try:
+        from tempa.channels.slack.conversation import conversation_thread_key, record_conversation_turn
+
+        is_dm = channel.startswith("D")
+        record_conversation_turn(
+            role="assistant",
+            text=text,
+            channel_id=channel,
+            thread_ts=thread_ts,
+            conversation_key=conversation_thread_key(
+                channel_id=channel, thread_ts=thread_ts, is_dm=is_dm
+            ),
+        )
+    except Exception:
+        logger.exception("cursor sync post: failed to record conversation turn")
+    return {"status": "sent", "via": "sync", "chunks": len(chunks), "source": source_channel}

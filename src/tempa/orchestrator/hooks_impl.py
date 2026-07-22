@@ -9,6 +9,144 @@ async def go_signal_hook(user_message: str, context: dict[str, Any]) -> dict[str
     return await _try_go_signal_approval(user_message, context)
 
 
+async def qa_results_hook(user_message: str, context: dict[str, Any]) -> dict[str, Any] | None:
+    """Answer 'any bugs/errors/findings?' from the QA store — never ask clarifying questions."""
+    from tempa.qa.config import qa_enabled
+    from tempa.qa.github.parse import wants_qa_results
+    from tempa.qa.results_reply import format_qa_results_reply, resolve_qa_repo_from_context
+
+    if not qa_enabled() or not wants_qa_results(user_message):
+        return None
+    # Don't steal a fresh scan request that also mentions findings wording.
+    lower = user_message.lower()
+    if any(k in lower for k in ("scan", "review this", "do qa", "run qa", "check this", "audit")):
+        if "github.com" in lower or "/" in user_message:
+            return None
+
+    repo = resolve_qa_repo_from_context(user_message, context)
+    return {
+        "response": format_qa_results_reply(repo),
+        "sources": [],
+        "paused": False,
+        "pending_actions": [],
+        "artifacts": [],
+        "planned_steps": [],
+    }
+
+
+async def qa_scan_hook(user_message: str, context: dict[str, Any]) -> dict[str, Any] | None:
+    """Deterministic route: a PR/repo link with review intent goes straight to the QA queue,
+    bypassing the LLM planner (which otherwise asks clarifying questions).
+
+    Slack GitHub improve/explore asks never reach here — reply.py sends them to Cursor first.
+    Bare github.com links without strong QA intent are rejected by wants_github_qa.
+    """
+    from tempa.qa.config import qa_enabled
+    from tempa.qa.github.parse import parse_github_target, wants_github_qa
+
+    if not qa_enabled():
+        return None
+    target = parse_github_target(user_message)
+    if not target.repo:
+        return None
+    # Require real QA intent. Loose words like "check if the count…" used to steal
+    # product-support asks into a lint/security scan via repo alias matching.
+    if not wants_github_qa(user_message):
+        return None
+
+    from tempa.qa.scan_request import handle_github_scan_request
+
+    from tempa.channels.slack.users import get_allowed_slack_user_ids, get_owner_slack_user_id
+    from tempa.settings import get_settings
+
+    channel = str(context.get("channel") or "coordinator")
+    slack_user = str(context.get("slack_user_id") or "")
+    wa_number = str(context.get("whatsapp_number") or context.get("from_number") or "")
+    requested_by = slack_user or wa_number or channel
+    # Trust = explicit owner/allowlisted identities only (slack_allow_all is for chatting,
+    # not for adding repos to the scan allowlist).
+    owner_number = get_settings().whatsapp_owner_number.strip()
+    trusted = bool(
+        (slack_user and (slack_user == get_owner_slack_user_id() or slack_user in get_allowed_slack_user_ids()))
+        or (owner_number and owner_number in requested_by)
+        or channel == "dashboard"
+    )
+    # Stash reply target so the QA worker can comment on the PR and report back here.
+    notify: dict[str, Any] = {}
+    slack_channel = str(context.get("slack_channel_id") or context.get("channel_id") or "")
+    if slack_channel:
+        notify["slack_channel_id"] = slack_channel
+        thread_ts = str(context.get("slack_thread_ts") or context.get("thread_ts") or "")
+        if thread_ts:
+            notify["slack_thread_ts"] = thread_ts
+    if wa_number and channel == "whatsapp":
+        notify["whatsapp_number"] = wa_number
+    try:
+        result = handle_github_scan_request(
+            user_message,
+            source_channel=channel,
+            requested_by=requested_by,
+            trusted=trusted,
+            notify=notify or None,
+        )
+    except Exception as exc:
+        return {
+            "sources": [],
+            "artifacts": [],
+            "planned_steps": [],
+            "response": f"Couldn't start the GitHub review for `{target.repo}`: {exc}",
+            "paused": False,
+            "pending_actions": [],
+        }
+    status = result.get("status")
+
+    base = {"sources": [], "artifacts": [], "planned_steps": []}
+    if status == "queued":
+        if target.pr_number:
+            response = (
+                f"On it — queued a priority review for PR #{target.pr_number} on `{target.repo}`. "
+                "I'll assign the PR if it has no assignee, review the diff, "
+                "run lint/tests/security checks, comment on the PR, and report back here."
+            )
+        elif target.branch:
+            response = (
+                f"On it — queued a full review of `{target.repo}` on branch `{target.branch}`. "
+                "I'll clone the branch, run lint/tests/security checks, and report findings here."
+            )
+        else:
+            response = (
+                f"On it — queued a full review of `{target.repo}`. "
+                "I'll run lint/tests/security checks and report findings here."
+            )
+        return {
+            **base,
+            "response": response,
+            "paused": False,
+            "pending_actions": [],
+        }
+    if status == "pending_approval":
+        return {
+            **base,
+            "response": str(result.get("message") or "Repo needs approval before I can scan it."),
+            "paused": True,
+            "pending_actions": [
+                {
+                    "id": result.get("action_id"),
+                    "type": "qa_repo_scan",
+                    "preview": user_message[:200],
+                }
+            ],
+        }
+    if status in ("error", "disabled"):
+        return {
+            **base,
+            "response": str(result.get("message") or "QA scan is unavailable right now."),
+            "paused": False,
+            "pending_actions": [],
+        }
+    return None
+
+
 async def jira_ticket_hook(user_message: str, context: dict[str, Any]) -> dict[str, Any] | None:
     from tempa.agents.clarification import clarification_response
     from tempa.channels.jira.tickets import handle_jira_ticket_message, should_route_to_jira_ticket, ticket_feature_enabled
@@ -24,14 +162,37 @@ async def jira_ticket_hook(user_message: str, context: dict[str, Any]) -> dict[s
 
 
 async def clarification_hook(user_message: str, context: dict[str, Any]) -> dict[str, Any] | None:
-    from tempa.agents.clarification import clarification_response, detect_missing_context
+    from tempa.agents.clarification import (
+        apply_durable_slot_fills,
+        clarification_response,
+        detect_missing_context,
+    )
     from tempa.channels.jira.tickets import should_route_to_jira_ticket
+    from tempa.rag.procedural import _infer_slot_from_question, resolve_open_clarification
 
     if should_route_to_jira_ticket(user_message, context):
         return None
+
+    # Answer to a prior clarifying question → durable memory, then continue
+    resolve_open_clarification(user_message, context)
+
+    apply_durable_slot_fills(user_message, context)
     missing = detect_missing_context(user_message, context)
     if missing:
-        return clarification_response(missing)
+        hint = ""
+        if "mentioned" in missing.lower():
+            import re
+
+            m = re.search(r"mentioned\s+(\w+)", missing, re.I)
+            if m:
+                hint = m.group(1)
+        return clarification_response(
+            missing,
+            context=context,
+            slot=_infer_slot_from_question(missing),
+            hint=hint,
+            register_open=True,
+        )
     return None
 
 
@@ -43,6 +204,15 @@ async def varys_work_request_hook(user_message: str, context: dict[str, Any]) ->
         return None
     if not is_coding_work_request(user_message, context):
         return None
+
+    # Cursor owns coding — no Varys harness ticket / go-approval for code work.
+    try:
+        from tempa.channels.slack.cursor_threads import cursor_owns_coding
+
+        if cursor_owns_coding():
+            return None
+    except Exception:
+        pass
 
     from tempa.varys import harness
     from tempa.varys.vault_sync import append_session_log, ensure_vault_initialized
@@ -133,6 +303,8 @@ def register_all_hooks() -> None:
     from tempa.orchestrator.hooks import register_pre_hook
 
     register_pre_hook("go_signal", go_signal_hook)
+    register_pre_hook("qa_results", qa_results_hook)
+    register_pre_hook("qa_scan", qa_scan_hook)
     register_pre_hook("jira_ticket", jira_ticket_hook)
     register_pre_hook("clarification", clarification_hook)
     register_pre_hook("varys_work_request", varys_work_request_hook)

@@ -48,6 +48,38 @@ ACTION_TYPES: set[str] = {
     "jira_transition",
 }
 
+# Actor-loop / delegate must pause for owner approval before continuing.
+PAUSE_ON_PENDING: frozenset[str] = frozenset(
+    {
+        "email_send",
+        "whatsapp_send",
+        "slack_send",
+        "pc_write",
+        "pc_delete",
+        "pc_mkdir",
+        "file_transfer",
+        "qa_autofix",
+        "jira_create_issue",
+        "jira_transition",
+    }
+)
+
+_HIGH_RISK = frozenset({"high", "critical"})
+
+
+def needs_owner_pause(pending_actions: list[dict[str, Any]]) -> bool:
+    """True when pending actions require owner approval before the agent continues."""
+    for item in pending_actions:
+        if not isinstance(item, dict):
+            continue
+        action_type = str(item.get("type") or "")
+        if action_type in PAUSE_ON_PENDING:
+            return True
+        risk = str(item.get("risk_level") or "").lower()
+        if risk in _HIGH_RISK:
+            return True
+    return False
+
 
 def _store_path() -> Any:
     return get_settings().sessions_dir / "pending_actions.json"
@@ -357,7 +389,21 @@ async def _run_executor(action_type: str, payload: dict[str, Any]) -> dict[str, 
             branch=payload.get("branch"),
             pr_number=int(payload["pr_number"]) if payload.get("pr_number") else None,
         )
-        job_id = enqueue_target_scan(target)
+        job_id = enqueue_target_scan(
+            target,
+            extra={
+                k: payload[k]
+                for k in (
+                    "requested_by",
+                    "source_channel",
+                    "request_message",
+                    "slack_channel_id",
+                    "slack_thread_ts",
+                    "whatsapp_number",
+                )
+                if payload.get(k)
+            },
+        )
         return {"status": "queued", "job_id": job_id, "repo": repo}
     if action_type == "varys_ticket":
         from tempa.varys.harness import approve_varys_ticket

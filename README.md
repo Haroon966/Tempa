@@ -67,7 +67,7 @@ https://github.com/Haroon966/Tempa/raw/main/animated_tempa.mp4
 
 ### System overview
 
-Everything funnels through the **Tempa daemon** (`8787`). Channels ingest into unified memory; the **coordinator** decides how to reply; specialists and tools reach Gmail, Calendar, Meet, Slack, and WhatsApp.
+Everything funnels through the **Tempa daemon** (`8787`). Channels ingest into unified memory; the **tools coordinator** handles Gmail, Calendar, Meet, Slack, and WhatsApp; **Cursor** owns coding (Slack engineering asks → durable jobs / PRs / CI).
 
 ```mermaid
 flowchart TB
@@ -80,21 +80,14 @@ flowchart TB
 
     Daemon["Tempa daemon :8787"]
 
-    subgraph brain [Coordinator]
-        Router{TEMPA_COORDINATOR}
-        Varys[Varys coordinator]
-        LangGraph[LangGraph specialists]
-    end
-
-    subgraph varysCore [Varys core]
-        Harness[(harness.db)]
-        Tick[Orchestrator tick 270s]
-        ClaudeCLI[Claude Code CLI]
-        Vault[data/vault]
+    subgraph brain [Brains]
+        Coord[Tools coordinator specialists]
+        CursorJobs[Cursor SDK jobs]
     end
 
     subgraph memory [Unified memory]
         Chroma[(ChromaDB RAG)]
+        Vault[data/vault]
     end
 
     subgraph channels [Channels and workers]
@@ -107,7 +100,7 @@ flowchart TB
 
     subgraph llm [Models]
         Groq[Groq API]
-        Claude[Claude via CLI]
+        CursorSDK[Cursor local or cloud]
     end
 
     Dashboard --> Daemon
@@ -115,66 +108,47 @@ flowchart TB
     SlackIn --> SlackOut --> Daemon
     WhatsAppIn --> WhatsAppBridge --> Daemon
 
-    Daemon --> Router
-    Router -->|varys or hybrid| Varys
-    Router -->|langgraph or hybrid| LangGraph
-
-    Varys --> ClaudeCLI --> Claude
-    Varys --> Harness
-    Tick --> Harness
-    Tick --> ClaudeCLI
-    Varys --> Vault
+    Daemon -->|"mail cal meet chat"| Coord
+    Daemon -->|"coding work"| CursorJobs
+    Coord --> Groq
+    Coord --> Chroma
+    Coord --> GoogleAPIs
+    Coord --> SlackOut
+    Coord --> WhatsAppBridge
+    Coord --> MeetWorker
+    CursorJobs --> CursorSDK
     Vault --> Chroma
-    Varys --> Chroma
-
-    LangGraph --> Groq
-    LangGraph --> Chroma
-    LangGraph --> GoogleAPIs
-    LangGraph --> SlackOut
-    LangGraph --> WhatsAppBridge
-    LangGraph --> MeetWorker
-
     Daemon --> QAWorker
     SlackOut --> SlackIn
     WhatsAppBridge --> WhatsAppIn
 ```
 
-### Message flow (Varys mode)
+### Message flow
 
-When `TEMPA_COORDINATOR=varys`, dashboard and Slack messages use the Varys coordinator. WhatsApp casual chat still uses the fast Groq path unless routed to the full coordinator.
+- **Non-coding** (inbox, calendar, Meet, casual Slack/WA) → tools coordinator + specialists (Groq). Destructive channel actions still use pending-action / owner approval.
+- **Coding** on Slack (pinned thread or coding heuristic + `config/cursor_threads.yaml` repo) → Cursor job queue; worker posts progress, opens PRs, waits on CI, escalates after failed fix cycles. No Varys harness ticket / “reply go” for code.
+- **WhatsApp** casual chat still uses the fast Groq path unless routed to the full coordinator.
+- Optional `VARYS_ORCHESTRATOR_ENABLED` tick remains for Notion/Jira/GitHub pollers only — not the chat coding brain.
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Channel as Slack or Dashboard
+    participant Slack
     participant Daemon as Tempa daemon
-    participant Coord as Varys coordinator
-    participant Ctx as Context builder
-    participant Vault as data/vault
-    participant RAG as ChromaDB
-    participant Harness as harness.db
-    participant Claude as Claude Code CLI
+    participant Coord as Tools coordinator
+    participant Cursor as Cursor job worker
 
-    User->>Channel: message
-    Channel->>Daemon: inbound event
-    Daemon->>Coord: run_coordinator_full
+    User->>Slack: message
+    Slack->>Daemon: inbound event
 
-    alt work request e.g. fix X in repo
-        Coord->>Harness: create ticket + event
-        Coord-->>User: ticket created, reply go to approve
-    else owner replies go
-        Coord->>Harness: message.go_signal event
-        Coord-->>User: approved, tick will dispatch
-    else conversational
-        Coord->>Ctx: build prompt
-        Ctx->>Vault: read wing and rules
-        Ctx->>RAG: search_memory
-        Ctx->>Claude: system + user prompt
-        Claude-->>Coord: reply
-        Coord-->>User: response
+    alt coding ask
+        Daemon->>Cursor: enqueue job
+        Daemon-->>User: working ack
+        Cursor-->>User: progress PR CI result
+    else channel or chat
+        Daemon->>Coord: run_coordinator_full
+        Coord-->>User: specialist reply
     end
-
-    Note over Harness,Claude: Orchestrator tick polls tickets,<br/>dispatches pending events via Claude CLI
 ```
 
 ### Memory and vault
@@ -215,8 +189,8 @@ flowchart LR
     IngestFn --> meta
     meta --> Chroma
 
-    Chroma --> VarysCtx[Varys context builder]
-    Chroma --> LangGraphRAG[LangGraph RAG agent]
+    Chroma --> ToolsCoord[Tools coordinator RAG]
+    Chroma --> CursorCtx[Cursor job prompts via Tempa]
 ```
 
 ### Docker layout
@@ -264,20 +238,29 @@ flowchart LR
 
 ---
 
-## ✦ Varys coordinator
-
-[Varys](https://github.com/codebyshoaib/varys) is vendored under `vendor/varys` (reference only). Runtime code lives in `src/tempa/varys/`.
+## ✦ Coordinator and Cursor
 
 | Setting | Purpose |
 |:--|:--|
-| `TEMPA_COORDINATOR` | `varys` · `langgraph` · `hybrid` |
-| `VARYS_ORCHESTRATOR_ENABLED` | Background 270s tick loop |
-| `VARYS_CLAUDE_CLI_ONLY` | Use Claude Code CLI only (no API fallback) |
-| `CLAUDE_CODE_PATH` | Path to `claude` binary |
+| `TEMPA_COORDINATOR` | `langgraph` (default tools path) · `varys` · `hybrid` — Claude merge only when Cursor does not own coding |
+| `CURSOR_API_KEY` | Cursor SDK for Slack coding jobs + deep PR review |
+| `config/cursor_threads.yaml` | `repos:` mounts + optional `threads:` pin overrides (see `.example`) |
+| `SLACK_OWNER_USER_ID` / `SLACK_ALLOWED_USER_IDS` | Who may use private tools and Cursor coding |
+| `TEMPA_REPOS_HOST` | Host folder mounted at `/repos` (default `./repos`) |
+| `VARYS_ORCHESTRATOR_ENABLED` | Optional background tick (pollers) — not the coding brain |
+| `TEMPA_ADK_SPIKE` | Experimental ADK path — keep `false` |
 | `VARYS_VAULT_DIR` | Persistent vault memory (`data/vault`) |
 
+### Slack Cursor coding setup
+
+1. Set `CURSOR_API_KEY` and Slack allowlist (`SLACK_OWNER_USER_ID` / `SLACK_ALLOWED_USER_IDS`). Keep `SLACK_ALLOW_ALL=false` unless the whole workspace is trusted.
+2. Clone repos under `./repos/<name>` (or set `TEMPA_REPOS_HOST`).
+3. Copy from [`config/cursor_threads.yaml.example`](config/cursor_threads.yaml.example) into [`config/cursor_threads.yaml`](config/cursor_threads.yaml): set `local_cwd: /repos/<name>`, optional `repo`, `required_checks`.
+4. Ensure the daemon image has `git` + `gh` for write/PR jobs; worktrees use `/repos/tempa-worktrees`.
+5. In Slack, @Tempa with a coding ask (or use a pinned `threads:` entry). Guests are denied. Progress posts land in the thread; jobs appear on the dashboard QA → Tempa Cursor jobs board.
+
 ```bash
-tempa varys status    # harness DB summary
+tempa varys status    # harness DB summary (optional tick)
 tempa varys tick      # run one orchestrator tick
 tempa vault-sync      # index vault into Chroma RAG
 ./scripts/vendor-varys.sh   # refresh vendored upstream
@@ -328,8 +311,10 @@ cp .env.example .env</code></pre>
 | `EVOLUTION_API_URL` | WhatsApp bridge · default `http://localhost:8080` |
 | `EVOLUTION_API_KEY` | Bridge auth key |
 | `TEMPA_INSTANCE_NAME` | WhatsApp instance name |
-| `TEMPA_COORDINATOR` | `varys` · `langgraph` · `hybrid` |
-| `VARYS_ORCHESTRATOR_ENABLED` | Enable Varys background tick loop |
+| `TEMPA_COORDINATOR` | `langgraph` (default) · `varys` · `hybrid` |
+| `CURSOR_API_KEY` | Cursor SDK coding jobs + deep PR review |
+| `VARYS_ORCHESTRATOR_ENABLED` | Optional Varys background tick (pollers) |
+| `TEMPA_ADK_SPIKE` | Experimental ADK coordinator — keep false |
 | `VARYS_CLAUDE_CLI_ONLY` | Claude Code CLI only (no Anthropic API fallback) |
 | `CLAUDE_CODE_PATH` | Path to Claude Code CLI (`claude`) |
 | `VARYS_VAULT_DIR` | Vault memory directory (default `data/vault`) |
@@ -387,11 +372,12 @@ In-repo **Baileys bridge** at [`services/whatsapp-bridge/`](services/whatsapp-br
 - `app_mentions:read`
 - `chat:write`
 - `im:history`
-- `im:read` ← **missing on many setups; required for DMs**
+- `im:read` ← required to list existing DMs
+- `im:write` ← **required to open a new DM** (`conversations.open`); without it, “send this to …” fails
 - `users:read`
 - `channels:history`, `channels:read` (for @mentions in public channels)
 
-**Required for DMs:** App Home → **Messages Tab** ON + allow user messages. **Event Subscriptions** → bot events **`message.im`** and **`app_mention`**. After changing scopes/events, **reinstall the app** to the workspace.
+**Required for DMs:** App Home → **Messages Tab** ON + allow user messages. **Event Subscriptions** → bot events **`message.im`** and **`app_mention`**. After changing scopes/events, **reinstall the app** to the workspace (OAuth → Install App).
 
 DM the bot or `@mention` it in a channel. Outbound sends from the coordinator go through pending-action approval.
 

@@ -8,6 +8,8 @@ HookFn = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any] | None]]
 # Pre-orchestrator hooks run in order; first non-None result short-circuits planning.
 PRE_HOOK_ORDER: list[str] = [
     "go_signal",
+    "qa_results",
+    "qa_scan",
     "jira_ticket",
     "clarification",
     "varys_work_request",

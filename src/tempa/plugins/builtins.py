@@ -140,7 +140,7 @@ def _register_meet_tools() -> None:
 
 
 def _register_preference_tools() -> None:
-    from tempa.rag.procedural import add_preference, list_preferences
+    from tempa.rag.procedural import add_fact, add_preference, list_durable, list_preferences
 
     register_tool(
         "memory.add_preference",
@@ -157,6 +157,31 @@ def _register_preference_tools() -> None:
         "List stored user preferences",
         lambda: {"preferences": list_preferences()},
         input_schema={"type": "object", "properties": {}},
+    )
+    register_tool(
+        "memory.add_fact",
+        "Store a durable org fact, person, project, or decision",
+        lambda text="", kind="fact": add_fact(text, kind=kind or "fact", source="plugin"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "description": "fact|person|project|decision",
+                },
+            },
+            "required": ["text"],
+        },
+    )
+    register_tool(
+        "memory.list_durable",
+        "List durable memory items (preferences, facts, people, projects, decisions)",
+        lambda kind="": {"items": list_durable(kinds=[kind] if kind else None)},
+        input_schema={
+            "type": "object",
+            "properties": {"kind": {"type": "string"}},
+        },
     )
 
 

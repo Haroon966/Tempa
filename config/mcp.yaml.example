@@ -1,0 +1,9 @@
+# Optional MCP servers for Tempa / Hermes tools coordinator.
+# Enable by adding servers, then pip install mcp.
+#
+# servers:
+#   - name: filesystem
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+servers: []

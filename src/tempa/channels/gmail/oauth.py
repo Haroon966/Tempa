@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 
 from tempa.channels.calendar.oauth import (
-    REDIRECT_PATH,
     client_secret_path,
     google_credentials_configured,
+    oauth_redirect_uri,
     save_google_credentials,
 )
 from tempa.channels.gmail.client import DEFAULT_SCOPES, GmailClient
@@ -54,11 +54,10 @@ def _clear_pending_oauth() -> None:
 def get_oauth_flow():
     from google_auth_oauthlib.flow import Flow
 
-    settings = get_settings()
     return Flow.from_client_secrets_file(
         str(client_secret_path()),
         scopes=list(DEFAULT_SCOPES),
-        redirect_uri=f"http://localhost:{settings.tempa_daemon_port}{REDIRECT_PATH}",
+        redirect_uri=oauth_redirect_uri(),
     )
 
 

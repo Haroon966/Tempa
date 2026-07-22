@@ -74,10 +74,10 @@ def _ensure_pulse_running() -> None:
                     'export PULSE_SERVER="${PULSE_SERVER:-unix:${XDG_RUNTIME_DIR}/pulse/native}"; '
                     "pulseaudio --daemonize --exit-idle-time=-1 --disallow-exit 2>/dev/null || true; "
                     "sleep 1; "
-                    "pactl load-module module-null-sink sink_name=meet_sink "
-                    "sink_properties=device.description=MeetCapture 2>/dev/null || true; "
-                    "pactl set-default-sink meet_sink 2>/dev/null || true; "
-                    "pactl set-default-source meet_sink.monitor 2>/dev/null || true"
+                    "pactl load-module module-null-sink sink_name=meet_sink_0 "
+                    "sink_properties=device.description=MeetCapture0 2>/dev/null || true; "
+                    "pactl set-default-sink meet_sink_0 2>/dev/null || true; "
+                    "pactl set-default-source meet_sink_0.monitor 2>/dev/null || true"
                 ),
             ],
             timeout=10,

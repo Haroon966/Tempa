@@ -51,6 +51,18 @@ def load_skills_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def reload_skills() -> int:
+    """Invalidate skills caches so filesystem edits take effect without restart."""
+    load_skills_config.cache_clear()
+    try:
+        from tempa.orchestrator.registry import list_workers
+
+        list_workers.cache_clear()
+    except Exception:
+        pass
+    return len(load_all_skills())
+
+
 def _skill_directories() -> list[Path]:
     cfg = load_skills_config()
     root = get_settings().config_dir.parent
@@ -64,6 +76,22 @@ def _skill_directories() -> list[Path]:
     default = get_settings().config_dir / "skills"
     if default.is_dir() and default not in dirs:
         dirs.append(default)
+    # Auto-learned skills (self-improve loop)
+    try:
+        from tempa.learning.store import auto_skills_dir
+
+        auto = auto_skills_dir()
+        if auto.is_dir() and auto not in dirs:
+            dirs.append(auto)
+    except Exception:
+        pass
+    # Hermes bridged skills
+    try:
+        hermes = get_settings().tempa_data_dir / "hermes" / "skills"
+        if hermes.is_dir() and hermes not in dirs:
+            dirs.append(hermes)
+    except Exception:
+        pass
     return dirs
 
 
@@ -75,7 +103,9 @@ def load_all_skills() -> list[Skill]:
     skills: list[Skill] = []
     seen: set[str] = set()
     for base in _skill_directories():
-        for path in sorted(base.glob("*/SKILL.md")):
+        # One level: name/SKILL.md and nested learned/name/SKILL.md
+        paths = list(base.glob("*/SKILL.md")) + list(base.glob("*/*/SKILL.md"))
+        for path in sorted(set(paths)):
             skill = _parse_skill_file(path)
             if skill is None or skill.name in disabled or skill.name in seen:
                 continue

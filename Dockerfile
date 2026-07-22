@@ -12,7 +12,15 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl ffmpeg && rm -rf /var/lib/apt/lists/*
+    build-essential curl ca-certificates ffmpeg git \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml prd.md ./
 RUN mkdir -p src/tempa && touch src/tempa/__init__.py
@@ -23,7 +31,8 @@ COPY config ./config
 COPY src ./src
 COPY --from=dashboard-build /dashboard/dist ./dashboard/dist
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -e . --no-deps
+    pip install -e . --no-deps \
+    && git config --global --add safe.directory '*'
 
 EXPOSE 8787
 CMD ["tempa", "start"]

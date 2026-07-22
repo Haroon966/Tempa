@@ -45,13 +45,15 @@ def github_auth_mode() -> str | None:
 
 
 def get_github_token(repo: str | None = None) -> str:
+    # Prefer App installation token when we know the repo — PAT may lack org access.
+    if repo:
+        from tempa.qa.installations import installation_id_for_repo
+
+        inst_id = installation_id_for_repo(repo)
+        if inst_id:
+            return get_installation_token(inst_id)
     if pat := _pat_token():
         return pat
-    from tempa.qa.installations import installation_id_for_repo
-
-    inst_id = installation_id_for_repo(repo) if repo else None
-    if inst_id:
-        return get_installation_token(inst_id)
     raise RuntimeError("No GitHub token configured")
 
 

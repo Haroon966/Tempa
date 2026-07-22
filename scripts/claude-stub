@@ -1,0 +1,4 @@
+#!/bin/sh
+# Placeholder when CLAUDE_CLI_BIN is unset. Coding uses Cursor; Claude CLI is optional.
+echo "Claude Code CLI is not mounted. Set CLAUDE_CLI_BIN in .env to your host claude binary." >&2
+exit 1

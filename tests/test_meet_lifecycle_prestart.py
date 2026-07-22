@@ -12,9 +12,15 @@ from tempa.meet.lifecycle import MeetingEndTracker, check_meeting_ended
 @pytest.mark.asyncio
 async def test_alone_before_event_start_does_not_end(monkeypatch):
     page = MagicMock()
-    page.locator.return_value.count = AsyncMock(return_value=0)
     page.url = "https://meet.google.com/abc-defg-hij"
-    page.evaluate = AsyncMock(return_value=1)
+
+    def locator(selector):
+        loc = MagicMock()
+        loc.count = AsyncMock(return_value=1 if "Leave" in str(selector) else 0)
+        return loc
+
+    page.locator = MagicMock(side_effect=locator)
+    page.evaluate = AsyncMock(return_value=["Tempa"])
 
     tracker = MeetingEndTracker(alone_grace_seconds=60.0)
     # Event starts far in the future

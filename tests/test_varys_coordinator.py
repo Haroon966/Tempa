@@ -9,6 +9,10 @@ def test_should_use_varys_modes(monkeypatch):
     from tempa.settings import get_settings
     from tempa.orchestrator.config import load_orchestrator_config
 
+    monkeypatch.setattr(
+        "tempa.channels.slack.cursor_threads.cursor_owns_coding",
+        lambda: False,
+    )
     monkeypatch.setenv("TEMPA_COORDINATOR", "langgraph")
     get_settings.cache_clear()
     load_orchestrator_config.cache_clear()
@@ -34,6 +38,10 @@ async def test_varys_coordinator_work_request(monkeypatch, tmp_path):
     monkeypatch.setenv("TEMPA_COORDINATOR", "varys")
     monkeypatch.setenv("VARYS_HARNESS_DB", str(tmp_path / "harness.db"))
     monkeypatch.setenv("VARYS_VAULT_DIR", str(tmp_path / "vault"))
+    monkeypatch.setattr(
+        "tempa.channels.slack.cursor_threads.cursor_owns_coding",
+        lambda: False,
+    )
     from tempa.settings import get_settings
 
     get_settings.cache_clear()

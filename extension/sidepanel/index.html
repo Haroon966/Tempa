@@ -7,89 +7,90 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header>
-    <h1>Tempa</h1>
-    <nav id="tabs">
-      <button data-tab="connections" class="active">Connections</button>
-      <button data-tab="chat">Chat</button>
-      <button data-tab="meetings">Meetings</button>
-      <button data-tab="memory">Memory</button>
-      <button data-tab="agents">Agents</button>
-      <button data-tab="pending">Approvals</button>
-    </nav>
-  </header>
-
-  <main>
-    <section id="connections" class="tab active">
-      <div id="connection-badges"></div>
-      <div class="card">
-        <h2>Daemon</h2>
-        <button id="stop-daemon">Stop daemon</button>
-        <button id="restart-daemon">Restart daemon</button>
-        <p id="daemon-status">Run <code>tempa start</code> to start</p>
-      </div>
-      <div class="card">
-        <h2>Recording consent</h2>
-        <button id="grant-consent">Grant consent</button>
-        <p id="consent-status"></p>
-      </div>
-      <div class="card">
-        <h2>Groq API</h2>
-        <input id="groq-key" type="password" placeholder="GROQ_API_KEY" />
-        <button id="save-groq">Save & Test</button>
-        <p id="groq-status"></p>
-        <p id="groq-models" class="muted"></p>
-      </div>
-      <div class="card">
-        <h2>Google Calendar</h2>
-        <button id="connect-google">Connect Google Calendar</button>
-        <p id="google-status"></p>
-      </div>
-      <div class="card">
-        <h2>Gmail</h2>
-        <button id="connect-gmail">Connect Gmail</button>
-        <p id="gmail-status"></p>
-      </div>
-      <div class="card">
-        <h2>WhatsApp QR</h2>
-        <div id="qr-container">
-          <img id="qr-image" alt="WhatsApp QR" />
-          <p id="wa-status"></p>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <h1>Tempa</h1>
+          <p id="status" class="status">Connecting…</p>
         </div>
-        <button id="refresh-qr">Refresh QR</button>
       </div>
-    </section>
+      <div class="topbar-actions">
+        <button type="button" id="btn-new-chat" class="icon-btn" title="New chat" aria-label="New chat">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button type="button" id="btn-stop" class="icon-btn danger hidden" title="Stop" aria-label="Stop run">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+      </div>
+    </header>
 
-    <section id="chat" class="tab">
-      <div id="chat-log"></div>
-      <form id="chat-form">
-        <input id="chat-input" placeholder="Message Tempa..." />
-        <button type="submit">Send</button>
-      </form>
-    </section>
+    <main>
+      <section id="view-chat" class="view active" data-view="chat">
+        <div id="chat-empty" class="empty-state">
+          <p class="empty-title">What can I help with?</p>
+          <p class="empty-sub">Ask Tempa to check mail, calendar, memory, or run multi-step agent work.</p>
+          <div id="prompt-chips" class="chips"></div>
+        </div>
+        <div id="chat-log" class="chat-log" aria-live="polite"></div>
+        <form id="chat-form" class="composer">
+          <textarea id="chat-input" rows="1" placeholder="Message Tempa…" autocomplete="off"></textarea>
+          <button type="submit" id="btn-send" class="send-btn" aria-label="Send">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </button>
+        </form>
+      </section>
 
-    <section id="meetings" class="tab">
-      <ul id="meetings-list"></ul>
-      <div id="meeting-detail"></div>
-    </section>
+      <section id="view-activity" class="view" data-view="activity">
+        <div class="panel-head">
+          <h2>Agent activity</h2>
+          <p class="muted">Live steps from the coordinator</p>
+        </div>
+        <ul id="activity-log" class="feed-list"></ul>
+      </section>
 
-    <section id="memory" class="tab">
-      <form id="memory-form">
-        <input id="memory-query" placeholder="Search unified memory..." />
-        <button type="submit">Search</button>
-      </form>
-      <div id="memory-results"></div>
-    </section>
+      <section id="view-approvals" class="view" data-view="approvals">
+        <div class="panel-head">
+          <h2>Approvals</h2>
+          <p class="muted">Review actions before Tempa executes them</p>
+        </div>
+        <div id="pending-list" class="pending-list"></div>
+      </section>
 
-    <section id="agents" class="tab">
-      <ul id="agents-log"></ul>
-    </section>
+      <section id="view-memory" class="view" data-view="memory">
+        <div class="panel-head">
+          <h2>Memory</h2>
+          <p class="muted">Search unified agent memory</p>
+        </div>
+        <form id="memory-form" class="search-row">
+          <input id="memory-query" placeholder="Search notes, meetings, prefs…" />
+          <button type="submit">Search</button>
+        </form>
+        <div id="memory-results" class="memory-results"></div>
+      </section>
+    </main>
 
-    <section id="pending" class="tab">
-      <div id="pending-list"></div>
-    </section>
-  </main>
-
+    <nav class="bottom-nav" aria-label="Primary">
+      <button type="button" class="nav-item active" data-nav="chat">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg>
+        <span>Chat</span>
+      </button>
+      <button type="button" class="nav-item" data-nav="activity">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span>Activity</span>
+      </button>
+      <button type="button" class="nav-item" data-nav="approvals">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span>Approvals</span>
+        <span id="pending-badge" class="badge hidden">0</span>
+      </button>
+      <button type="button" class="nav-item" data-nav="memory">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <span>Memory</span>
+      </button>
+    </nav>
+  </div>
   <script type="module" src="app.js"></script>
 </body>
 </html>

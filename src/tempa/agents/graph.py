@@ -189,22 +189,27 @@ async def plan_node(state: CoordinatorState) -> dict[str, Any]:
     _check_cancelled(context)
     await event_bus.publish_json("coordinator", "plan", state["user_message"][:120])
     from tempa.core.task_store import create_task, format_active_tasks_summary
-    from tempa.rag.procedural import format_preferences_for_prompt, maybe_capture_from_message
+    from tempa.core.cross_channel_conversation import enrich_conversation_context, last_assistant_text
+    from tempa.rag.procedural import (
+        format_preferences_for_prompt,
+        maybe_capture_from_message,
+        resolve_open_clarification,
+    )
 
     context = dict(state.get("context") or {})
     active = format_active_tasks_summary()
     if active:
         context["active_tasks"] = active
 
-    prefs = format_preferences_for_prompt()
+    context = enrich_conversation_context(context)
+
+    resolve_open_clarification(state["user_message"], context)
+    after_bot = bool(last_assistant_text(context))
+    maybe_capture_from_message(state["user_message"], after_bot=after_bot)
+
+    prefs = format_preferences_for_prompt(query=state["user_message"])
     if prefs:
         context["procedural_memory"] = prefs
-
-    maybe_capture_from_message(state["user_message"])
-
-    from tempa.core.cross_channel_conversation import enrich_conversation_context
-
-    context = enrich_conversation_context(context)
 
     subtasks = plan_subtasks(state["user_message"], context)
     from tempa.agents.tool_policy import filter_subtasks
@@ -346,6 +351,8 @@ async def execute_waves_node(state: CoordinatorState) -> dict[str, Any]:
         _check_cancelled(context)
         await event_bus.publish_json("coordinator", "wave", f"wave {wave_index + 1}/{len(waves)}")
         context["specialist_results"] = results
+        from tempa.orchestrator.parallel import gather_limited
+
         coros = [
             _run_specialist_with_retry(
                 str(task.get("agent")),
@@ -357,7 +364,7 @@ async def execute_waves_node(state: CoordinatorState) -> dict[str, Any]:
             )
             for task in wave
         ]
-        wave_results = await asyncio.gather(*coros)
+        wave_results = await gather_limited(coros)
         for task, result in zip(wave, wave_results):
             agent = str(task.get("agent"))
             results[agent] = result
@@ -426,6 +433,7 @@ async def channel_followup_node(state: CoordinatorState) -> dict[str, Any]:
 
 
 def build_coordinator_graph():
+    """LEGACY LangGraph StateGraph — kept for tests; shipping path is OrchestratorAgent / Hermes."""
     graph = StateGraph(CoordinatorState)
     graph.add_node("plan", plan_node)
     graph.add_node("plan_preview", plan_preview_node)
@@ -620,6 +628,27 @@ async def run_coordinator_full(user_message: str, context: dict[str, Any] | None
         runtime_prefetch = "\n\n".join(block for block in (prefetch, runtime) if block)
         channel = str(ctx.get("channel") or "dashboard")
         append_session_log(f"[{channel}] Q: {user_message[:80]}")
+
+    from tempa.settings import get_settings
+
+    settings = get_settings()
+
+    # Hermes tools coordinator (non-coding). Cursor still owns Slack coding short-circuit.
+    if str(settings.tempa_coordinator or "").strip().lower() == "hermes":
+        from tempa.hermes.coordinator import run_hermes_coordinator
+
+        return await run_hermes_coordinator(user_message, ctx)
+
+    # PARKED: ADK spike — keep off in production. Prefer hermes or default orchestrator.
+    if settings.tempa_adk_spike:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "TEMPA_ADK_SPIKE is on but ADK is PARKED — prefer TEMPA_COORDINATOR=hermes"
+        )
+        from tempa.adk import run_adk_orchestrator
+
+        return await run_adk_orchestrator(user_message, ctx)
 
     return await run_orchestrator(
         user_message,

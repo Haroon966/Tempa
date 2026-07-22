@@ -8,13 +8,10 @@ from tempa.agents.config import actor_loop_enabled, actor_max_steps, actor_repla
 from tempa.agents.graph import _run_specialist_with_retry, collect_pending_from_results, compute_execution_waves
 from tempa.core.cross_channel_conversation import format_conversation_lines
 from tempa.core.events import event_bus
+from tempa.core.pending_actions import needs_owner_pause
 from tempa.orchestrator.step_verify import observe_step, verify_step
 
 logger = logging.getLogger(__name__)
-
-PAUSE_ACTION_TYPES = frozenset(
-    {"email_send", "pc_write", "pc_delete", "pc_mkdir", "file_transfer"}
-)
 
 _STEP_LABELS = {
     "gmail": "Searching Gmail",
@@ -48,7 +45,7 @@ def should_use_actor_loop(subtasks: list[dict[str, Any]], context: dict[str, Any
 
 
 def needs_pause(pending_actions: list[dict[str, Any]]) -> bool:
-    return any(p.get("type") in PAUSE_ACTION_TYPES for p in pending_actions)
+    return needs_owner_pause(pending_actions)
 
 
 def _check_cancelled(context: dict[str, Any]) -> None:
@@ -200,6 +197,20 @@ async def run_actor_loop(
                 queue = queue[: idx + 1] + _flatten_queue(new_tasks)
             else:
                 clarification = question
+                if question:
+                    try:
+                        from tempa.rag.procedural import (
+                            _infer_slot_from_question,
+                            register_open_clarification,
+                        )
+
+                        register_open_clarification(
+                            question,
+                            slot=_infer_slot_from_question(question),
+                            context=ctx,
+                        )
+                    except Exception:
+                        pass
                 await event_bus.publish_json(
                     "orchestrator",
                     "activity",

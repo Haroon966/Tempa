@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,7 +22,17 @@ class Settings(BaseSettings):
     tempa_daemon_port: int = 8787
     tempa_bind_host: str = "127.0.0.1"
     tempa_webhook_base_url: str = ""
+    # External HTTPS origin (Cloudflare Tunnel / reverse proxy). Used for OAuth
+    # redirects, email links, and anything browsers/third parties must reach.
+    # Keep tempa_webhook_base_url as the Docker-internal WhatsApp callback.
+    tempa_public_base_url: str = ""
     tempa_cors_origin: str = "*"
+
+    def resolve_public_base_url(self) -> str:
+        public = (self.tempa_public_base_url or "").strip().rstrip("/")
+        if public:
+            return public
+        return f"http://localhost:{self.tempa_daemon_port}"
     evolution_api_url: str = "http://localhost:8080"
     evolution_api_key: str = "tempa-evolution-key"
     tempa_instance_name: str = "tempa"
@@ -31,18 +42,22 @@ class Settings(BaseSettings):
     slack_owner_user_id: str = ""
     slack_allowed_user_ids: str = ""
     slack_allow_all: bool = False
+    slack_presence_channel_id: str = "C0AU4DPFG21"
+    slack_presence_channel_name: str = "presence"
+    slack_presence_llm_model: str = "llama-3.1-8b-instant"
     vector_db: str = "chroma"
-    calendar_poll_seconds: int = 30
+    calendar_poll_seconds: int = 120
     meet_trigger_before_minutes: int = 2
-    meet_trigger_after_start_minutes: int = 15
     meet_alone_grace_seconds: int = 300
     reminder_minutes_before: int = 10
     meet_auto_join_on_reminder: bool = True
     meet_auto_join_enabled: bool = True
     meet_skip_keywords: list[str] = ["focus time", "ooo", "out of office"]
     meet_retention_days: int = 90
-    meet_auto_send_summary_whatsapp: bool = True
+    meet_auto_send_summary_whatsapp: bool = False
     meet_auto_send_summary_slack: bool = True
+    meet_auto_send_summary_email: bool = True
+    meet_punjab_daily_sync_slack_channel: str = "region-punjab"
     meet_admission_timeout_seconds: int = 600
     meet_record_video: bool = True
     meet_record_video_width: int = 1280
@@ -50,13 +65,21 @@ class Settings(BaseSettings):
     meet_system_capture_enabled: bool = True
     meet_system_capture_fps: int = 30
     meet_browser_audio_fallback: bool = False
-    meet_pulse_monitor_source: str = "meet_sink.monitor"
+    meet_pulse_monitor_source: str = "meet_sink_0.monitor"
+    meet_max_concurrent: int = 10
     meet_virtual_camera_enabled: bool = True
     meet_virtual_camera_path: Path = Path("config/assets/animated_tempa.mjpeg")
     meet_av_test_enabled: bool = False
+    meet_youtube_upload_enabled: bool = False
+    meet_youtube_privacy: str = "unlisted"
     meet_calendar_lookback_hours: int = 12
     meet_copilot_whatsapp_notify: bool = False
     meet_chat_prefix: str = "[via Tempa]"
+
+    @field_validator("meet_max_concurrent")
+    @classmethod
+    def _clamp_meet_max_concurrent(cls, value: int) -> int:
+        return max(1, min(int(value), 16))
     tempa_timezone: str = "Asia/Karachi"
     gmail_poll_interval_seconds: int = 120
     calendar_poll_interval_seconds: int = 300
@@ -71,7 +94,20 @@ class Settings(BaseSettings):
     tempa_qa_deep_review_mode: str = "lite"
     anthropic_api_key: str = ""
     tempa_qa_claude_model: str = "claude-sonnet-4-20250514"
+    cursor_api_key: str = ""
+    tempa_qa_cursor_model: str = "composer-2.5"
+    tempa_cursor_progress_interval_sec: int = 120
+    tempa_cursor_job_timeout_sec: int = 7200
+    tempa_cursor_max_parallel: int = 8
+    tempa_cursor_ci_fix_max: int = 3
+    tempa_cursor_worktree_root: Path = Path("/repos/tempa-worktrees")
+    tempa_cursor_escalate_slack_ids: str = ""
     tempa_coordinator: str = "langgraph"
+    tempa_adk_spike: bool = False
+    tempa_hermes_disable_terminal: bool = True
+    tempa_hermes_max_iterations: int = 24
+    tempa_hermes_cron_enabled: bool = False
+    tempa_self_improve: bool = True
     varys_orchestrator_enabled: bool = False
     varys_tick_seconds: int = 270
     varys_harness_db: Path = Path("./data/harness/harness.db")
@@ -156,9 +192,14 @@ class Settings(BaseSettings):
             self.sessions_dir / "gmail",
             self.sessions_dir / "whatsapp",
             self.sessions_dir / "slack",
+            self.sessions_dir / "presence",
             self.sessions_dir / "jira",
             self.sessions_dir / "qa",
             self.tempa_data_dir / "qa" / "worktrees",
+            self.tempa_data_dir / "cursor_jobs",
+            self.tempa_data_dir / "skills" / "auto",
+            self.tempa_data_dir / "skills" / "archive",
+            self.tempa_data_dir / "hermes" / "skills",
             self.db_path.parent,
             self.varys_harness_db.parent,
             self.varys_vault_dir,

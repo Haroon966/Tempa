@@ -27,8 +27,19 @@ async def groq_complete(messages: list[dict[str, str]], *, max_tokens: int = 204
 
 
 async def deep_review_complete(user_prompt: str, *, max_tokens: int = 4096) -> str:
-    """Deep review always prefers Claude; falls back to Groq if Claude is unavailable."""
+    """Deep review prefers Cursor, then Claude, then Groq."""
     from tempa.qa.claude import claude_complete, claude_configured
+    from tempa.qa.cursor import cursor_complete, cursor_configured
+
+    if cursor_configured():
+        try:
+            return await cursor_complete(
+                system=_DEEP_REVIEW_SYSTEM,
+                user=user_prompt,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            log.warning("Cursor deep review failed, falling back: %s", exc)
 
     if claude_configured():
         try:

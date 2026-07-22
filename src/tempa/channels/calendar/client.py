@@ -20,6 +20,17 @@ DEFAULT_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/contacts.readonly",
 )
 
+YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+
+
+def google_oauth_scopes() -> tuple[str, ...]:
+    from tempa.settings import get_settings
+
+    scopes = list(DEFAULT_SCOPES)
+    if get_settings().meet_youtube_upload_enabled:
+        scopes.append(YOUTUBE_UPLOAD_SCOPE)
+    return tuple(scopes)
+
 
 @dataclass(frozen=True)
 class CalendarEvent:

@@ -28,7 +28,13 @@ async def run_deep_review(
         raise RuntimeError(f"No installation for {repo}")
     token = get_github_token(repo)
 
-    pr = gh_get(f"/repos/{repo}/pulls/{pr_number}", token)
+    try:
+        pr = gh_get(f"/repos/{repo}/pulls/{pr_number}", token)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cannot load PR #{pr_number} in {repo}: {exc}. "
+            "Install the Tempa GitHub App on that org/repo, or use a PAT with access."
+        ) from exc
     branch = str((pr.get("head") or {}).get("ref") or "")
     files = gh_get(f"/repos/{repo}/pulls/{pr_number}/files", token)
     if not isinstance(files, list):
@@ -40,8 +46,9 @@ async def run_deep_review(
     diff_text = "\n\n".join(diff_parts)[:12000]
 
     from tempa.qa.claude import claude_configured
+    from tempa.qa.cursor import cursor_configured
 
-    provider = "claude" if claude_configured() else "groq"
+    provider = "cursor" if cursor_configured() else "claude" if claude_configured() else "groq"
     prompt = f"Deep review PR #{pr_number} in {repo}:\n{diff_text}"
     text = await deep_review_complete(prompt, max_tokens=4096)
 
