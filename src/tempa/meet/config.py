@@ -40,6 +40,8 @@ class JoinConfig:
     virtual_camera_path: Optional[str] = None
     join_timeout_ms: int = 90000
     screenshot_dir: Optional[str] = None
+    display: Optional[str] = None
+    pulse_sink: Optional[str] = None
 
 
 @dataclass
@@ -56,5 +58,7 @@ class WorkerConfig:
     calendar_event_start: str | None = None
     calendar_event_end: str | None = None
     attendee_emails: list[str] = field(default_factory=list)
+    organizer_email: str | None = None
     started_at: str | None = None
     av_test_youtube_url: str | None = None
+    pulse_monitor_source: str | None = None

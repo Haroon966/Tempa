@@ -43,6 +43,9 @@ const QaTab = lazy(() =>
 const PresenceTab = lazy(() =>
   import("@/components/tabs/presence-tab").then((m) => ({ default: m.PresenceTab })),
 )
+const SessionsTab = lazy(() =>
+  import("@/components/tabs/sessions-tab").then((m) => ({ default: m.SessionsTab })),
+)
 
 function TabFallback() {
   return <Skeleton className="h-64 w-full rounded-2xl bg-muted" />
@@ -145,6 +148,14 @@ export default function App() {
           element={
             <LazyRoute>
               <PresenceTab />
+            </LazyRoute>
+          }
+        />
+        <Route
+          path="sessions"
+          element={
+            <LazyRoute>
+              <SessionsTab />
             </LazyRoute>
           }
         />

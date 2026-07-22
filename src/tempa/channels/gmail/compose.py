@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import date
 from typing import Sequence
 
 _EMAIL_RE = re.compile(r"[\w.\-+]+@[\w.\-]+\.\w+")
@@ -178,9 +179,10 @@ def finalize_beautiful_email(draft: dict[str, str]) -> dict[str, str]:
     closing = str(draft.get("closing_text", "")).strip()
     signature = str(draft.get("signature", "")).strip()
 
+    # Pre-built layouts (e.g. meeting notes) must not be flattened into plain paragraphs.
     if not is_beautiful_email_html(body_html):
         body_html = build_html_email(
-            headline=subject,
+            headline=str(draft.get("headline", "")).strip() or subject,
             body_plain=body or "Hello.",
             preview_text=(body or subject)[:90],
             eyebrow_label=eyebrow or "MESSAGE",
@@ -255,6 +257,128 @@ def _detail_rows_html(labels: Sequence[str], values: Sequence[str]) -> str:
                   </tr>"""
 
 
+FOOTER_BG_CID = "tempa-footer-bg"
+VIDEO_THUMB_CID = "tempa-meeting-thumb"
+
+
+def email_footer_bg_path():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[4] / "config" / "assets" / "email-footer-bg.jpg"
+
+
+def load_email_footer_bg_bytes() -> bytes | None:
+    path = email_footer_bg_path()
+    if not path.is_file():
+        return None
+    return path.read_bytes()
+
+
+def email_footer_background_url(*, for_preview: bool = False) -> str:
+    """CID for real sends (Gmail-safe). Data URI only for local HTML preview."""
+    if not for_preview:
+        return f"cid:{FOOTER_BG_CID}"
+    data = load_email_footer_bg_bytes()
+    if not data:
+        return ""
+    import base64
+
+    return f"data:image/jpeg;base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def build_brand_footer_html(
+    *,
+    brand_name: str = "Tempa",
+    tagline: str = "Your AI teammate for meetings, mail, and work.",
+    links: Sequence[tuple[str, str]] = (),
+    copyright_text: str = "",
+    credit_name: str = "",
+    credit_url: str = "",
+    unsubscribe_url: str = "",
+    background_url: str = "",
+) -> str:
+    """Centered brand footer card (logo, tagline, nav middots, legal line)."""
+    year = date.today().year
+    legal_prefix = copyright_text.strip() or f"© {year} Tempa."
+    safe_brand = html.escape(brand_name.strip() or "Tempa")
+    safe_tagline = html.escape(tagline.strip())
+    bg_url = background_url.strip() or email_footer_background_url()
+    safe_bg = html.escape(bg_url, quote=True)
+
+    nav_parts: list[str] = []
+    for label, url in links:
+        label = label.strip()
+        url = url.strip()
+        if not label or not url:
+            continue
+        nav_parts.append(
+            f'<a href="{html.escape(url, quote=True)}" class="footer-link" '
+            f'style="color:#E5E7EB;text-decoration:none;">{html.escape(label)}</a>'
+        )
+    nav_html = ""
+    if nav_parts:
+        nav_html = (
+            f'<p style="margin:0 0 18px;font-family:Arial,Helvetica,sans-serif;font-size:13px;'
+            f'line-height:1.6;color:#D1D5DB;">'
+            f'{" &nbsp;&middot;&nbsp; ".join(nav_parts)}</p>'
+        )
+
+    credit = credit_name.strip()
+    credit_href = credit_url.strip()
+    if credit and credit_href:
+        credit_html = (
+            f'Design and develop by '
+            f'<a href="{html.escape(credit_href, quote=True)}" class="footer-link" '
+            f'style="color:#FFFFFF;text-decoration:underline;">{html.escape(credit)}</a>'
+        )
+    elif credit:
+        credit_html = f"Design and develop by {html.escape(credit)}"
+    else:
+        credit_html = ""
+
+    legal_line = html.escape(legal_prefix)
+    if credit_html:
+        legal_line = f"{legal_line} {credit_html}"
+    if unsubscribe_url.strip():
+        legal_line = (
+            f'{legal_line} &nbsp;&middot;&nbsp; '
+            f'<a href="{html.escape(unsubscribe_url.strip(), quote=True)}" class="footer-link" '
+            f'style="color:#D1D5DB;text-decoration:underline;">Unsubscribe</a>'
+        )
+    legal_html = (
+        f'<p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:12px;'
+        f'line-height:1.6;color:#D1D5DB;">{legal_line}</p>'
+    )
+
+    return f"""
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+              style="border-radius:12px;overflow:hidden;">
+              <tr>
+                <td align="center" background="{safe_bg}" bgcolor="#312E81"
+                  style="padding:32px 24px;border-radius:12px;background-color:#312E81;
+                  background-image:url('{safe_bg}');background-size:cover;background-position:center;">
+                  <!--[if gte mso 9]>
+                  <v:rect xmlns:v="urn:schemas-microsoft-com:vml" fill="true" stroke="false" style="width:600px;">
+                    <v:fill type="frame" src="{safe_bg}" color="#312E81" />
+                    <v:textbox inset="0,0,0,0">
+                  <![endif]-->
+                  <div>
+                  <p style="margin:0 0 8px;font-family:Arial,Helvetica,sans-serif;font-size:22px;
+                    font-weight:bold;letter-spacing:-0.3px;color:#FFFFFF;">{safe_brand}</p>
+                  <p style="margin:0 0 18px;font-family:Arial,Helvetica,sans-serif;font-size:14px;
+                    line-height:1.5;color:#E5E7EB;">{safe_tagline}</p>
+                  {nav_html}
+                  {legal_html}
+                  </div>
+                  <!--[if gte mso 9]>
+                    </v:textbox>
+                  </v:rect>
+                  <![endif]-->
+                </td>
+              </tr>
+            </table>"""
+
+
 def build_html_email(
     *,
     headline: str,
@@ -262,10 +386,14 @@ def build_html_email(
     body_plain: str = "",
     preview_text: str = "",
     eyebrow_label: str = "",
+    hero_html: str = "",
     detail_labels: Sequence[str] = (),
     detail_values: Sequence[str] = (),
     cta_url: str = "",
     cta_label: str = "",
+    cta_color: str = "#12161C",
+    eyebrow_bg: str = "#F0F1F3",
+    eyebrow_color: str = "#5B6470",
     closing_text: str = "",
     signature: str = "",
     company_name: str = "",
@@ -274,6 +402,7 @@ def build_html_email(
     logo_url: str = "",
     unsubscribe_url: str = "",
     preferences_url: str = "",
+    footer_html: str = "",
 ) -> str:
     safe_headline = html.escape(headline or "Hello")
     safe_preview = html.escape(preview_text or headline or "")
@@ -316,12 +445,24 @@ def build_html_email(
               </td>
             </tr>"""
 
+    hero_row = ""
+    if hero_html.strip():
+        hero_row = f"""
+                  <tr>
+                    <td class="mobile-padding" style="padding:24px 24px 0;">
+                      {hero_html.strip()}
+                    </td>
+                  </tr>"""
+
     eyebrow_row = ""
     if eyebrow_label.strip():
+        top_pad = "16px 48px 0" if hero_html.strip() else "40px 48px 0"
+        safe_eyebrow_bg = html.escape(eyebrow_bg.strip() or "#F0F1F3", quote=True)
+        safe_eyebrow_fg = html.escape(eyebrow_color.strip() or "#5B6470", quote=True)
         eyebrow_row = f"""
                   <tr>
-                    <td class="mobile-padding" style="padding:40px 48px 0;">
-                      <span style="display:inline-block;background-color:#F0F1F3;color:#5B6470;font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;padding:5px 10px;border-radius:4px;">
+                    <td class="mobile-padding" style="padding:{top_pad};">
+                      <span style="display:inline-block;background-color:{safe_eyebrow_bg};color:{safe_eyebrow_fg};font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;padding:5px 10px;border-radius:4px;">
                         {html.escape(eyebrow_label.strip())}
                       </span>
                     </td>
@@ -333,13 +474,14 @@ def build_html_email(
     if cta_url.strip() and cta_label.strip():
         safe_cta_url = html.escape(cta_url.strip(), quote=True)
         safe_cta_label = html.escape(cta_label.strip())
+        safe_cta_color = html.escape(cta_color.strip() or "#12161C", quote=True)
         cta_row = f"""
                   <tr>
                     <td class="mobile-padding" align="center" style="padding:32px 48px 0;">
                       <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto;">
                         <tr>
-                          <td style="border-radius:6px;background-color:#12161C;">
-                            <a href="{safe_cta_url}" class="cta-button" target="_blank" style="display:inline-block;padding:14px 34px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#FFFFFF;text-decoration:none;border-radius:6px;">
+                          <td style="border-radius:6px;background-color:{safe_cta_color};">
+                            <a href="{safe_cta_url}" class="cta-button" target="_blank" style="display:inline-block;padding:14px 34px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#FFFFFF;text-decoration:none;border-radius:6px;background-color:{safe_cta_color};">
                               {safe_cta_label}
                             </a>
                           </td>
@@ -394,7 +536,14 @@ def build_html_email(
         )
 
     footer_row = ""
-    if footer_lines:
+    if footer_html.strip():
+        footer_row = f"""
+            <tr>
+              <td align="center" style="padding:20px 0 40px;">
+                {footer_html.strip()}
+              </td>
+            </tr>"""
+    elif footer_lines:
         footer_row = f"""
             <tr>
               <td align="center" style="padding:32px 24px 40px;">
@@ -402,7 +551,10 @@ def build_html_email(
               </td>
             </tr>"""
 
-    top_padding = "40px 48px 0" if not eyebrow_label.strip() else "16px 48px 0"
+    if hero_html.strip() or eyebrow_label.strip():
+        top_padding = "16px 48px 0"
+    else:
+        top_padding = "40px 48px 0"
 
     return f"""<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
@@ -454,6 +606,7 @@ def build_html_email(
             <tr>
               <td>
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#FFFFFF;border-radius:12px;">
+{hero_row}
 {eyebrow_row}
                   <tr>
                     <td class="mobile-padding" style="padding:{top_padding};">

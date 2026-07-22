@@ -24,19 +24,24 @@ def _ensure_dir() -> None:
     _queue_path().parent.mkdir(parents=True, exist_ok=True)
 
 
-def recover_stale_running_jobs(*, max_age_minutes: int = 10, on_startup: bool = False) -> int:
+def recover_stale_running_jobs(
+    *,
+    max_age_minutes: int = 10,
+    on_startup: bool = False,
+    active_meeting_ids: set[str] | frozenset[str] | None = None,
+) -> int:
     """Recover meet jobs stuck in running/finalizing (e.g. after worker crash).
 
     On worker startup, any in-flight job is orphaned — fail it immediately.
-    During normal operation, only jobs older than *max_age_minutes* are touched.
-
-    Jobs already superseded by a newer queued entry for the same URL are marked failed.
+    During normal operation, only jobs older than *max_age_minutes* are touched,
+    and jobs still owned by this worker (*active_meeting_ids*) are never touched.
     """
     _ensure_dir()
     now = datetime.now(timezone.utc)
     recovered = 0
     changed = False
     stale_statuses = ("running", "finalizing")
+    owned = active_meeting_ids or frozenset()
     with _lock:
         statuses = _read_statuses_unlocked()
         queue_lines: list[str] = []
@@ -48,6 +53,8 @@ def recover_stale_running_jobs(*, max_age_minutes: int = 10, on_startup: bool = 
 
         for job_id, row in list(statuses.items()):
             if row.get("status") not in stale_statuses:
+                continue
+            if job_id in owned:
                 continue
             started_at = str(row.get("started_at") or row.get("enqueued_at") or "")
             if not on_startup and started_at:
@@ -93,6 +100,7 @@ def recover_stale_running_jobs(*, max_age_minutes: int = 10, on_startup: bool = 
                 "calendar_event_start",
                 "calendar_event_end",
                 "attendee_emails",
+                "organizer_email",
                 "duration_seconds",
                 "av_test_youtube_url",
             ):

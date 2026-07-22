@@ -20,6 +20,7 @@ def _prompt_sync(
     repo: str = "",
     starting_ref: str | None = None,
     local_cwd: str = "",
+    auto_create_pr: bool = False,
 ) -> str:
     from cursor_sdk import (
         Agent,
@@ -57,7 +58,7 @@ def _prompt_sync(
                         starting_ref=starting_ref or None,
                     )
                 ],
-                auto_create_pr=False,
+                auto_create_pr=bool(auto_create_pr),
             ),
         )
     else:
@@ -85,6 +86,7 @@ async def cursor_prompt(
     repo: str = "",
     starting_ref: str | None = None,
     local_cwd: str = "",
+    auto_create_pr: bool = False,
 ) -> str:
     """One-shot Cursor run — cloud repo, local cwd, or scratch."""
     if not get_settings().cursor_api_key.strip():
@@ -95,12 +97,14 @@ async def cursor_prompt(
         repo=repo,
         starting_ref=starting_ref,
         local_cwd=local_cwd,
+        auto_create_pr=auto_create_pr,
     )
     log.info(
-        "cursor.prompt chars=%s repo=%s cwd=%s",
+        "cursor.prompt chars=%s repo=%s cwd=%s auto_pr=%s",
         len(text),
         repo or "-",
         local_cwd or "-",
+        auto_create_pr,
     )
     return text
 

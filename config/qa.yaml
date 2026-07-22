@@ -2,8 +2,12 @@ enabled: true
 # Optional repo list when using GITHUB_TOKEN (merged with GITHUB_REPOS env)
 # repos:
 #   - owner/repo-a
-scan_on_push: true
-scan_on_pr: true
+# Off: pushes (including PR head branches) must not auto-enqueue scans.
+scan_on_push: false
+# Off by default: only QA PRs the user asks for (Slack/chat, dashboard, /deep-review,
+# or the deep_review_on_label below). Set true to auto-scan every opened/updated PR.
+scan_on_pr: false
+deep_review_on_pr: false
 local_checks:
   - ruff
   - pytest

@@ -244,7 +244,12 @@ def scan_branch(
     }
 
 
-def scan_all_branches_for_repo(repo: str, *, installation_id: int | None = None) -> list[str]:
+def scan_all_branches_for_repo(
+    repo: str,
+    *,
+    installation_id: int | None = None,
+    extra: dict[str, Any] | None = None,
+) -> list[str]:
     inst_id = installation_id or installation_id_for_repo(repo)
     if not inst_id and not github_uses_pat():
         return []
@@ -255,10 +260,21 @@ def scan_all_branches_for_repo(repo: str, *, installation_id: int | None = None)
     job_ids: list[str] = []
     from tempa.qa.job_store import enqueue_scan
 
+    child_extra = {
+        "requested_by": (extra or {}).get("requested_by") or "repo_scan",
+        "source_channel": (extra or {}).get("source_channel") or "repo_scan",
+    }
     for branch_row in list_repo_branches(repo, token):
         branch = str(branch_row.get("name") or "")
         if branch:
             job_ids.append(
-                enqueue_scan(repo, branch=branch, installation_id=inst_id, job_type="branch_scan")
+                enqueue_scan(
+                    repo,
+                    branch=branch,
+                    installation_id=inst_id,
+                    job_type="branch_scan",
+                    extra=child_extra,
+                )
             )
     return job_ids
+

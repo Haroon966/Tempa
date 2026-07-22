@@ -78,6 +78,35 @@ def test_wants_scan_all():
     assert not wants_scan_all("scan acme/widgets")
 
 
+def test_wants_github_qa_rejects_product_count_questions(monkeypatch: pytest.MonkeyPatch):
+    from tempa.qa.github.parse import looks_like_product_data_question, wants_github_qa
+
+    _refresh_settings(monkeypatch, GITHUB_TOKEN="ghp_test", GITHUB_REPOS="")
+    add_repo("Orenda-Project/compliancetracker", source="test")
+    try:
+        msg = (
+            "In compliance tracker, the portal teacher count in Dashboard -> "
+            "School Staff seems to be lower than expected. Check if the count "
+            "shown on the Dashboard is the actual, correct count"
+        )
+        assert looks_like_product_data_question(msg) is True
+        assert wants_github_qa(msg) is False
+        # Strong QA verb still wins even with product wording nearby.
+        assert wants_github_qa("scan compliance tracker for security issues") is True
+        # Weak "review" without an explicit github ref must not fire.
+        assert wants_github_qa("review compliance tracker") is False
+        assert wants_github_qa("review https://github.com/Orenda-Project/compliancetracker/pull/495") is True
+        # Linking a repo to improve/explore must not become a lint scan.
+        assert (
+            wants_github_qa(
+                "https://github.com/Haroon966/Klip-Board how can we improve this project"
+            )
+            is False
+        )
+    finally:
+        remove_repo("Orenda-Project/compliancetracker")
+
+
 def test_dynamic_repo_add_and_remove(monkeypatch: pytest.MonkeyPatch):
     _refresh_settings(monkeypatch, GITHUB_TOKEN="ghp_test", GITHUB_REPOS="")
     add_repo("dyn/org-repo", source="dashboard")

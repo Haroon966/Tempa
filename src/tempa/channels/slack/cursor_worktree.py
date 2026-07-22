@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -13,11 +14,50 @@ from tempa.settings import get_settings
 log = logging.getLogger(__name__)
 
 _SAFE = re.compile(r"[^a-zA-Z0-9._-]+")
+_GIT_SAFE_READY = False
+
+
+def ensure_git_safe_directories(*paths: str | Path) -> None:
+    """Allow git on host-mounted repos (Docker often runs as root; checkout is uid 1000).
+
+    Also exports GIT_CONFIG_* so Cursor Agent / child processes inherit the same policy.
+    """
+    global _GIT_SAFE_READY
+    targets: list[str] = ["*"]
+    for path in paths:
+        p = Path(path).resolve() if path else None
+        if p and p.exists():
+            targets.append(str(p))
+            # Parent /repos so worktrees under /repos/tempa-worktrees are covered too.
+            if p.parent.name and str(p.parent) not in targets:
+                targets.append(str(p.parent))
+    # Deduplicate, keep order.
+    seen: set[str] = set()
+    uniq = [t for t in targets if not (t in seen or seen.add(t))]
+    for directory in uniq:
+        subprocess.run(
+            ["git", "config", "--global", "--add", "safe.directory", directory],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    # Cursor Agent spawns its own git; env beats global config when the agent
+    # runs with a different HOME.
+    os.environ.setdefault("GIT_CONFIG_COUNT", "1")
+    os.environ.setdefault("GIT_CONFIG_KEY_0", "safe.directory")
+    os.environ.setdefault("GIT_CONFIG_VALUE_0", "*")
+    _GIT_SAFE_READY = True
 
 
 def _run(cmd: list[str], *, cwd: str | Path | None = None) -> subprocess.CompletedProcess[str]:
+    if not _GIT_SAFE_READY:
+        ensure_git_safe_directories(cwd or "", "/repos")
+    # -c safe.directory=* covers this invocation even if global config was skipped.
+    git_cmd = cmd
+    if cmd and cmd[0] == "git" and "-c" not in cmd[:3]:
+        git_cmd = ["git", "-c", "safe.directory=*", *cmd[1:]]
     return subprocess.run(
-        cmd,
+        git_cmd,
         cwd=str(cwd) if cwd else None,
         check=False,
         capture_output=True,

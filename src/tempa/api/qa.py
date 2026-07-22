@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -120,6 +121,171 @@ async def api_cursor_jobs(limit: int = 50):
     from tempa.channels.slack import cursor_jobs as cursor_job_store
 
     return {"jobs": cursor_job_store.list_jobs(limit=limit)}
+
+
+@router.get("/cursor/jobs/{job_id}")
+async def api_cursor_job(job_id: str):
+    from tempa.channels.slack import cursor_jobs as cursor_job_store
+
+    job = cursor_job_store.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_not_found")
+    return {"job": job}
+
+
+@router.get("/cursor/sessions")
+async def api_cursor_sessions(limit: int = 100, status: str | None = None):
+    """List Tempa Cursor background sessions for the dashboard monitor page."""
+    from tempa.channels.slack import cursor_jobs as cursor_job_store
+    from tempa.channels.slack.profiles import enrich_jobs
+
+    jobs = cursor_job_store.list_jobs(limit=max(1, min(limit, 500)))
+    if status:
+        wanted = {s.strip() for s in status.split(",") if s.strip()}
+        if wanted:
+            jobs = [j for j in jobs if str(j.get("status") or "") in wanted]
+    active = sum(
+        1
+        for j in cursor_job_store.list_jobs(limit=500)
+        if str(j.get("status") or "") in cursor_job_store.ACTIVE_STATUSES
+    )
+    return {
+        "sessions": enrich_jobs(jobs),
+        "counts": {
+            "listed": len(jobs),
+            "active": active,
+        },
+    }
+
+
+@router.get("/cursor/sessions/{job_id}")
+async def api_cursor_session_detail(job_id: str):
+    """One Cursor session: job fields, Slack conversation, and activity timeline."""
+    from tempa.channels.slack import cursor_jobs as cursor_job_store
+    from tempa.channels.slack.conversation import list_thread_messages
+    from tempa.channels.slack.profiles import (
+        enrich_jobs,
+        enrich_turns,
+        resolve_profiles,
+        sync_participants_from_slack,
+    )
+
+    job = cursor_job_store.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_not_found")
+
+    channel_id = str(job.get("channel_id") or "")
+    thread_ts = str(job.get("thread_ts") or "")
+    conversation = list_thread_messages(
+        channel_id=channel_id,
+        thread_ts=thread_ts,
+        limit=300,
+    )
+
+    # Permanent source of truth: Slack thread membership → persisted on the job.
+    slack_ids = sync_participants_from_slack(channel_id=channel_id, thread_ts=thread_ts)
+    if slack_ids:
+        refreshed = cursor_job_store.get_job(job_id) or job
+        job = refreshed
+
+    job = enrich_jobs([job])[0]
+    conversation = enrich_turns(conversation)
+
+    # Merge any humans present only in local turns (e.g. offline gaps).
+    from tempa.channels.slack.conversation import participants_from_turns
+    from tempa.channels.slack.cursor_jobs import add_thread_participants
+
+    turn_ids = participants_from_turns(
+        conversation,
+        starter_user_id=str(job.get("user_id") or ""),
+    )
+    stored = [str(u) for u in (job.get("participant_ids") or []) if str(u).strip()]
+    missing = [uid for uid in turn_ids if uid not in stored]
+    if missing and channel_id and thread_ts:
+        add_thread_participants(channel_id=channel_id, thread_ts=thread_ts, user_ids=missing)
+        resolve_profiles(missing)
+        job = enrich_jobs([cursor_job_store.get_job(job_id) or job])[0]
+
+    activity: list[dict[str, Any]] = []
+    if job.get("enqueued_at"):
+        activity.append(
+            {
+                "at": job["enqueued_at"],
+                "kind": "queued",
+                "label": "Queued by Tempa",
+                "detail": str(job.get("ask_text") or "")[:400],
+            }
+        )
+    if job.get("started_at"):
+        activity.append(
+            {
+                "at": job["started_at"],
+                "kind": "running",
+                "label": "Cursor started",
+                "detail": f"mode={job.get('mode') or 'read'} repo={job.get('repo') or '—'}",
+            }
+        )
+    if job.get("branch"):
+        activity.append(
+            {
+                "at": job.get("updated_at") or job.get("started_at") or "",
+                "kind": "branch",
+                "label": f"Branch {job.get('branch')}",
+                "detail": str(job.get("worktree_path") or "")[:300],
+            }
+        )
+    if job.get("pr_url"):
+        activity.append(
+            {
+                "at": job.get("updated_at") or "",
+                "kind": "pr",
+                "label": f"PR #{job.get('pr_number') or ''}".strip(),
+                "detail": str(job.get("pr_url") or ""),
+            }
+        )
+    if isinstance(job.get("ci_fix_count"), int) and job["ci_fix_count"] > 0:
+        activity.append(
+            {
+                "at": job.get("updated_at") or "",
+                "kind": "ci_fix",
+                "label": f"CI fix attempts: {job['ci_fix_count']}",
+                "detail": str(job.get("phase") or ""),
+            }
+        )
+    if job.get("result_text"):
+        activity.append(
+            {
+                "at": job.get("completed_at") or job.get("updated_at") or "",
+                "kind": "result",
+                "label": "Cursor result",
+                "detail": str(job.get("result_text") or "")[:4000],
+            }
+        )
+    if job.get("error"):
+        activity.append(
+            {
+                "at": job.get("updated_at") or "",
+                "kind": "error",
+                "label": "Error",
+                "detail": str(job.get("error") or "")[:2000],
+            }
+        )
+    status = str(job.get("status") or "")
+    if status in {"completed", "failed", "interrupted", "needs_help"} and job.get("completed_at"):
+        activity.append(
+            {
+                "at": job["completed_at"],
+                "kind": status,
+                "label": f"Session {status}",
+                "detail": "",
+            }
+        )
+
+    return {
+        "job": job,
+        "conversation": conversation,
+        "activity": activity,
+    }
 
 
 @router.get("/qa/repos")

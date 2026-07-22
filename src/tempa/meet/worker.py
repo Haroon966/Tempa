@@ -136,9 +136,20 @@ async def run_meeting_worker(
                 break
 
             elapsed = time.time() - start_time
-            if elapsed >= config.duration_seconds:
-                _logger.info("GMEET JOB: duration cap reached for %s (%.0fs)", config.meeting_id, elapsed)
+            from tempa.meet.lifecycle import MEET_HARD_MAX_SECONDS, get_human_participant_count
+
+            if elapsed >= MEET_HARD_MAX_SECONDS:
+                _logger.info("GMEET JOB: hard max duration reached for %s (%.0fs)", config.meeting_id, elapsed)
                 break
+            if elapsed >= config.duration_seconds:
+                humans = await get_human_participant_count(session.page)
+                if humans <= 0:
+                    _logger.info(
+                        "GMEET JOB: calendar duration reached and no humans left for %s (%.0fs)",
+                        config.meeting_id,
+                        elapsed,
+                    )
+                    break
     except Exception:
         _logger.exception("GMEET JOB: error in meeting loop for %s", config.meeting_id)
         failed = True

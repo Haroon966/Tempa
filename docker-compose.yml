@@ -4,37 +4,63 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Let Socket Mode disconnect_async finish so Slack doesn't keep a ghost WSS
+    # that steals events after the next container starts.
+    stop_grace_period: 30s
     ports:
       - "8787:8787"
     env_file:
       - .env
     environment:
       TEMPA_BIND_HOST: "0.0.0.0"
+      TEMPA_DATA_DIR: /app/data
       TEMPA_TIMEZONE: Asia/Karachi
       EVOLUTION_API_URL: http://whatsapp-bridge:8080
+      # Internal only — WhatsApp bridge reaches the daemon on the compose network.
       TEMPA_WEBHOOK_BASE_URL: http://tempa-daemon:8787
+      # Public HTTPS URL (Cloudflare Tunnel). Override via .env.
+      TEMPA_PUBLIC_BASE_URL: ${TEMPA_PUBLIC_BASE_URL:-https://tempa.codenest.fun}
+      TEMPA_CORS_ORIGIN: ${TEMPA_CORS_ORIGIN:-https://tempa.codenest.fun}
       TEMPA_MEET_DELEGATE_TO_WORKER: "true"
-      # Varys uses Claude Code CLI inside the container (binary mounted from host)
+      # Self-improve + Hermes (override via .env)
+      TEMPA_SELF_IMPROVE: ${TEMPA_SELF_IMPROVE:-true}
+      TEMPA_COORDINATOR: ${TEMPA_COORDINATOR:-langgraph}
+      TEMPA_HERMES_DISABLE_TERMINAL: ${TEMPA_HERMES_DISABLE_TERMINAL:-true}
+      TEMPA_HERMES_MAX_ITERATIONS: ${TEMPA_HERMES_MAX_ITERATIONS:-24}
+      TEMPA_HERMES_CRON_ENABLED: ${TEMPA_HERMES_CRON_ENABLED:-false}
+      TEMPA_ADK_SPIKE: ${TEMPA_ADK_SPIKE:-false}
       CLAUDE_CODE_PATH: /usr/local/bin/claude
+      # Host-mounted /repos is uid 1000; container runs as root — without this,
+      # Cursor write jobs die on "fatal: detected dubious ownership".
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
     volumes:
       - ./data:/app/data
       - ./config:/app/config
       - ./src:/app/src
       - ./dashboard/dist:/app/dashboard/dist
       - ./data/huggingface:/root/.cache/huggingface
-      # Compliance Tracker checkout for Cursor-pinned Slack threads (local agent).
-      # rw: thread asks include code fixes / push; :ro blocked Agent.prompt writes.
+      # Learned skills / Hermes state live under ./data (persists across rebuilds)
+      # Extra checkouts under /repos (optional)
+      - ${TEMPA_REPOS_HOST:-./repos}:/repos
+      # Compliance Tracker for Cursor / local agent (rw for fixes + push)
       - ${COMPLIANCETRACKER_PATH:-/home/olufsen/compliancetracker-main}:/repos/compliancetracker
-      # Isolated git worktrees for parallel Tempa Cursor jobs
       - ${TEMPA_CURSOR_WORKTREE_HOST:-./data/tempa-worktrees}:/repos/tempa-worktrees
-      # Claude Code CLI + auth (host must have `claude` installed and logged in)
-      - ${CLAUDE_CLI_BIN:-/home/olufsen/.local/share/claude/versions/2.1.186}:/usr/local/bin/claude:ro
+      # Claude Code CLI + auth from host
+      - ${CLAUDE_CLI_BIN:-/home/olufsen/.local/share/claude/versions/2.1.206}:/usr/local/bin/claude:ro
       - ${CLAUDE_CONFIG_DIR:-/home/olufsen/.claude}:/root/.claude
     depends_on:
       whatsapp-bridge:
         condition: service_started
       meet-worker:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -54,9 +80,10 @@ services:
       MEET_BROWSER_AUDIO_FALLBACK: "false"
       MEET_VIRTUAL_CAMERA_ENABLED: "true"
       MEET_CALENDAR_LOOKBACK_HOURS: "12"
+      MEET_MAX_CONCURRENT: "10"
       XDG_RUNTIME_DIR: /tmp/pulse-runtime
       PULSE_SERVER: unix:/tmp/pulse-runtime/pulse/native
-      MEET_PULSE_MONITOR_SOURCE: meet_sink.monitor
+      MEET_PULSE_MONITOR_SOURCE: meet_sink_0.monitor
     volumes:
       - ./data:/app/data
       - ./config:/app/config
@@ -101,6 +128,18 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Free public HTTPS for a traveling laptop (no port-forward / no static IP).
+  # One-time: create a Cloudflare Tunnel, paste token into .env, then:
+  #   docker compose --profile tunnel up -d
+  # In the tunnel Public Hostname, set service → http://tempa-daemon:8787
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - tempa-daemon
 
 volumes:
   whatsapp_instances:

@@ -20,6 +20,7 @@ async def send_gmail_message(
     cc: str = "",
     bcc: str = "",
     skip_safety: bool = False,
+    inline_images: list | None = None,
 ) -> dict:
     from tempa.channels.gmail.compose import finalize_beautiful_email, validate_recipient_email
     from tempa.channels.gmail.session_state import record_gmail_action
@@ -68,6 +69,7 @@ async def send_gmail_message(
             html_body=html_body,
             cc=cc,
             bcc=bcc,
+            inline_images=inline_images or (),
         )
     except Exception as exc:
         logger.exception("Gmail send failed")
@@ -94,6 +96,7 @@ async def send_gmail_message(
         "thread_id": thread_id,
         "to": to,
         "html": bool(html_body),
+        "inline_images": len(inline_images or ()),
     }
     record_gmail_action(sent)
     return sent

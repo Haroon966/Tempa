@@ -23,8 +23,64 @@ _slack_app: AsyncApp | None = None
 _socket_handler: AsyncSocketModeHandler | None = None
 _background_tasks: set[asyncio.Task[None]] = set()
 _slack_auth_cache: dict[str, Any] | None = None
+_watchdog_task: asyncio.Task[None] | None = None
 
 _SLACK_CLIENT_TIMEOUT_SEC = 30
+_WATCHDOG_INTERVAL_SEC = 20.0
+
+
+async def _touch_socket_envelope(client: Any, req: Any) -> None:
+    """Runs ahead of Bolt handle — marks the WebSocket as receiving traffic."""
+    from tempa.channels.slack.session import touch_envelope
+
+    touch_envelope()
+
+
+async def _socket_watchdog_loop() -> None:
+    """Reconnect when Slack SDK reports the Socket Mode session is dead.
+
+    Rapid docker restarts leave half-closed WSS sessions; Slack still load-balances
+    envelopes onto them for a while, so Tempa looks 'connected' but never replies.
+    """
+    while True:
+        await asyncio.sleep(_WATCHDOG_INTERVAL_SEC)
+        handler = _socket_handler
+        if handler is None or handler.client is None:
+            continue
+        try:
+            connected = bool(await handler.client.is_connected())
+        except Exception:
+            connected = False
+        if connected:
+            continue
+        logger.warning("Slack Socket Mode watchdog: session dead — reconnecting")
+        try:
+            await reconnect_slack_socket_mode()
+        except Exception:
+            logger.exception("Slack Socket Mode watchdog reconnect failed")
+
+
+def _ensure_socket_watchdog() -> None:
+    global _watchdog_task
+    task = _watchdog_task
+    if task is not None and not task.done():
+        return
+    _watchdog_task = asyncio.create_task(_socket_watchdog_loop())
+
+
+async def stop_socket_watchdog() -> None:
+    global _watchdog_task
+    task = _watchdog_task
+    _watchdog_task = None
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("Slack Socket Mode watchdog stop failed")
 
 
 async def _warm_slack_auth_cache(client: AsyncWebClient) -> None:
@@ -153,6 +209,15 @@ def _build_app() -> AsyncApp:
     @assistant.user_message
     async def on_assistant_user_message(event, say, body, set_status):
         await set_status("is thinking...")
+        from tempa.channels.slack.session import mark_inbound_seen
+
+        event_id = str(body.get("event_id") or "")
+        channel_id = str(event.get("channel") or "")
+        message_ts = str(event.get("ts") or "")
+        # Prefer message-event DM path when both fire; skip duplicate assistant delivery.
+        if not mark_inbound_seen(event_id=event_id, channel_id=channel_id, message_ts=message_ts):
+            logger.info("Slack assistant duplicate skipped %s", message_ts)
+            return
         logger.info(
             "Slack assistant message from %s: %s",
             event.get("user"),
@@ -161,7 +226,7 @@ def _build_app() -> AsyncApp:
         _schedule_inbound(
             event,
             event_type="message",
-            event_id=str(body.get("event_id") or ""),
+            event_id=event_id,
             say=say,
         )
 
@@ -206,8 +271,27 @@ def _build_app() -> AsyncApp:
             else:
                 await ack()
             return
-        # DMs are handled by AsyncAssistant.user_message — skip to avoid duplicate replies.
+        # DMs: handle here as the primary path. AsyncAssistant may also fire — dedupe by event/ts.
         await ack()
+        from tempa.channels.slack.session import mark_inbound_seen
+
+        event_id = str(body.get("event_id") or "")
+        channel_id = str(event.get("channel") or "")
+        message_ts = str(event.get("ts") or "")
+        if not mark_inbound_seen(event_id=event_id, channel_id=channel_id, message_ts=message_ts):
+            logger.info("Slack DM duplicate skipped %s", message_ts)
+            return
+        logger.info(
+            "Slack DM from %s: %s",
+            event.get("user"),
+            text[:80],
+        )
+        _schedule_inbound(
+            event,
+            event_type="message",
+            event_id=event_id,
+            say=say,
+        )
 
     return app
 
@@ -216,28 +300,53 @@ async def start_slack_socket_mode() -> bool:
     """Connect Slack Socket Mode if tokens are configured."""
     global _slack_app, _socket_handler
     if not slack_configured():
+        logger.warning("Slack not configured — skipping Socket Mode")
         return False
+    # Always reconnect cleanly (stale WS after container recreate breaks replies).
     if _socket_handler is not None:
-        return True
+        await stop_slack_socket_mode()
 
     settings = get_settings()
     _slack_app = _build_app()
     await _warm_slack_auth_cache(_slack_app.client)
     _socket_handler = AsyncSocketModeHandler(_slack_app, settings.slack_app_token)
+    # Envelope listener first so we can tell "WS alive" from "handler replied".
+    _socket_handler.client.socket_mode_request_listeners.insert(0, _touch_socket_envelope)
     set_handler(_socket_handler)
     try:
         await _socket_handler.connect_async()
-        logger.info("Slack Socket Mode connected")
-        return True
+        # Confirm the underlying client thinks it is live.
+        connected = False
+        try:
+            connected = bool(await _socket_handler.client.is_connected())
+        except Exception:
+            connected = False
+        if connected:
+            logger.warning("Slack Socket Mode connected (team=%s)", (_slack_auth_cache or {}).get("team_id"))
+            from tempa.channels.slack.session import set_error
+
+            set_error(None)
+            _ensure_socket_watchdog()
+            return True
+        logger.error("Slack Socket Mode connect_async returned but client is not connected")
+        from tempa.channels.slack.session import set_error
+
+        set_error("Socket Mode connected flag false after connect")
+        await stop_slack_socket_mode()
+        return False
     except Exception:
         logger.exception("Slack Socket Mode connection failed")
         from tempa.channels.slack.session import set_error
 
         set_error("Socket Mode connection failed")
-        _socket_handler = None
-        _slack_app = None
-        set_handler(None)
+        await stop_slack_socket_mode()
         return False
+
+
+async def reconnect_slack_socket_mode() -> bool:
+    """Ops helper — drop and re-open Socket Mode."""
+    await stop_slack_socket_mode()
+    return await start_slack_socket_mode()
 
 
 async def stop_slack_socket_mode() -> None:
@@ -248,6 +357,13 @@ async def stop_slack_socket_mode() -> None:
     _slack_auth_cache = None
     set_handler(None)
     if handler is not None:
+        try:
+            # Disconnect first so Slack drops this connection before process exit;
+            # otherwise the next container's session shares event delivery with a ghost.
+            if hasattr(handler, "disconnect_async"):
+                await handler.disconnect_async()
+        except Exception:
+            logger.exception("Slack Socket Mode disconnect failed")
         try:
             await handler.close_async()
         except Exception:

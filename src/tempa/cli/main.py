@@ -49,16 +49,19 @@ def cmd_setup() -> None:
         print("Daemon not running — start with: tempa start")
 
     print()
-    print("1. Groq API key (.env or tempa setup --groq-key YOUR_KEY)")
+    print("1. Groq API key (.env or Dashboard → Settings)")
     print("2. Google + Gmail (Dashboard → Connections)")
     print("3. WhatsApp QR (Dashboard → Connections or tempa whatsapp-qr)")
     print("4. Meet auth: tempa meet-auth")
-    print("5. Varys vault: initialized on first run (data/vault)")
+    print("5. Slack: set SLACK_* tokens + SLACK_OWNER_USER_ID / SLACK_ALLOWED_USER_IDS")
+    print("6. Cursor coding (optional): CURSOR_API_KEY + config/cursor_threads.yaml")
+    print("   See config/cursor_threads.yaml.example and repos/README.md")
+    print("7. Vault: initialized on first run (data/vault)")
     from tempa.varys.vault_sync import ensure_vault_initialized
 
     vault = ensure_vault_initialized()
     print(f"   Vault dir: {vault}")
-    varys_setup = input("Configure Varys agent name now? [y/N] ").strip().lower()
+    varys_setup = input("Configure agent display name now? [y/N] ").strip().lower()
     if varys_setup == "y":
         agent_name = input("Agent name [Tempa]: ").strip() or "Tempa"
         owner_name = input("Your name (optional): ").strip()

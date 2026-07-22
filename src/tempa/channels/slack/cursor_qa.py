@@ -104,8 +104,13 @@ def notify_done(
     cwd: str | None,
     jira_key: str | None,
     user_id: str,
+    escalate_only: bool = False,
 ) -> dict[str, Any]:
-    """Post done/QA summary to Slack thread (+ channel if asked), GitHub, Jira."""
+    """Post done/QA summary to Slack thread (+ channel if asked), GitHub, Jira.
+
+    escalate_only=True: ping owner escalate IDs only — keep the requester thread quiet
+    (used for long background waits / timeouts so teammates aren't worried).
+    """
     from tempa.channels.slack.outbound import send_slack_message_sync
 
     result: dict[str, Any] = {"slack_thread": False, "slack_channel": False, "github": False, "jira": False}
@@ -113,53 +118,56 @@ def notify_done(
     if not body:
         body = f"Tempa finished work on {pr_url or 'the PR'}."
 
-    needs_help = "needs help" in body.lower()
-    if needs_help and user_id:
+    needs_help = "needs help" in body.lower() or escalate_only
+    if needs_help and user_id and not escalate_only:
         body = f"<@{user_id}> {body}"
 
-    try:
-        send_slack_message_sync(channel_id, body, thread_ts=thread_ts, source_channel="cursor_job")
-        result["slack_thread"] = True
-    except Exception:
-        log.exception("cursor_qa slack thread notify failed")
-
-    if cpr.wants_channel_announce(ask_text):
+    if not escalate_only:
         try:
-            send_slack_message_sync(channel_id, body, thread_ts="", source_channel="cursor_job_channel")
-            result["slack_channel"] = True
+            send_slack_message_sync(channel_id, body, thread_ts=thread_ts, source_channel="cursor_job")
+            result["slack_thread"] = True
         except Exception:
-            log.exception("cursor_qa channel notify failed")
+            log.exception("cursor_qa slack thread notify failed")
 
-    if pr_number:
-        try:
-            gh_body = body
-            if needs_help:
-                gh_body = (
-                    f"Tempa needs help after 3 attempts on this PR.\n\n{summary.strip()[:3500]}"
-                )
-            cpr.pr_comment(pr_number=pr_number, body=gh_body, cwd=cwd, repo=repo)
-            result["github"] = True
-        except Exception:
-            log.exception("cursor_qa github comment failed")
+        if cpr.wants_channel_announce(ask_text):
+            try:
+                send_slack_message_sync(channel_id, body, thread_ts="", source_channel="cursor_job_channel")
+                result["slack_channel"] = True
+            except Exception:
+                log.exception("cursor_qa channel notify failed")
 
-    ticket = extract_jira_key(ask_text, jira_key)
-    if ticket:
-        try:
-            from tempa.channels.jira.client import add_comment
+        if pr_number:
+            try:
+                gh_body = body
+                if needs_help:
+                    gh_body = (
+                        f"Tempa needs help after 3 attempts on this PR.\n\n{summary.strip()[:3500]}"
+                    )
+                cpr.pr_comment(pr_number=pr_number, body=gh_body, cwd=cwd, repo=repo)
+                result["github"] = True
+            except Exception:
+                log.exception("cursor_qa github comment failed")
 
-            add_comment(ticket, body)
-            result["jira"] = True
-        except Exception:
-            log.exception("cursor_qa jira comment failed")
+        ticket = extract_jira_key(ask_text, jira_key)
+        if ticket:
+            try:
+                from tempa.channels.jira.client import add_comment
+
+                add_comment(ticket, body)
+                result["jira"] = True
+            except Exception:
+                log.exception("cursor_qa jira comment failed")
 
     escalate = get_settings().tempa_cursor_escalate_slack_ids.strip()
-    if escalate and needs_help:
+    if escalate and (needs_help or escalate_only):
         mentions = " ".join(f"<@{uid.strip()}>" for uid in escalate.split(",") if uid.strip())
         if mentions:
             try:
                 send_slack_message_sync(
                     channel_id,
-                    f"{mentions} — Tempa escalated a Cursor job for <@{user_id}>.\n{body[:500]}",
+                    f"{mentions} — Tempa escalated a background Cursor job"
+                    + (f" for <@{user_id}>." if user_id else ".")
+                    + f"\n{body[:500]}",
                     thread_ts=thread_ts,
                     source_channel="cursor_job_escalate",
                 )

@@ -204,7 +204,7 @@ class OrchestratorAgent:
                 )
                 planned_steps = ctx.get("planned_steps") or planned_steps
             else:
-                worker_results, ctx = await delegate_tasks(
+                worker_results, ctx, clarification = await delegate_tasks(
                     user_message,
                     others,
                     ctx,
@@ -301,6 +301,22 @@ class OrchestratorAgent:
             pending_actions = collect_pending_from_results(merge_results_dict)
         if not paused:
             paused = needs_pause(pending_actions)
+
+        try:
+            from tempa.learning.loop import schedule_after_turn
+
+            schedule_after_turn(
+                user_message,
+                success=bool(goal.get("satisfied")) and not paused,
+                paused=paused,
+                matched_skills=list(ctx.get("matched_skills") or []),
+                planned_steps=planned_steps,
+                response=response,
+                notes="orchestrator",
+                context=ctx,
+            )
+        except Exception:
+            pass
 
         return {
             "response": response,

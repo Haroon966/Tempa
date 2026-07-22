@@ -7,6 +7,7 @@ from tempa.settings import get_settings
 
 _handler: Any = None
 _last_event_at: str | None = None
+_last_envelope_at: str | None = None
 _last_error: str | None = None
 _seen_event_ids: set[str] = set()
 _seen_message_keys: set[str] = set()
@@ -62,6 +63,12 @@ def touch_event() -> None:
     _last_event_at = datetime.now(timezone.utc).isoformat()
 
 
+def touch_envelope() -> None:
+    """Any Socket Mode envelope (including acks Slack expects) — proves the WS is live."""
+    global _last_envelope_at
+    _last_envelope_at = datetime.now(timezone.utc).isoformat()
+
+
 def set_error(message: str | None) -> None:
     global _last_error
     _last_error = message
@@ -103,5 +110,6 @@ async def connection_status() -> dict[str, Any]:
         "status": status,
         "detail": detail,
         "last_event_at": _last_event_at,
+        "last_envelope_at": _last_envelope_at,
         "owner_user_id": settings.slack_owner_user_id or None,
     }

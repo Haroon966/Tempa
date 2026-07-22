@@ -1,5 +1,6 @@
 import {
   ActivityIcon,
+  BotIcon,
   GitBranchIcon,
   InboxIcon,
   LayoutDashboardIcon,
@@ -17,6 +18,7 @@ export const NAV_ITEMS = [
   { value: "inbox", path: "/inbox/mail", label: "Inbox", icon: InboxIcon, group: "work" },
   { value: "presence", path: "/presence", label: "Presence", icon: MapPinIcon, group: "work" },
   { value: "activity", path: "/activity", label: "Activity", icon: ActivityIcon, group: "monitor" },
+  { value: "sessions", path: "/sessions", label: "Sessions", icon: BotIcon, group: "monitor" },
   { value: "qa", path: "/qa", label: "QA", icon: GitBranchIcon, group: "monitor" },
   { value: "settings", path: "/settings", label: "Settings", icon: SettingsIcon, group: "system" },
   {
@@ -62,6 +64,10 @@ export const PAGE_META: Record<NavSection, { title: string; description: string 
   activity: {
     title: "Activity",
     description: "Recent events, logs, and live operations",
+  },
+  sessions: {
+    title: "Sessions",
+    description: "Tempa Slack conversations and Cursor background jobs — running, done, failed",
   },
   qa: {
     title: "QA",

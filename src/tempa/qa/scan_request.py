@@ -62,6 +62,7 @@ def handle_github_scan_request(
     requested_by: str = "",
     trusted: bool = False,
     target: GitHubTarget | None = None,
+    notify: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from tempa.qa.config import qa_enabled
 
@@ -76,6 +77,11 @@ def handle_github_scan_request(
         "source_channel": source_channel,
         "request_message": (text or "").strip()[:500],
     }
+    # Reply targets for the worker (Slack thread / WhatsApp) after the job finishes.
+    for key in ("slack_channel_id", "slack_thread_ts", "whatsapp_number"):
+        val = str((notify or {}).get(key) or "").strip()
+        if val:
+            request_meta[key] = val
 
     if wants_scan_all(text) and not parsed.repo:
         repos = list_repos()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -182,6 +183,21 @@ def test_checks_summary_red_green():
     assert green["status"] == "green"
 
 
+def test_ensure_git_safe_directories_sets_env(tmp_path, monkeypatch):
+    from tempa.channels.slack import cursor_worktree as wt
+
+    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_KEY_0", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_VALUE_0", raising=False)
+    # Reset module flag so ensure runs again.
+    wt._GIT_SAFE_READY = False
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    wt.ensure_git_safe_directories(repo)
+    assert os.environ.get("GIT_CONFIG_VALUE_0") == "*"
+    assert wt._GIT_SAFE_READY is True
+
+
 def test_interrupt_stale_active_jobs():
     jid = jobs.enqueue_cursor_job({"channel_id": "C1", "thread_ts": "1.1", "user_id": "U1"})
     jobs.update_job(jid, status="running", phase="running")
@@ -266,18 +282,38 @@ async def test_cursor_jobs_api():
     assert any(j.get("user_id") == "U1" for j in data.get("jobs", []))
 
 
-def test_jira_pin_blocks_assignee_loop(monkeypatch):
+def test_jira_pin_blocks_assignee_loop(monkeypatch, tmp_path):
     from tempa.channels.jira.tickets import should_route_to_jira_ticket
     import tempa.channels.slack.cursor_threads as ct
+    import yaml
 
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    (cfg_dir / "cursor_threads.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "repos": [],
+                "threads": [
+                    {
+                        "channel_id": "C_PIN",
+                        "thread_ts": "100.1",
+                        "local_cwd": "/repos/x",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ct, "get_settings", lambda: type("S", (), {"config_dir": cfg_dir})())
     ct._cache_mtime = None
-    ct._cache_rows = []
+    ct._cache_threads = []
+    ct._cache_repos = []
     assert (
         should_route_to_jira_ticket(
             "who should I assign this to?",
             {
-                "slack_channel_id": "C0AV0MUTCJW",
-                "slack_thread_ts": "1784541760.548649",
+                "slack_channel_id": "C_PIN",
+                "slack_thread_ts": "100.1",
                 "channel": "slack",
             },
         )
@@ -407,7 +443,9 @@ async def test_process_job_pending_ci_times_out_to_needs_help(tmp_path, monkeypa
             await cw._process_job(claimed)
 
     assert jobs.get_job(jid)["status"] == "needs_help"
-    assert "waiting on ci" in (notify.call_args.kwargs.get("summary") or "").lower()
+    kwargs = notify.call_args.kwargs
+    assert "ci still pending" in (kwargs.get("summary") or "").lower()
+    assert kwargs.get("escalate_only") is True
 
 
 def test_missing_test_context_asks_once(tmp_path, monkeypatch):

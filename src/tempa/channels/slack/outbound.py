@@ -206,4 +206,20 @@ def send_slack_message_sync(
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
         client.chat_postMessage(**kwargs)
+    # Keep session transcript in sync so mid-thread follow-ups see Tempa participation.
+    try:
+        from tempa.channels.slack.conversation import conversation_thread_key, record_conversation_turn
+
+        is_dm = channel.startswith("D")
+        record_conversation_turn(
+            role="assistant",
+            text=text,
+            channel_id=channel,
+            thread_ts=thread_ts,
+            conversation_key=conversation_thread_key(
+                channel_id=channel, thread_ts=thread_ts, is_dm=is_dm
+            ),
+        )
+    except Exception:
+        logger.exception("cursor sync post: failed to record conversation turn")
     return {"status": "sent", "via": "sync", "chunks": len(chunks), "source": source_channel}

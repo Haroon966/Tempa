@@ -1,4 +1,9 @@
-"""Feature-flagged ADK coordinator spike (TEMPA_ADK_SPIKE)."""
+"""PARKED: Feature-flagged ADK coordinator spike (TEMPA_ADK_SPIKE).
+
+Do not use in production. Shipping non-coding path is tools orchestrator or
+TEMPA_COORDINATOR=hermes; coding remains Cursor. This module is retained only
+for emergency experiments and will be removed once Hermes is proven.
+"""
 
 from __future__ import annotations
 

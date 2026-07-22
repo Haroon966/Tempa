@@ -31,7 +31,8 @@ COPY config ./config
 COPY src ./src
 COPY --from=dashboard-build /dashboard/dist ./dashboard/dist
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -e . --no-deps
+    pip install -e . --no-deps \
+    && git config --global --add safe.directory '*'
 
 EXPOSE 8787
 CMD ["tempa", "start"]

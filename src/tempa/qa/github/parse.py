@@ -51,9 +51,43 @@ _BRANCH_STOPWORDS = frozenset(
 )
 _COMMON_BRANCHES = frozenset({"main", "master", "develop", "development", "staging", "release"})
 
-_SCAN_HINTS = ("scan", "check branch", "run qa", "audit", "any fixes", "fix it", "review", "test")
+# Strong QA verbs — enough even with a product-name alias ("scan compliance tracker").
+_STRONG_SCAN_HINTS = (
+    "scan",
+    "check branch",
+    "run qa",
+    "do qa",
+    "audit",
+    "deep review",
+    "deep-review",
+    "lint",
+    "security check",
+)
+# Weak verbs — only with an explicit github.com / owner/repo ref (not product aliases).
+_WEAK_SCAN_HINTS = ("review", "test", "any fixes", "fix it", "comment on")
+_SCAN_HINTS = _STRONG_SCAN_HINTS + _WEAK_SCAN_HINTS  # backwards-compat for callers
 _SCAN_ALL_HINTS = ("scan all", "all repos", "every repo", "all repositories")
-_GITHUB_HINTS = ("github.com", "scan repo", "scan this", "pull request", "deep review", "deep-review")
+# Do NOT include bare "github.com" — linking a repo for improve/explore must hit Cursor, not QA.
+_GITHUB_HINTS = ("scan repo", "scan this", "pull request", "deep review", "deep-review")
+# Product/data support — must not become a lint/security scan via repo alias matching.
+_PRODUCT_DATA_SIGNALS = (
+    " count",
+    "dashboard",
+    "should be higher",
+    "should be lower",
+    "seems to be lower",
+    "seems lower",
+    "portal teacher",
+    "school staff",
+    "vanishes",
+    "vanishing",
+    "not visible",
+    "not showing",
+    "wrong number",
+    "incorrect count",
+    "actual, correct count",
+    "correct count",
+)
 _RESULTS_HINTS = (
     "any error",
     "any bug",
@@ -126,9 +160,37 @@ def resolve_repo_alias(text: str) -> str:
     return best
 
 
+def has_explicit_github_ref(text: str) -> bool:
+    """True when the message names a concrete GitHub URL or owner/repo — not a product alias."""
+    raw = text or ""
+    if _REPO_URL_RE.search(raw) or _PR_URL_RE.search(raw) or _TREE_URL_RE.search(raw):
+        return True
+    for match in _SHORT_REPO_RE.finditer(raw):
+        candidate = normalize_repo_name(match.group(1))
+        if candidate and candidate.count("/") == 1:
+            return True
+    return False
+
+
+def looks_like_product_data_question(text: str) -> bool:
+    """Dashboard/count/data-correctness asks — Cursor/product support, not QA lint scan."""
+    lower = f" {(text or '').lower()} "
+    if any(h in lower for h in (" scan ", " run qa", " do qa", " deep review", " audit ", " lint")):
+        return False
+    return any(s in lower for s in _PRODUCT_DATA_SIGNALS)
+
+
 def wants_github_qa(text: str) -> bool:
+    """True only for real repo/PR QA intent — not product support like 'check if the count…'."""
+    if looks_like_product_data_question(text):
+        return False
     lower = (text or "").lower()
-    return any(h in lower for h in _GITHUB_HINTS) or any(h in lower for h in _SCAN_HINTS)
+    if any(h in lower for h in _GITHUB_HINTS) or any(h in lower for h in _STRONG_SCAN_HINTS):
+        return True
+    # "review" / "test" alone + product alias used to steal teammate bug reports into lint scans.
+    if has_explicit_github_ref(text) and any(h in lower for h in _WEAK_SCAN_HINTS):
+        return True
+    return False
 
 
 def wants_qa_results(text: str) -> bool:

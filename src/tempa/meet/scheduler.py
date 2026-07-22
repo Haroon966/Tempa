@@ -120,6 +120,21 @@ def extract_attendee_emails(event: CalendarEvent) -> list[str]:
     return sorted(set(emails))
 
 
+def extract_organizer_email(event: CalendarEvent) -> str | None:
+    raw = event.raw if isinstance(event.raw, dict) else {}
+    organizer = raw.get("organizer")
+    if isinstance(organizer, dict):
+        email = organizer.get("email")
+        if isinstance(email, str) and email.strip() and "@" in email:
+            return email.strip().lower()
+    creator = raw.get("creator")
+    if isinstance(creator, dict):
+        email = creator.get("email")
+        if isinstance(email, str) and email.strip() and "@" in email:
+            return email.strip().lower()
+    return None
+
+
 def compute_duration_seconds(event: CalendarEvent, *, buffer_minutes: int = 10) -> int:
     start = event.start.astimezone(timezone.utc)
     end = event.end.astimezone(timezone.utc)
@@ -143,6 +158,7 @@ def calendar_event_metadata(event: CalendarEvent) -> dict[str, Any]:
         "calendar_event_start": event.start.astimezone(timezone.utc).isoformat(),
         "calendar_event_end": event.end.astimezone(timezone.utc).isoformat(),
         "attendee_emails": extract_attendee_emails(event),
+        "organizer_email": extract_organizer_email(event),
         "duration_seconds": compute_duration_seconds(event),
     }
 
@@ -184,6 +200,7 @@ async def schedule_join_for_calendar_event(
             calendar_event_start=meta["calendar_event_start"],
             calendar_event_end=meta["calendar_event_end"],
             attendee_emails=meta["attendee_emails"],
+            organizer_email=meta.get("organizer_email"),
             duration_seconds=meta["duration_seconds"],
         )
         await event_bus.publish_json("calendar", "meet_join_scheduled", event.summary)

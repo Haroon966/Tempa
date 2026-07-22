@@ -113,10 +113,12 @@ def _write_knowledge_items(items: list[dict[str, str]], *, source: str) -> int:
 def _recent_chunks(*, hours: int = 24, limit: int = 200) -> list[dict[str, Any]]:
     store = get_store()
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    # Chroma get() has no order guarantee — over-fetch, then sort by timestamp.
+    fetch_limit = max(limit * 5, 1000)
     try:
         result = store.collection.get(
             include=["documents", "metadatas"],
-            limit=limit,
+            limit=fetch_limit,
         )
     except Exception:
         logger.debug("Consolidation chunk fetch failed", exc_info=True)
@@ -139,7 +141,9 @@ def _recent_chunks(*, hours: int = 24, limit: int = 200) -> list[dict[str, Any]]
         if ts and ts < cutoff:
             continue
         chunks.append({"id": doc_id, "content": doc, "metadata": meta})
-    return chunks
+
+    chunks.sort(key=lambda c: str((c.get("metadata") or {}).get("timestamp") or ""), reverse=True)
+    return chunks[:limit]
 
 
 def run_consolidation(*, hours: int = 24) -> dict[str, Any]:

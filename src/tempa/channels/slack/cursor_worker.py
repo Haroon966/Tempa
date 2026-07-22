@@ -18,6 +18,43 @@ from tempa.settings import get_settings
 log = logging.getLogger(__name__)
 
 _worker_task: asyncio.Task | None = None
+_job_sem: asyncio.Semaphore | None = None
+_repo_locks: dict[str, asyncio.Lock] = {}
+_repo_locks_guard = asyncio.Lock()
+
+
+def _global_job_sem() -> asyncio.Semaphore:
+    global _job_sem
+    settings = get_settings()
+    limit = max(1, int(settings.tempa_cursor_max_parallel or 8))
+    if _job_sem is None or getattr(_job_sem, "_tempa_limit", None) != limit:
+        _job_sem = asyncio.Semaphore(limit)
+        setattr(_job_sem, "_tempa_limit", limit)
+    return _job_sem
+
+
+async def _repo_lock(repo: str) -> asyncio.Lock:
+    key = (repo or "").strip().lower() or "_default"
+    async with _repo_locks_guard:
+        lock = _repo_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _repo_locks[key] = lock
+        return lock
+
+
+async def _process_job_guarded(job: dict[str, Any]) -> None:
+    """Respect global concurrency + per-repo write serialization."""
+    sem = _global_job_sem()
+    async with sem:
+        mode = str(job.get("mode") or "read")
+        repo = str(job.get("repo") or "")
+        if mode == "write" and repo:
+            lock = await _repo_lock(repo)
+            async with lock:
+                await _process_job(job)
+        else:
+            await _process_job(job)
 
 
 def _post(channel_id: str, thread_ts: str, text: str) -> None:
@@ -30,10 +67,9 @@ def _post(channel_id: str, thread_ts: str, text: str) -> None:
 
 
 async def _progress_ticker(job_id: str, channel_id: str, thread_ts: str, stop: asyncio.Event) -> None:
+    """Heartbeat job store only — do not spam Slack while work runs in the background."""
     settings = get_settings()
     interval = max(30, int(settings.tempa_cursor_progress_interval_sec or 120))
-    started = time.time()
-    n = 0
     while not stop.is_set():
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
@@ -44,17 +80,12 @@ async def _progress_ticker(job_id: str, channel_id: str, thread_ts: str, stop: a
         status = str(row.get("status") or "")
         if status not in jobs.ACTIVE_STATUSES:
             break
-        n += 1
-        elapsed_m = max(1, int((time.time() - started) / 60))
-        phase = str(row.get("phase") or "")
-        if phase in {"waiting_ci", "fixing_ci"}:
-            msg = prog.msg_waiting_ci() if phase == "waiting_ci" else prog.msg_ci_red()
-        else:
-            msg = prog.msg_still_working(elapsed_m)
-        await asyncio.to_thread(_post, channel_id, thread_ts, msg)
         jobs.update_job(job_id, last_progress_at=jobs._now_iso())
-        if n >= 20:
-            break
+
+
+def _is_timeout_error(err: str) -> bool:
+    lower = (err or "").lower()
+    return "timeouterror" in lower or lower == "timeout" or "timed out" in lower
 
 
 def _build_agent_prompt(job: dict[str, Any], *, comments: str = "", ci_logs: str = "") -> str:
@@ -73,6 +104,11 @@ def _build_agent_prompt(job: dict[str, Any], *, comments: str = "", ci_logs: str
         parts.append(f"Branch: {job['branch']}")
     if job.get("pr_url"):
         parts.append(f"PR: {job['pr_url']}")
+    if str(job.get("mode") or "") == "write" and not str(job.get("local_cwd") or "").strip():
+        parts.append(
+            "Cloud write mode: fix the issues from the request/findings, commit, and open a PR. "
+            "Do not ask which issues to fix — address all open findings and the user's ask."
+        )
     test_env = os.environ.get("TEMPA_CURSOR_TEST_ENV_FILE", "").strip()
     if test_env:
         parts.append(
@@ -82,6 +118,16 @@ def _build_agent_prompt(job: dict[str, Any], *, comments: str = "", ci_logs: str
         parts.append("PR comments to address:\n" + comments[:6000])
     if ci_logs:
         parts.append("CI failure logs:\n" + ci_logs[:8000])
+    repo = str(job.get("repo") or "").strip()
+    if repo and str(job.get("mode") or "") == "write":
+        try:
+            from tempa.qa.results_reply import format_qa_results_reply
+
+            findings = format_qa_results_reply(repo)
+            if findings and "don't see which repo" not in findings.lower():
+                parts.append("Known QA findings to fix:\n" + findings[:6000])
+        except Exception:
+            pass
     parts.append("User request:\n" + str(job.get("ask_text") or ""))
     return "\n\n".join(parts)
 
@@ -89,13 +135,16 @@ def _build_agent_prompt(job: dict[str, Any], *, comments: str = "", ci_logs: str
 async def _run_agent(job: dict[str, Any], *, comments: str = "", ci_logs: str = "") -> str:
     prompt = _build_agent_prompt(job, comments=comments, ci_logs=ci_logs)
     cwd = str(job.get("worktree_path") or job.get("local_cwd") or "")
-    timeout = max(60, int(get_settings().tempa_cursor_job_timeout_sec or 900))
+    # Long-running by design — teammates prefer silence until the fix lands.
+    timeout = max(300, int(get_settings().tempa_cursor_job_timeout_sec or 7200))
+    auto_pr = str(job.get("mode") or "") == "write" and not cwd
     return await asyncio.wait_for(
         cursor_prompt(
             prompt,
             repo=str(job.get("repo") or ""),
             starting_ref=job.get("starting_ref"),
             local_cwd=cwd,
+            auto_create_pr=auto_pr,
         ),
         timeout=timeout,
     )
@@ -113,7 +162,7 @@ async def _process_job(job: dict[str, Any]) -> None:
         settings = get_settings()
         mode = str(job.get("mode") or "read")
         local_cwd = str(job.get("local_cwd") or "")
-        required = list(job.get("required_checks") or ["backend-ci", "frontend-ci", "e2e"])
+        required = list(job.get("required_checks") or [])
         base_ref = str(job.get("base_ref") or "main")
         jira_key = str(job.get("jira_key") or "").strip() or None
         repo = str(job.get("repo") or "")
@@ -125,11 +174,26 @@ async def _process_job(job: dict[str, Any]) -> None:
         pr_number: int | None = None
         jira_key = cqa.extract_jira_key(ask, jira_key)
 
+        if (mode == "write" or adopted) and not local_cwd:
+            # Unmounted GitHub target — Cursor cloud agent fixes + opens the PR.
+            if not repo:
+                raise RuntimeError("repo required for cloud write jobs")
+            jobs.update_job(job_id, phase="running", status="running")
+            reply = await _run_agent(job)
+            reply = (reply or "").strip() or "Tempa finished the cloud fix pass."
+            if len(reply) > 12000:
+                reply = reply[:11900] + "\n\n_(truncated)_"
+            jobs.update_job(job_id, status="completed", phase="completed", result_text=reply[:4000])
+            _post(channel_id, thread_ts, reply)
+            return
+
         if mode == "write" or adopted:
             if not local_cwd:
                 raise RuntimeError("local_cwd required for write/QA jobs")
             if not wt.git_available():
                 raise RuntimeError("git is not available in the Tempa environment")
+            # Host bind-mounts are often a different uid than the container user.
+            await asyncio.to_thread(wt.ensure_git_safe_directories, local_cwd, "/repos")
             if adopted:
                 pr_url = str(adopted["pr_url"])
                 pr_number = int(adopted["pr_number"])
@@ -231,19 +295,16 @@ async def _process_job(job: dict[str, Any]) -> None:
                     jobs.update_job(job_id, pr_url=pr_url, pr_number=pr_number)
                     job["pr_url"] = pr_url
                     job["pr_number"] = pr_number
-                    _post(
-                        channel_id,
-                        thread_ts,
-                        f"_Tempa finished the code changes and opened/updated <{pr_url}> for you. Waiting for CI…_",
-                    )
+                    # Stay quiet — only notify when CI is green / final result is ready.
                 except Exception as exc:
                     log.warning("pr create skipped/failed: %s", exc)
 
-            # CI / comments loop — never mark completed while required CI is red/pending.
+            # CI / comments loop — only when required_checks is configured.
             last_ci: dict[str, Any] = {}
-            if pr_number:
+            if pr_number and required:
                 max_fix = max(1, int(settings.tempa_cursor_ci_fix_max or 3))
-                timeout_sec = max(120, int(settings.tempa_cursor_job_timeout_sec or 900))
+                # CI wait can outlive a single agent turn; default 2h quiet background.
+                timeout_sec = max(600, int(settings.tempa_cursor_job_timeout_sec or 7200) * 2)
                 deadline = time.time() + timeout_sec
                 fix_count = 0
                 while True:
@@ -274,13 +335,13 @@ async def _process_job(job: dict[str, Any]) -> None:
                     if status == "pending":
                         if time.time() >= deadline:
                             jobs.update_job(job_id, status="needs_help", phase="needs_help")
-                            help_msg = (
-                                f"_Tempa is still waiting on CI for <{pr_url}> after "
-                                f"{timeout_sec // 60}m — needs a human look._"
-                            )
+                            # Escalate owners only — don't worry the requester about wait time.
                             await asyncio.to_thread(
                                 cqa.notify_done,
-                                summary=help_msg + "\n\n" + str(summary),
+                                summary=(
+                                    f"CI still pending on <{pr_url}> after {timeout_sec // 60}m — "
+                                    "needs a human look.\n\n" + str(summary)
+                                ),
                                 channel_id=channel_id,
                                 thread_ts=thread_ts,
                                 ask_text=ask,
@@ -290,9 +351,9 @@ async def _process_job(job: dict[str, Any]) -> None:
                                 cwd=worktree_path,
                                 jira_key=jira_key,
                                 user_id=str(job.get("user_id") or ""),
+                                escalate_only=True,
                             )
                             return
-                        _post(channel_id, thread_ts, prog.msg_waiting_ci())
                         await asyncio.sleep(45)
                         continue
 
@@ -324,7 +385,7 @@ async def _process_job(job: dict[str, Any]) -> None:
                         status="fixing_ci",
                         ci_fix_count=fix_count,
                     )
-                    _post(channel_id, thread_ts, prog.msg_ci_red())
+                    # Quiet CI fix cycle — no mid-flight Slack spam.
                     logs = await asyncio.to_thread(cpr.failed_run_logs, cwd=worktree_path)
                     await _run_agent(job, comments=comments, ci_logs=logs)
                     try:
@@ -377,7 +438,9 @@ async def _process_job(job: dict[str, Any]) -> None:
                 await asyncio.to_thread(wt.remove_worktree, worktree_path, repo_cwd=local_cwd)
             return
 
-        # Read-only path
+        # Read-only path — still mark host mounts safe so agent `git` calls work.
+        if local_cwd:
+            await asyncio.to_thread(wt.ensure_git_safe_directories, local_cwd, "/repos")
         job["worktree_path"] = local_cwd
         reply = await _run_agent(job)
         reply = (reply or "").strip() or "Tempa had nothing to add."
@@ -389,6 +452,45 @@ async def _process_job(job: dict[str, Any]) -> None:
     except Exception as exc:
         log.exception("cursor job failed %s", job_id)
         err = str(exc).strip() or type(exc).__name__
+        # One auto-heal retry for Docker git ownership (today's teammate-facing failure).
+        if (
+            local_cwd
+            and not job.get("_safe_git_retried")
+            and ("dubious ownership" in err.lower() or "safe.directory" in err.lower())
+        ):
+            try:
+                await asyncio.to_thread(wt.ensure_git_safe_directories, local_cwd, "/repos")
+                jobs.update_job(job_id, status="running", phase="running", error=None)
+                await _process_job({**job, "_safe_git_retried": True})
+                return
+            except Exception:
+                log.exception("safe.directory retry failed %s", job_id)
+        # Timeout: keep working once more in background — never tell the user "too long".
+        if _is_timeout_error(err) and not job.get("_timeout_retried"):
+            log.warning("cursor job %s timed out — silent background retry", job_id)
+            jobs.update_job(job_id, status="running", phase="running", error=None)
+            await _process_job({**job, "_timeout_retried": True})
+            return
+        if _is_timeout_error(err):
+            jobs.update_job(job_id, status="needs_help", phase="needs_help", error=err[:500])
+            await asyncio.to_thread(
+                cqa.notify_done,
+                summary=(
+                    f"Background Cursor job timed out after retry for ask:\n"
+                    f"{(ask or '')[:400]}\n\n(internal: {err[:200]})"
+                ),
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                ask_text=ask,
+                pr_number=None,
+                pr_url="",
+                repo=str(job.get("repo") or ""),
+                cwd=local_cwd or None,
+                jira_key=str(job.get("jira_key") or "") or None,
+                user_id=str(job.get("user_id") or ""),
+                escalate_only=True,
+            )
+            return
         jobs.update_job(job_id, status="failed", phase="failed", error=err[:500])
         _post(channel_id, thread_ts, prog.msg_problem(err))
     finally:
@@ -414,7 +516,10 @@ async def _worker_loop() -> None:
             slots = max(0, max_p - running)
             claimed = jobs.claim_next_jobs(slots) if slots else []
             for job in claimed:
-                asyncio.create_task(_process_job(job), name=f"cursor-job-{job.get('id')}")
+                asyncio.create_task(
+                    _process_job_guarded(job),
+                    name=f"cursor-job-{job.get('id')}",
+                )
         except Exception:
             log.exception("cursor worker loop error")
         await asyncio.sleep(2)
@@ -432,6 +537,7 @@ async def start_cursor_worker() -> None:
         if ch and th:
             _post(ch, th, prog.msg_interrupted())
     try:
+        wt.ensure_git_safe_directories("/repos", "/repos/compliancetracker")
         wt.cleanup_orphan_worktrees()
     except Exception:
         log.exception("worktree cleanup failed")
@@ -475,6 +581,10 @@ def enqueue_from_slack(
     settings = get_settings()
 
     write = cpr.is_write_intent(text) or bool(cpr.parse_pr_url(text))
+    repo = str(cfg.get("repo") or "").strip()
+    # Cloud write when we have a GitHub repo but no mount (Cursor opens the PR).
+    if write and not local_cwd and not repo:
+        return {"error": "need a GitHub repo (or a mounted checkout) to raise a PR."}
     if write and local_cwd:
         from pathlib import Path
         import os
@@ -492,11 +602,22 @@ def enqueue_from_slack(
     active = jobs.count_active_jobs()
     position = active + 1
 
+    # Enrich short follow-ups with thread context so Cursor sees prior findings.
+    ask_text = text
+    try:
+        from tempa.channels.slack.cursor_threads import thread_coding_context_blob
+
+        blob = thread_coding_context_blob(context)
+        if blob and blob.strip() and blob.strip() not in text:
+            ask_text = f"{text}\n\nSlack thread context:\n{blob.strip()[:6000]}"
+    except Exception:
+        pass
+
     key = jobs.pr_key(
         channel_id=channel_id,
         thread_ts=thread_ts,
         user_id=user_id,
-        repo=str(cfg.get("repo") or ""),
+        repo=repo,
     )
     job_id = jobs.enqueue_cursor_job(
         {
@@ -504,13 +625,13 @@ def enqueue_from_slack(
             "thread_ts": thread_ts,
             "message_ts": str(context.get("slack_message_ts") or context.get("message_ts") or ""),
             "user_id": user_id,
-            "ask_text": text,
+            "ask_text": ask_text,
             "mode": "write" if write else "read",
             "local_cwd": local_cwd,
-            "repo": str(cfg.get("repo") or ""),
+            "repo": repo,
             "starting_ref": cfg.get("starting_ref"),
             "base_ref": str(cfg.get("base_ref") or "main"),
-            "required_checks": list(cfg.get("required_checks") or ["backend-ci", "frontend-ci", "e2e"]),
+            "required_checks": list(cfg.get("required_checks") or []),
             "jira_key": str(cfg.get("jira_key") or "").strip() or None,
             "label": str(cfg.get("label") or ""),
             "pr_key": key,

@@ -3,9 +3,10 @@ from __future__ import annotations
 import base64
 import re
 from dataclasses import dataclass
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any
+from typing import Any, Sequence
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -16,6 +17,9 @@ DEFAULT_SCOPES: tuple[str, ...] = (
     "https://mail.google.com/",
     "https://www.googleapis.com/auth/contacts.readonly",
 )
+
+# (content_id without brackets, raw bytes, image subtype e.g. "jpeg")
+InlineImage = tuple[str, bytes, str]
 
 
 @dataclass(frozen=True)
@@ -219,9 +223,23 @@ class GmailClient:
         html_body: str | None = None,
         cc: str = "",
         bcc: str = "",
+        inline_images: Sequence[InlineImage] | None = None,
     ) -> dict[str, Any]:
-        if html_body:
-            msg: MIMEText | MIMEMultipart = MIMEMultipart("alternative")
+        images = [item for item in (inline_images or ()) if item[0] and item[1]]
+        if html_body and images:
+            # multipart/related so Gmail shows cid: images without "Display images".
+            msg: MIMEText | MIMEMultipart = MIMEMultipart("related")
+            alt = MIMEMultipart("alternative")
+            alt.attach(MIMEText(body or "Please view this message in HTML mode.", "plain", "utf-8"))
+            alt.attach(MIMEText(html_body, "html", "utf-8"))
+            msg.attach(alt)
+            for content_id, data, subtype in images:
+                part = MIMEImage(data, _subtype=(subtype or "jpeg").lower())
+                part.add_header("Content-ID", f"<{content_id}>")
+                part.add_header("Content-Disposition", "inline", filename=f"{content_id}.{subtype or 'jpg'}")
+                msg.attach(part)
+        elif html_body:
+            msg = MIMEMultipart("alternative")
             msg.attach(MIMEText(body or "Please view this message in HTML mode.", "plain", "utf-8"))
             msg.attach(MIMEText(html_body, "html", "utf-8"))
         else:

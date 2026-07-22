@@ -62,7 +62,6 @@ def find_triggerable_meet_events(
     window_minutes: int = 120,
     lookback_hours: int = 12,
     trigger_before_minutes: int = 2,
-    trigger_after_start_minutes: int = 10,
 ) -> list[CalendarEvent]:
     """Return Google Calendar events with Meet links that are active or about to start."""
     client = load_calendar_client()
@@ -98,7 +97,7 @@ def find_triggerable_meet_events(
         start_utc = ev.start.astimezone(dt.timezone.utc)
         end_utc = ev.end.astimezone(dt.timezone.utc)
         trigger_window_start = start_utc - dt.timedelta(minutes=trigger_before_minutes)
-        # Join for the full active meeting window (until end), not only N minutes after start.
+        # Join for the full active meeting window (until end), including late joins.
         if trigger_window_start <= now_utc < end_utc:
             events.append(ev)
     return events
@@ -115,7 +114,6 @@ async def poll_once(state: PollerState, on_trigger: TriggerCallback) -> list[Cal
         find_triggerable_meet_events,
         lookback_hours=settings.meet_calendar_lookback_hours,
         trigger_before_minutes=settings.meet_trigger_before_minutes,
-        trigger_after_start_minutes=settings.meet_trigger_after_start_minutes,
     )
 
     for ev in events:

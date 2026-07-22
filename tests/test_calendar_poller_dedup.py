@@ -110,10 +110,11 @@ async def test_poller_triggers_once_and_persists_key(tmp_path, monkeypatch):
 
     with patch("tempa.channels.calendar.poller.find_triggerable_meet_events", return_value=[ev]):
         with patch("tempa.meet.job_store.has_active_job_for_url", return_value=False):
-            with patch("tempa.channels.calendar.poller.ingest_calendar_event"):
-                with patch("tempa.core.events.event_bus.publish_json", new_callable=AsyncMock):
-                    first = await poll_once(state, on_trigger)
-                    second = await poll_once(state, on_trigger)
+            with patch("tempa.meet.job_store.should_retry_calendar_join", return_value=False):
+                with patch("tempa.channels.calendar.poller.ingest_calendar_event"):
+                    with patch("tempa.core.events.event_bus.publish_json", new_callable=AsyncMock):
+                        first = await poll_once(state, on_trigger)
+                        second = await poll_once(state, on_trigger)
 
     assert len(first) == 1
     assert len(second) == 0

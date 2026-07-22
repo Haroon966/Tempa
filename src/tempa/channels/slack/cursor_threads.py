@@ -1,8 +1,13 @@
-"""Route pinned Slack threads through Tempa Cursor jobs."""
+"""Route Slack coding work through Tempa Cursor jobs.
+
+Pins (`threads`) override per-thread CI/Jira. Unpinned coding asks resolve a
+repo from `repos` in cursor_threads.yaml (github URL, alias, or sole default).
+"""
 
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +17,14 @@ from tempa.settings import get_settings
 
 log = logging.getLogger(__name__)
 
+_GITHUB_REPO_RE = re.compile(
+    r"(?:github\.com/|git@github\.com:)([\w.\-]+)/([\w.\-]+?)(?:\.git)?(?=[/#?\s]|$)",
+    re.I,
+)
+
 _cache_mtime: float | None = None
-_cache_rows: list[dict[str, Any]] = []
+_cache_threads: list[dict[str, Any]] = []
+_cache_repos: list[dict[str, Any]] = []
 
 
 def _ts_equal(a: str, b: str) -> bool:
@@ -23,52 +34,121 @@ def _ts_equal(a: str, b: str) -> bool:
         return str(a).strip() == str(b).strip()
 
 
-def load_cursor_threads() -> list[dict[str, Any]]:
-    """Load pins with mtime-aware reload (no process restart needed)."""
-    global _cache_mtime, _cache_rows
+def _normalize_repo_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    local_cwd = str(row.get("local_cwd") or "").strip()
+    repo = str(row.get("repo") or "").strip()
+    if not local_cwd and not repo:
+        return None
+    required = row.get("required_checks")
+    if not isinstance(required, list):
+        required = []
+    aliases_raw = row.get("aliases")
+    aliases: list[str] = []
+    if isinstance(aliases_raw, list):
+        aliases = [str(a).strip().lower() for a in aliases_raw if str(a).strip()]
+    rid = str(row.get("id") or "").strip()
+    if rid and rid.lower() not in aliases:
+        aliases.append(rid.lower())
+    if local_cwd:
+        base = Path(local_cwd).name.lower()
+        if base and base not in aliases:
+            aliases.append(base)
+    if repo:
+        slug = repo.lower().removesuffix(".git")
+        if slug not in aliases:
+            aliases.append(slug)
+        short = slug.rsplit("/", 1)[-1]
+        if short and short not in aliases:
+            aliases.append(short)
+    return {
+        "id": rid or (Path(local_cwd).name if local_cwd else repo),
+        "repo": repo,
+        "starting_ref": str(row.get("starting_ref") or "").strip() or None,
+        "local_cwd": local_cwd,
+        "label": str(row.get("label") or "").strip(),
+        "base_ref": str(row.get("base_ref") or "main").strip() or "main",
+        "jira_key": str(row.get("jira_key") or "").strip() or None,
+        "required_checks": [str(x).strip() for x in required if str(x).strip()],
+        "aliases": aliases,
+    }
+
+
+def _normalize_thread_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    channel_id = str(row.get("channel_id") or "").strip()
+    thread_ts = str(row.get("thread_ts") or "").strip()
+    if not channel_id or not thread_ts:
+        return None
+    base = _normalize_repo_row(row) or {
+        "id": "",
+        "repo": "",
+        "starting_ref": None,
+        "local_cwd": "",
+        "label": "",
+        "base_ref": "main",
+        "jira_key": None,
+        "required_checks": [],
+        "aliases": [],
+    }
+    return {
+        "channel_id": channel_id,
+        "thread_ts": thread_ts,
+        "repo": base["repo"],
+        "starting_ref": base["starting_ref"],
+        "local_cwd": base["local_cwd"],
+        "label": base["label"],
+        "base_ref": base["base_ref"],
+        "jira_key": base["jira_key"],
+        "required_checks": base["required_checks"],
+    }
+
+
+def _reload_config() -> None:
+    global _cache_mtime, _cache_threads, _cache_repos
     path = get_settings().config_dir / "cursor_threads.yaml"
     if not path.exists():
         _cache_mtime = None
-        _cache_rows = []
-        return []
+        _cache_threads = []
+        _cache_repos = []
+        return
     mtime = path.stat().st_mtime
     if _cache_mtime is not None and mtime == _cache_mtime:
-        return list(_cache_rows)
+        return
     with path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-    rows = data.get("threads") if isinstance(data, dict) else None
-    if not isinstance(rows, list):
-        _cache_mtime = mtime
-        _cache_rows = []
-        return []
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        channel_id = str(row.get("channel_id") or "").strip()
-        thread_ts = str(row.get("thread_ts") or "").strip()
-        if not channel_id or not thread_ts:
-            continue
-        required = row.get("required_checks")
-        if not isinstance(required, list):
-            required = ["backend-ci", "frontend-ci", "e2e"]
-        out.append(
-            {
-                "channel_id": channel_id,
-                "thread_ts": thread_ts,
-                "repo": str(row.get("repo") or "").strip(),
-                "starting_ref": str(row.get("starting_ref") or "").strip() or None,
-                "local_cwd": str(row.get("local_cwd") or "").strip(),
-                "label": str(row.get("label") or "").strip(),
-                "base_ref": str(row.get("base_ref") or "main").strip() or "main",
-                "jira_key": str(row.get("jira_key") or "").strip() or None,
-                "required_checks": [str(x).strip() for x in required if str(x).strip()],
-            }
-        )
+    if not isinstance(data, dict):
+        data = {}
+    threads_out: list[dict[str, Any]] = []
+    for row in data.get("threads") or []:
+        if isinstance(row, dict):
+            norm = _normalize_thread_row(row)
+            if norm:
+                threads_out.append(norm)
+    repos_out: list[dict[str, Any]] = []
+    for row in data.get("repos") or []:
+        if isinstance(row, dict):
+            norm = _normalize_repo_row(row)
+            if norm:
+                repos_out.append(norm)
     _cache_mtime = mtime
-    _cache_rows = out
-    log.info("slack.cursor_thread config loaded %s threads", len(out))
-    return list(out)
+    _cache_threads = threads_out
+    _cache_repos = repos_out
+    log.info(
+        "slack.cursor_thread config loaded %s threads, %s repos",
+        len(threads_out),
+        len(repos_out),
+    )
+
+
+def load_cursor_threads() -> list[dict[str, Any]]:
+    """Load pins with mtime-aware reload (no process restart needed)."""
+    _reload_config()
+    return list(_cache_threads)
+
+
+def load_cursor_repos() -> list[dict[str, Any]]:
+    """Load repo mounts for unpinned coding asks."""
+    _reload_config()
+    return list(_cache_repos)
 
 
 def match_cursor_thread(channel_id: str, thread_ts: str) -> dict[str, Any] | None:
@@ -86,6 +166,181 @@ def is_cursor_thread(channel_id: str, thread_ts: str) -> bool:
     return match_cursor_thread(channel_id, thread_ts) is not None
 
 
+def cursor_owns_coding() -> bool:
+    """True when Cursor API is configured — mounts optional (cloud can use a GitHub URL)."""
+    from tempa.qa.cursor import cursor_configured
+
+    return cursor_configured()
+
+
+def _github_slug_from_text(text: str) -> str | None:
+    m = _GITHUB_REPO_RE.search(text or "")
+    if not m:
+        return None
+    return f"{m.group(1)}/{m.group(2).removesuffix('.git')}"
+
+
+def _cloud_cfg_from_github(text: str) -> dict[str, Any] | None:
+    """Ephemeral Cursor cloud target when the repo is not under repos: mounts."""
+    slug = _github_slug_from_text(text or "")
+    if not slug:
+        try:
+            from tempa.qa.github.parse import has_explicit_github_ref, parse_github_target
+
+            if has_explicit_github_ref(text or ""):
+                target = parse_github_target(text or "")
+                slug = str(target.repo or "").strip() or None
+        except Exception:
+            slug = None
+    if not slug or slug.count("/") != 1:
+        return None
+    return {
+        "id": slug,
+        "repo": slug,
+        "starting_ref": None,
+        "local_cwd": "",
+        "label": slug,
+        "base_ref": "main",
+        "jira_key": None,
+        "required_checks": [],
+        "aliases": [slug.lower(), slug.rsplit("/", 1)[-1].lower()],
+    }
+
+
+def _alias_in_text(alias: str, lower: str) -> bool:
+    """Match repo aliases without false hits like alias `ct` inside `project`."""
+    alias = (alias or "").strip().lower()
+    if not alias or not lower:
+        return False
+    if " " in alias or "/" in alias:
+        return alias in lower
+    return bool(re.search(rf"(?<![a-z0-9_]){re.escape(alias)}(?![a-z0-9_])", lower))
+
+
+def match_cursor_repo(text: str, *, allow_sole_default: bool = True) -> dict[str, Any] | None:
+    """Resolve a configured repo from message text (URL, alias, sole default, or cloud GitHub)."""
+    repos = load_cursor_repos()
+    lower = (text or "").lower()
+    slug = _github_slug_from_text(text or "")
+
+    # Explicit github.com/owner/repo always wins — never let alias `ct` steal "…project".
+    if slug:
+        slug_l = slug.lower()
+        for row in repos:
+            repo = str(row.get("repo") or "").lower()
+            if repo == slug_l or slug_l in [a.lower() for a in (row.get("aliases") or [])]:
+                return dict(row)
+            if Path(str(row.get("local_cwd") or "")).name.lower() == slug_l.rsplit("/", 1)[-1]:
+                return dict(row)
+        cloud = _cloud_cfg_from_github(text)
+        if cloud:
+            return cloud
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for row in repos:
+        for alias in row.get("aliases") or []:
+            if _alias_in_text(str(alias), lower):
+                scored.append((len(str(alias)), row))
+                break
+    if scored:
+        scored.sort(key=lambda x: -x[0])
+        return dict(scored[0][1])
+
+    if not slug:
+        cloud = _cloud_cfg_from_github(text)
+        if cloud:
+            return cloud
+
+    if allow_sole_default and len(repos) == 1:
+        return dict(repos[0])
+    return None
+
+
+def thread_coding_context_blob(context: dict[str, Any] | None = None) -> str:
+    """Prior Slack turns for this thread — used to inherit repo on short follow-ups."""
+    ctx = dict(context or {})
+    channel_id = str(ctx.get("slack_channel_id") or ctx.get("channel_id") or "")
+    thread_ts = str(ctx.get("slack_thread_ts") or ctx.get("thread_ts") or "")
+    parts: list[str] = []
+    if channel_id and thread_ts:
+        try:
+            from tempa.channels.slack.conversation import list_thread_messages
+
+            for row in list_thread_messages(
+                channel_id=channel_id, thread_ts=thread_ts, limit=40
+            ):
+                text = str(row.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+        except Exception:
+            pass
+        if len(parts) < 2:
+            try:
+                from tempa.channels.slack.conversation import get_recent_messages
+
+                for row in get_recent_messages(
+                    limit=40, channel_id=channel_id, conversation_key=thread_ts
+                ):
+                    text = str(row.get("text") or "").strip()
+                    if text:
+                        parts.append(text)
+            except Exception:
+                pass
+        if len(parts) < 2:
+            live = _thread_transcript(ctx, limit=24)
+            if live:
+                parts.append(live)
+    for key in ("recent_user_messages", "recent_conversation", "conversation_messages"):
+        for item in ctx.get(key) or []:
+            if isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+            elif isinstance(item, dict):
+                text = str(item.get("text") or item.get("content") or "").strip()
+                if text:
+                    parts.append(text)
+    return "\n".join(parts)
+
+
+def resolve_cursor_job_cfg(
+    text: str,
+    *,
+    channel_id: str = "",
+    thread_ts: str = "",
+) -> dict[str, Any] | None:
+    """Pin override, else repo resolve for coding asks (mount, cloud URL, or thread history)."""
+    pin = match_cursor_thread(channel_id, thread_ts)
+    if pin:
+        return pin
+    # Do not sole-default on short follow-ups — that steals "fix it all" onto the wrong repo.
+    cfg = match_cursor_repo(text, allow_sole_default=False)
+    if cfg:
+        return cfg
+    if channel_id and thread_ts:
+        blob = thread_coding_context_blob(
+            {"slack_channel_id": channel_id, "slack_thread_ts": thread_ts}
+        )
+        if blob:
+            hist = match_cursor_repo(blob, allow_sole_default=False)
+            if hist:
+                return hist
+    return match_cursor_repo(text, allow_sole_default=True)
+
+
+def ambiguous_repo_message() -> str:
+    repos = load_cursor_repos()
+    if not repos:
+        return (
+            "Coding work goes through Cursor, but no repos are configured. "
+            "Add a `repos:` entry in `config/cursor_threads.yaml`."
+        )
+    lines = ["Which repo should Cursor work on? Configured:"]
+    for row in repos:
+        aliases = ", ".join(row.get("aliases") or [row.get("id") or "?"])
+        label = row.get("label") or row.get("id") or row.get("local_cwd") or row.get("repo")
+        lines.append(f"• *{label}* (`{aliases}`)")
+    return "\n".join(lines)
+
+
 def _resolve_user_label(client: Any, user_id: str, cache: dict[str, str]) -> str:
     uid = str(user_id or "").strip()
     if not uid:
@@ -96,7 +351,10 @@ def _resolve_user_label(client: Any, user_id: str, cache: dict[str, str]) -> str
         from tempa.channels.slack.client import user_display_name
 
         info = client.users_info(user=uid)
-        user = info.get("user") if isinstance(info, dict) else None
+        data = info.data if hasattr(info, "data") and isinstance(info.data, dict) else (
+            info if isinstance(info, dict) else {}
+        )
+        user = data.get("user")
         label = user_display_name(user) if isinstance(user, dict) else uid
     except Exception:
         label = uid
@@ -141,11 +399,13 @@ def _thread_transcript(context: dict[str, Any], *, limit: int = 24) -> str:
         return ""
 
 
-async def handle_cursor_thread_message(
+async def handle_cursor_job_message(
     text: str,
     context: dict[str, Any],
+    *,
+    cfg: dict[str, Any] | None = None,
 ) -> str | None:
-    """Enqueue a durable Tempa Cursor job for a pinned thread.
+    """Enqueue a durable Tempa Cursor job.
 
     Returns a short ack string for the Slack handler (or an error). The real
     answer is posted asynchronously by the Cursor worker.
@@ -156,25 +416,38 @@ async def handle_cursor_thread_message(
 
     channel_id = str(context.get("slack_channel_id") or context.get("channel_id") or "")
     thread_ts = str(context.get("slack_thread_ts") or context.get("thread_ts") or "")
-    cfg = match_cursor_thread(channel_id, thread_ts)
-    if not cfg:
+    job_cfg = cfg or resolve_cursor_job_cfg(text, channel_id=channel_id, thread_ts=thread_ts)
+    if not job_cfg:
         return None
     if not cursor_configured():
-        return (
-            "This thread is set to answer via Cursor, but `CURSOR_API_KEY` is not "
-            "configured on Tempa."
-        )
+        from tempa.core.chat_errors import sanitize_user_error
 
-    local_cwd = str(cfg.get("local_cwd") or "").strip()
+        return f"_{sanitize_user_error('CURSOR_API_KEY is not configured on Tempa.')}_"
+
+    local_cwd = str(job_cfg.get("local_cwd") or "").strip()
     if local_cwd and not Path(local_cwd).is_dir():
-        return (
-            "Tempa Cursor thread misconfigured: local repo path is not available "
-            f"(`{local_cwd}`). Check the Tempa Docker volume mount."
-        )
+        from tempa.core.chat_errors import sanitize_user_error
 
-    result = enqueue_from_slack(text=text, context=context, cfg=cfg)
+        return f"_{sanitize_user_error(f'local repo path is not available (`{local_cwd}`).')}_"
+
+    result = enqueue_from_slack(text=text, context=context, cfg=job_cfg)
     if result.get("error"):
-        return f"_Tempa hit a problem: {result['error']}_"
+        from tempa.core.chat_errors import slack_problem_message
+
+        return slack_problem_message(str(result["error"]))
     if result.get("queued_position"):
         return prog.msg_queued(int(result["queued_position"]))
     return prog.msg_working()
+
+
+async def handle_cursor_thread_message(
+    text: str,
+    context: dict[str, Any],
+) -> str | None:
+    """Enqueue for a pinned thread (compatibility wrapper)."""
+    channel_id = str(context.get("slack_channel_id") or context.get("channel_id") or "")
+    thread_ts = str(context.get("slack_thread_ts") or context.get("thread_ts") or "")
+    cfg = match_cursor_thread(channel_id, thread_ts)
+    if not cfg:
+        return None
+    return await handle_cursor_job_message(text, context, cfg=cfg)

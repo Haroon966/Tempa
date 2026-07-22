@@ -25,7 +25,7 @@ export function CursorJobsBoard({ jobs }: { jobs: CursorAgentJob[] }) {
   if (jobs.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        No Tempa Cursor jobs yet. Asks in pinned Slack threads show up here.
+        No Tempa Cursor jobs yet. Allowlisted Slack coding asks show up here.
       </p>
     )
   }

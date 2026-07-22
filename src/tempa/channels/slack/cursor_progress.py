@@ -4,10 +4,11 @@ from __future__ import annotations
 
 
 def msg_working() -> str:
-    return "_Tempa is working on it…_"
+    return "_On it — working in the background. I'll reply here when it's done._"
 
 
 def msg_still_working(minutes: int) -> str:
+    # Kept for tests/compat — progress ticker no longer posts this to Slack.
     return f"_Tempa is still working on it… ({minutes}m)_"
 
 
@@ -29,10 +30,10 @@ def msg_done(pr_url: str) -> str:
 
 
 def msg_problem(err: str) -> str:
-    e = (err or "unknown error").strip()
-    if len(e) > 300:
-        e = e[:297] + "..."
-    return f"_Tempa hit a problem: {e}_"
+    """User-facing failure — never paste raw git/Python stderr into Slack."""
+    from tempa.core.chat_errors import slack_problem_message
+
+    return slack_problem_message(err)
 
 
 def msg_needs_help(*, pr_url: str, attempts: int) -> str:

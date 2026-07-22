@@ -43,6 +43,37 @@ def test_pr_webhook_enqueues_deep_review(monkeypatch):
     assert review["pr_url"] == "https://github.com/o/r/pull/7"
 
 
+def test_pr_webhook_skips_auto_scan_by_default(monkeypatch):
+    """Opened/updated PRs must not enqueue QA unless scan_on_pr is enabled."""
+    monkeypatch.setattr(qa_dispatch, "qa_enabled", lambda: True)
+    monkeypatch.setattr(qa_dispatch, "load_qa_config", lambda: {})
+
+    qa_dispatch.handle_pull_request(PR_PAYLOAD)
+
+    assert list_jobs() == []
+
+
+def test_pr_label_still_enqueues_when_auto_scan_off(monkeypatch):
+    monkeypatch.setattr(qa_dispatch, "qa_enabled", lambda: True)
+    monkeypatch.setattr(
+        qa_dispatch,
+        "load_qa_config",
+        lambda: {"scan_on_pr": False, "deep_review_on_label": "tempa-deep-review"},
+    )
+
+    qa_dispatch.handle_pull_request(
+        {
+            **PR_PAYLOAD,
+            "action": "labeled",
+            "label": {"name": "tempa-deep-review"},
+        }
+    )
+
+    jobs = list_jobs()
+    assert [j["job_type"] for j in jobs] == ["deep_review"]
+    assert jobs[0]["pr_number"] == 7
+
+
 def test_worker_reviews_tests_and_comments_in_one_job(monkeypatch):
     import tempa.qa.comments as comments_mod
     import tempa.qa.deep_review.lite as lite
@@ -205,11 +236,19 @@ def test_qa_hook_routes_pr_link_from_chat(monkeypatch):
     result = asyncio.run(
         qa_scan_hook(
             "github.com/o/r/pull/479 please review this pr and comment on it",
-            {"channel": "slack", "slack_user_id": "U123", "slack_privileged": True},
+            {
+                "channel": "slack",
+                "slack_user_id": "U123",
+                "slack_privileged": True,
+                "slack_channel_id": "C_TEAM",
+                "slack_thread_ts": "111.222",
+            },
         )
     )
     assert result is not None
     assert "queued a priority review" in result["response"]
+    assert "comment on the PR" in result["response"]
+    assert "report back here" in result["response"]
     assert "assign" in result["response"].lower()
     assert "PR #479" in result["response"]
 
@@ -217,9 +256,123 @@ def test_qa_hook_routes_pr_link_from_chat(monkeypatch):
     assert job["job_type"] == "deep_review"
     assert job["pr_number"] == 479
     assert job["requested_by"] == "U123"
+    assert job["slack_channel_id"] == "C_TEAM"
+    assert job["slack_thread_ts"] == "111.222"
 
     # No PR link -> hook stays out of the way
     assert asyncio.run(qa_scan_hook("what meetings do I have today?", {})) is None
+
+
+@pytest.mark.asyncio
+async def test_worker_comments_and_reports_slack_for_user_qa(monkeypatch):
+    import tempa.qa.comments as comments_mod
+    import tempa.qa.deep_review.lite as lite
+    import tempa.qa.github.assign as assign_mod
+    import tempa.qa.notify as qa_notify
+
+    def fake_gh_get(path, token):
+        if path.endswith("/files"):
+            return [{"filename": "app.py", "patch": "+x = 1"}]
+        return {"head": {"ref": "feat"}}
+
+    async def fake_llm(prompt, *, max_tokens=4096):
+        return "[]"
+
+    monkeypatch.setattr(lite, "gh_get", fake_gh_get)
+    monkeypatch.setattr(lite, "get_github_token", lambda repo: "tok")
+    monkeypatch.setattr(lite, "github_uses_pat", lambda: True)
+    monkeypatch.setattr(lite, "deep_review_complete", fake_llm)
+    monkeypatch.setattr(
+        assign_mod,
+        "ensure_pr_assignee",
+        lambda repo, pr: {"status": "assigned", "assignee": "alice", "reason": "pr_author"},
+    )
+    monkeypatch.setattr(
+        qa_worker,
+        "scan_branch",
+        lambda *a, **k: {
+            "grade": "A",
+            "finding_count": 0,
+            "branch_status": {
+                "branch": "feat",
+                "grade": "A",
+                "ci_status": "success",
+                "lint_status": "success",
+                "test_status": "success",
+                "security_count": 0,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        comments_mod,
+        "post_review_summary",
+        lambda *a, **k: {"status": "posted", "url": "https://github.com/o/r/pull/9#comment-1"},
+    )
+    monkeypatch.setattr(qa_worker, "load_qa_config", lambda: {"auto_comment_on_pr": False})
+
+    posted = {}
+
+    def fake_slack(channel, text, *, thread_ts="", source_channel=""):
+        posted.update(channel=channel, text=text, thread_ts=thread_ts, source_channel=source_channel)
+        return {"status": "sent"}
+
+    monkeypatch.setattr(qa_notify, "send_slack_message_sync", fake_slack, raising=False)
+    monkeypatch.setattr(
+        "tempa.channels.slack.outbound.send_slack_message_sync",
+        fake_slack,
+    )
+
+    job_id = enqueue_scan(
+        "o/r",
+        pr_number=9,
+        job_type="deep_review",
+        priority=True,
+        extra={
+            "requested_by": "U1",
+            "source_channel": "slack",
+            "slack_channel_id": "C1",
+            "slack_thread_ts": "1.2",
+        },
+    )
+    job = claim_next_job()
+    assert job and job["id"] == job_id
+    await qa_worker._process_job(job)
+
+    done = next(j for j in list_jobs() if j["id"] == job_id)
+    assert done["status"] == "completed"
+    assert done["result"]["comment_url"].endswith("#comment-1")
+    assert posted["channel"] == "C1"
+    assert posted["thread_ts"] == "1.2"
+    assert "QA results" in posted["text"] or "o/r" in posted["text"]
+    assert "comment-1" in posted["text"]
+
+
+def test_notify_skips_github_webhook_jobs():
+    from tempa.qa.notify import user_requested_qa
+
+    assert user_requested_qa({"source_channel": "slack"}) is True
+    assert user_requested_qa({"source_channel": "github_webhook"}) is False
+    assert user_requested_qa({"source_channel": "scheduler"}) is False
+
+
+def test_qa_hook_ignores_product_check_phrasing(monkeypatch):
+    """'Check if the portal teacher count…' is support, not a lint/security scan."""
+    import tempa.qa.config as qa_config
+    from tempa.orchestrator.hooks_impl import qa_scan_hook
+    from tempa.qa.allowed_repos import add_repo, remove_repo
+
+    monkeypatch.setattr(qa_config, "qa_enabled", lambda: True)
+    add_repo("Orenda-Project/compliancetracker", source="test")
+    try:
+        msg = (
+            "In compliance tracker, the portal teacher count in Dashboard -> "
+            "School Staff seems to be lower than expected. Right now it shows "
+            "128 Portal Teachers, but it should be higher. Check if the count "
+            "shown on the Dashboard is the actual, correct count"
+        )
+        assert asyncio.run(qa_scan_hook(msg, {"channel": "slack"})) is None
+    finally:
+        remove_repo("Orenda-Project/compliancetracker")
 
 
 def test_qa_hook_routes_repo_main_branch_from_chat(monkeypatch):

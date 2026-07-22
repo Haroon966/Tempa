@@ -36,7 +36,11 @@ async def qa_results_hook(user_message: str, context: dict[str, Any]) -> dict[st
 
 async def qa_scan_hook(user_message: str, context: dict[str, Any]) -> dict[str, Any] | None:
     """Deterministic route: a PR/repo link with review intent goes straight to the QA queue,
-    bypassing the LLM planner (which otherwise asks clarifying questions)."""
+    bypassing the LLM planner (which otherwise asks clarifying questions).
+
+    Slack GitHub improve/explore asks never reach here — reply.py sends them to Cursor first.
+    Bare github.com links without strong QA intent are rejected by wants_github_qa.
+    """
     from tempa.qa.config import qa_enabled
     from tempa.qa.github.parse import parse_github_target, wants_github_qa
 
@@ -45,11 +49,9 @@ async def qa_scan_hook(user_message: str, context: dict[str, Any]) -> dict[str, 
     target = parse_github_target(user_message)
     if not target.repo:
         return None
-    lower = user_message.lower()
-    review_intent = wants_github_qa(user_message) or any(
-        k in lower for k in ("review", "scan", "check", "test", "audit", "qa", "comment")
-    )
-    if not review_intent:
+    # Require real QA intent. Loose words like "check if the count…" used to steal
+    # product-support asks into a lint/security scan via repo alias matching.
+    if not wants_github_qa(user_message):
         return None
 
     from tempa.qa.scan_request import handle_github_scan_request
@@ -59,9 +61,8 @@ async def qa_scan_hook(user_message: str, context: dict[str, Any]) -> dict[str, 
 
     channel = str(context.get("channel") or "coordinator")
     slack_user = str(context.get("slack_user_id") or "")
-    requested_by = slack_user or str(
-        context.get("whatsapp_number") or context.get("from_number") or channel
-    )
+    wa_number = str(context.get("whatsapp_number") or context.get("from_number") or "")
+    requested_by = slack_user or wa_number or channel
     # Trust = explicit owner/allowlisted identities only (slack_allow_all is for chatting,
     # not for adding repos to the scan allowlist).
     owner_number = get_settings().whatsapp_owner_number.strip()
@@ -70,9 +71,23 @@ async def qa_scan_hook(user_message: str, context: dict[str, Any]) -> dict[str, 
         or (owner_number and owner_number in requested_by)
         or channel == "dashboard"
     )
+    # Stash reply target so the QA worker can comment on the PR and report back here.
+    notify: dict[str, Any] = {}
+    slack_channel = str(context.get("slack_channel_id") or context.get("channel_id") or "")
+    if slack_channel:
+        notify["slack_channel_id"] = slack_channel
+        thread_ts = str(context.get("slack_thread_ts") or context.get("thread_ts") or "")
+        if thread_ts:
+            notify["slack_thread_ts"] = thread_ts
+    if wa_number and channel == "whatsapp":
+        notify["whatsapp_number"] = wa_number
     try:
         result = handle_github_scan_request(
-            user_message, source_channel=channel, requested_by=requested_by, trusted=trusted
+            user_message,
+            source_channel=channel,
+            requested_by=requested_by,
+            trusted=trusted,
+            notify=notify or None,
         )
     except Exception as exc:
         return {
@@ -90,8 +105,8 @@ async def qa_scan_hook(user_message: str, context: dict[str, Any]) -> dict[str, 
         if target.pr_number:
             response = (
                 f"On it — queued a priority review for PR #{target.pr_number} on `{target.repo}`. "
-                "I'll assign the PR if it has no assignee, then review the diff, "
-                "run lint/tests/security checks, and comment the results on the PR."
+                "I'll assign the PR if it has no assignee, review the diff, "
+                "run lint/tests/security checks, comment on the PR, and report back here."
             )
         elif target.branch:
             response = (
@@ -189,6 +204,15 @@ async def varys_work_request_hook(user_message: str, context: dict[str, Any]) ->
         return None
     if not is_coding_work_request(user_message, context):
         return None
+
+    # Cursor owns coding — no Varys harness ticket / go-approval for code work.
+    try:
+        from tempa.channels.slack.cursor_threads import cursor_owns_coding
+
+        if cursor_owns_coding():
+            return None
+    except Exception:
+        pass
 
     from tempa.varys import harness
     from tempa.varys.vault_sync import append_session_log, ensure_vault_initialized

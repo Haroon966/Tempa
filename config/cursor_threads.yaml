@@ -1,13 +1,26 @@
-# Slack threads that answer via Cursor SDK instead of the normal coordinator.
-# Prefer local_cwd (mounted checkout in Docker). Cloud `repo` needs the
-# CURSOR_API_KEY account to have GitHub access to that private repo.
-#
-# Anyone in the channel may ask (admission = pin match, not allow-list).
-# Optional: base_ref, required_checks, jira_key (status comment on done).
+# Cursor coding — your mounted repos + optional Slack thread pins.
+# Allowlisted Slack users only (SLACK_OWNER / SLACK_ALLOWED / SLACK_ALLOW_ALL).
+
+repos:
+  - id: compliancetracker
+    local_cwd: /repos/compliancetracker
+    repo: Orenda-Project/compliancetracker
+    base_ref: main
+    required_checks:
+      - backend-ci
+      - frontend-ci
+      - e2e
+    aliases:
+      - ct
+      - compliancetracker
+      - pefsis
+      - compliance tracker
+
 threads:
   - channel_id: C0AV0MUTCJW
     thread_ts: "1784541760.548649"
     local_cwd: /repos/compliancetracker
+    repo: Orenda-Project/compliancetracker
     base_ref: main
     required_checks:
       - backend-ci

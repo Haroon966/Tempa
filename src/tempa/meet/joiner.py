@@ -499,11 +499,15 @@ async def join_meet(
     record_video_size: Optional[tuple[int, int]] = None,
     virtual_camera_path: Optional[str] = None,
     screen_share_test: bool = False,
+    display: Optional[str] = None,
+    pulse_sink: Optional[str] = None,
 ) -> MeetSession:
     screenshot_storage = storage_adapter or LocalStorageAdapter()
     guest_mode = bool(bot_name) and not storage_state_path
 
-    display = os.environ.get("DISPLAY", "").strip()
+    display = (display or os.environ.get("DISPLAY", "")).strip()
+    if display and not display.startswith(":"):
+        display = f":{display}"
     if display and headless:
         _logger.info("GMEET: virtual display detected (DISPLAY=%s), using headed mode", display)
         headless = False
@@ -519,7 +523,7 @@ async def join_meet(
     context = None
     page = None
     try:
-        launch_kwargs = {"headless": headless, "slow_mo": slow_mo_ms}
+        launch_kwargs: dict[str, object] = {"headless": headless, "slow_mo": slow_mo_ms}
         launch_args = list(_LAUNCH_ARGS)
         if guest_mode:
             launch_args = list(_GUEST_LAUNCH_ARGS)
@@ -542,6 +546,13 @@ async def join_meet(
             launch_args.append(SCREEN_CAPTURE_LAUNCH_ARG)
             _logger.info("GMEET: screen-share test mode (auto-select entire screen)")
         launch_kwargs["args"] = launch_args
+        launch_env = {**os.environ}
+        if display:
+            launch_env["DISPLAY"] = display
+        if pulse_sink:
+            launch_env["PULSE_SINK"] = pulse_sink
+            _logger.info("GMEET: routing browser audio to Pulse sink %s", pulse_sink)
+        launch_kwargs["env"] = launch_env
         browser = await p.chromium.launch(**launch_kwargs)
         # Meet requires mic permission even when muted; use silent fake audio + UI mute.
         if guest_mode and not using_virtual_cam:

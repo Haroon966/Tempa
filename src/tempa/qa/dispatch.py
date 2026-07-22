@@ -42,7 +42,8 @@ def handle_installation_repositories(payload: dict[str, Any]) -> None:
 
 
 def handle_push(payload: dict[str, Any]) -> None:
-    if not qa_enabled() or not load_qa_config().get("scan_on_push", True):
+    # Default off — push to PR/feature branches must not auto-QA.
+    if not qa_enabled() or not load_qa_config().get("scan_on_push", False):
         return
     repo = str((payload.get("repository") or {}).get("full_name") or "")
     ref = str(payload.get("ref") or "")
@@ -60,7 +61,11 @@ def handle_push(payload: dict[str, Any]) -> None:
 
 
 def handle_pull_request(payload: dict[str, Any]) -> None:
-    if not qa_enabled() or not load_qa_config().get("scan_on_pr", True):
+    """PR QA is opt-in: Slack/chat, dashboard, /deep-review comment, or the deep-review label.
+
+    Auto-scan every open/push PR only when scan_on_pr is explicitly enabled in qa.yaml.
+    """
+    if not qa_enabled():
         return
     action = payload.get("action")
     if action not in ("opened", "synchronize", "reopened", "labeled"):
@@ -78,6 +83,7 @@ def handle_pull_request(payload: dict[str, Any]) -> None:
     }
     label_name = load_qa_config().get("deep_review_on_label") or "tempa-deep-review"
     if action == "labeled":
+        # Explicit ask via label — always allowed when QA is enabled.
         label = str((payload.get("label") or {}).get("name") or "")
         if label == label_name:
             enqueue_scan(
@@ -89,7 +95,10 @@ def handle_pull_request(payload: dict[str, Any]) -> None:
                 extra=pr_meta,
             )
         return
-    if pr_number and load_qa_config().get("deep_review_on_pr", True):
+    # Default off: do not pick up every PR — only when config opts into auto-scan.
+    if not load_qa_config().get("scan_on_pr", False):
+        return
+    if pr_number and load_qa_config().get("deep_review_on_pr", False):
         # The deep_review job also runs the branch scan (lint/tests/security),
         # so no separate branch_scan is needed for PR events.
         enqueue_scan(

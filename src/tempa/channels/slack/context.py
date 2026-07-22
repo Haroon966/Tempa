@@ -26,7 +26,12 @@ def reply_thread_ts(event: dict[str, Any], *, event_type: str) -> str:
 
 
 def should_handle_channel_thread(event: dict[str, Any], text: str) -> bool:
-    """Route channel thread messages after Tempa has participated or a Jira draft is active."""
+    """Route channel thread messages after Tempa has participated or a Jira draft is active.
+
+    Permanent rule: if Tempa (or a Cursor job) already owns the thread, every human
+    follow-up is handled without requiring another @mention — including after a
+    session is completed.
+    """
     if is_dm_event(event) or not event.get("thread_ts"):
         return False
     channel_id = str(event.get("channel") or "")
@@ -34,25 +39,45 @@ def should_handle_channel_thread(event: dict[str, Any], text: str) -> bool:
     if not channel_id or not thread_ts:
         return False
 
-    from tempa.channels.slack.conversation import bot_participated_in_thread
-    from tempa.channels.slack.cursor_threads import is_cursor_thread
-    from tempa.channels.slack.varys_bridge import enrich_slack_context
+    try:
+        from tempa.channels.slack.cursor_threads import is_cursor_thread
 
-    # Cursor-pinned threads: handle every human follow-up (no @mention required).
-    if is_cursor_thread(channel_id, thread_ts):
-        return True
+        if is_cursor_thread(channel_id, thread_ts):
+            return True
+    except Exception:
+        pass
 
-    ctx = enrich_slack_context(event, {})
-    conv_key = str(ctx.get("slack_conversation_key") or thread_ts)
-    if bot_participated_in_thread(channel_id, conv_key):
-        return True
+    try:
+        from tempa.channels.slack.conversation import bot_participated_in_thread
+        from tempa.channels.slack.varys_bridge import enrich_slack_context
+
+        ctx = enrich_slack_context(event, {})
+        conv_key = str(ctx.get("slack_conversation_key") or thread_ts)
+        if bot_participated_in_thread(channel_id, conv_key):
+            return True
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "should_handle_channel_thread: participation check failed"
+        )
+        # Narrow fallback — only reopen if a Cursor job already owns this thread.
+        try:
+            from tempa.channels.slack.cursor_jobs import thread_has_cursor_job
+
+            if thread_has_cursor_job(channel_id=channel_id, thread_ts=thread_ts):
+                return True
+        except Exception:
+            pass
 
     try:
         from tempa.channels.jira.intent import is_ticket_confirm, wants_jira_ticket_edit
         from tempa.channels.jira.tickets import should_route_to_jira_ticket, ticket_feature_enabled
+        from tempa.channels.slack.varys_bridge import enrich_slack_context
 
         if not ticket_feature_enabled():
             return False
+        ctx = enrich_slack_context(event, {})
         if should_route_to_jira_ticket(text, ctx):
             return True
         normalized = (text or "").strip()

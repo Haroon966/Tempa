@@ -351,6 +351,8 @@ async def execute_waves_node(state: CoordinatorState) -> dict[str, Any]:
         _check_cancelled(context)
         await event_bus.publish_json("coordinator", "wave", f"wave {wave_index + 1}/{len(waves)}")
         context["specialist_results"] = results
+        from tempa.orchestrator.parallel import gather_limited
+
         coros = [
             _run_specialist_with_retry(
                 str(task.get("agent")),
@@ -362,7 +364,7 @@ async def execute_waves_node(state: CoordinatorState) -> dict[str, Any]:
             )
             for task in wave
         ]
-        wave_results = await asyncio.gather(*coros)
+        wave_results = await gather_limited(coros)
         for task, result in zip(wave, wave_results):
             agent = str(task.get("agent"))
             results[agent] = result
@@ -431,6 +433,7 @@ async def channel_followup_node(state: CoordinatorState) -> dict[str, Any]:
 
 
 def build_coordinator_graph():
+    """LEGACY LangGraph StateGraph — kept for tests; shipping path is OrchestratorAgent / Hermes."""
     graph = StateGraph(CoordinatorState)
     graph.add_node("plan", plan_node)
     graph.add_node("plan_preview", plan_preview_node)
@@ -628,7 +631,21 @@ async def run_coordinator_full(user_message: str, context: dict[str, Any] | None
 
     from tempa.settings import get_settings
 
-    if get_settings().tempa_adk_spike:
+    settings = get_settings()
+
+    # Hermes tools coordinator (non-coding). Cursor still owns Slack coding short-circuit.
+    if str(settings.tempa_coordinator or "").strip().lower() == "hermes":
+        from tempa.hermes.coordinator import run_hermes_coordinator
+
+        return await run_hermes_coordinator(user_message, ctx)
+
+    # PARKED: ADK spike — keep off in production. Prefer hermes or default orchestrator.
+    if settings.tempa_adk_spike:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "TEMPA_ADK_SPIKE is on but ADK is PARKED — prefer TEMPA_COORDINATOR=hermes"
+        )
         from tempa.adk import run_adk_orchestrator
 
         return await run_adk_orchestrator(user_message, ctx)

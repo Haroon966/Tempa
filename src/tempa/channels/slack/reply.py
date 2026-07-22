@@ -132,20 +132,32 @@ async def handle_inbound_slack(
     _schedule_ingest(event, user_id=user_id, channel_id=channel_id)
 
     from tempa.channels.jira.tickets import handle_jira_ticket_message, should_route_to_jira_ticket, ticket_feature_enabled
-    from tempa.channels.slack.cursor_threads import handle_cursor_thread_message
     from tempa.channels.slack.varys_bridge import enrich_slack_context
 
     slack_ctx = enrich_slack_context(event, {"slack_privileged": slack_privileged})
 
-    # Pinned Cursor threads: enqueue durable job; worker posts the real answer.
-    from tempa.channels.slack.cursor_threads import is_cursor_thread
+    # Cursor owns coding (pins or coding asks). Privileged users only.
+    from tempa.channels.slack.cursor_threads import (
+        ambiguous_repo_message,
+        cursor_owns_coding,
+        handle_cursor_job_message,
+        is_cursor_thread,
+        resolve_cursor_job_cfg,
+    )
+    from tempa.channels.slack.messages import GUEST_CODING_DENIED
+    from tempa.orchestrator.routing import is_coding_work_request
 
-    if is_cursor_thread(channel_id, thread_ts):
-        slack_ctx["slack_message_ts"] = message_ts
-        slack_ctx["user_id"] = user_id
-        cursor_reply = await handle_cursor_thread_message(text, slack_ctx)
-        if cursor_reply is not None:
-            await _post_slack_reply(channel_id, cursor_reply, reply_thread=reply_thread, say=say)
+    slack_ctx["slack_message_ts"] = message_ts
+    slack_ctx["user_id"] = user_id
+    pinned = is_cursor_thread(channel_id, thread_ts)
+    coding = pinned or (
+        cursor_owns_coding() and is_coding_work_request(text, slack_ctx)
+    )
+    if coding:
+        if not slack_privileged:
+            await _post_slack_reply(
+                channel_id, GUEST_CODING_DENIED, reply_thread=reply_thread, say=say
+            )
             record_conversation_turn(
                 role="user",
                 text=text,
@@ -157,7 +169,7 @@ async def handle_inbound_slack(
             )
             record_conversation_turn(
                 role="assistant",
-                text=cursor_reply,
+                text=GUEST_CODING_DENIED,
                 user_id=user_id,
                 channel_id=channel_id,
                 thread_ts=reply_thread,
@@ -165,26 +177,53 @@ async def handle_inbound_slack(
             )
             return {
                 "handled": 1,
-                "reply": cursor_reply,
+                "reply": GUEST_CODING_DENIED,
                 "skipped_coordinator": True,
                 "user": user_id,
                 "channel": channel_id,
-                "cursor_thread": True,
+                "cursor_denied": True,
             }
-        # Pinned thread must never fall through to Jira/coordinator.
-        await _post_slack_reply(
-            channel_id,
-            "_Tempa hit a problem: could not start the Cursor job._",
-            reply_thread=reply_thread,
-            say=say,
+        cfg = resolve_cursor_job_cfg(text, channel_id=channel_id, thread_ts=thread_ts)
+        if cfg is None and not pinned:
+            cursor_reply = ambiguous_repo_message()
+        elif cfg is None:
+            cursor_reply = "_Something went wrong starting that job — please ask again in a moment._"
+        else:
+            cursor_reply = await handle_cursor_job_message(text, slack_ctx, cfg=cfg)
+            if cursor_reply is None:
+                cursor_reply = "_Something went wrong starting that job — please ask again in a moment._"
+        await _post_slack_reply(channel_id, cursor_reply, reply_thread=reply_thread, say=say)
+        record_conversation_turn(
+            role="user",
+            text=text,
+            user_id=user_id,
+            channel_id=channel_id,
+            message_id=message_ts,
+            thread_ts=thread_ts,
+            conversation_key=conv_key,
         )
+        record_conversation_turn(
+            role="assistant",
+            text=cursor_reply,
+            user_id=user_id,
+            channel_id=channel_id,
+            thread_ts=reply_thread,
+            conversation_key=conv_key,
+        )
+        _fail_markers = ("something went wrong", "please ask again", "can’t reach", "can't reach", "isn’t configured", "isn't configured")
         return {
             "handled": 1,
+            "reply": cursor_reply,
             "skipped_coordinator": True,
             "user": user_id,
             "channel": channel_id,
-            "cursor_thread": True,
-            "error": "enqueue_failed",
+            "cursor_thread": pinned,
+            "cursor_coding": True,
+            **(
+                {"error": "enqueue_failed"}
+                if any(m in cursor_reply.lower() for m in _fail_markers)
+                else {}
+            ),
         }
 
     if ticket_feature_enabled() and should_route_to_jira_ticket(text, slack_ctx):

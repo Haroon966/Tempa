@@ -1,0 +1,37 @@
+---
+description: Lessons from Slack teammate incidents — route product bugs to Cursor, not QA lint scans; keep Docker git mounts healthy.
+alwaysApply: true
+---
+
+# Slack teammate routing (Tempa)
+
+When fixing Tempa Slack/Cursor/QA behavior, preserve these permanent rules from live teammate failures.
+
+## Product support ≠ GitHub QA scan
+
+- Phrases like "check if the count…", "teacher vanishes", "dashboard shows 128" are **product/data investigations**.
+- They must **not** enqueue a lint/tests/security scan just because "compliance tracker" aliases to a repo.
+- **Any GitHub-related ask** (repo URL, `owner/repo`, improve/review/explore) goes to **Cursor in the background**; Tempa acks and posts the result. Do not steal these into `qa_scan_hook` just because the message contains `github.com`.
+- Short follow-ups (`raise PR / fix it all`, including typos like `rase pr`) inherit the repo from the Slack thread — do **not** ask which issues to fix when findings are already in-thread.
+- **Completed sessions are not dead threads.** Follow-ups without @mention must still route when Tempa already replied or a Cursor job exists for that channel+thread.
+- Explicit `github.com/owner/repo` always beats product aliases. Short aliases (`ct`) must use word boundaries — never match inside `project`.
+- QA scans require **strong** intent (`scan`, `run qa`, `audit`, `deep review`) — not weak "review/improve" wording alone.
+- Product investigations with a known product/repo alias go to **Cursor jobs** (read or write), not `qa_scan_hook`.
+- Unmounted GitHub repos use Cursor cloud (read/advise or write+auto PR); local CI fix loops need a `repos:` mount.
+
+## Cursor write jobs on Docker
+
+- Host checkouts under `/repos/*` are often uid 1000 while the daemon runs as root.
+- Always ensure `safe.directory` / `GIT_CONFIG_VALUE_0=*` before git/worktree/Cursor Agent so jobs never die on `fatal: detected dubious ownership`.
+- Infra failures must tell the teammate to **retry** (and how), not only dump raw git stderr.
+- **Quiet background jobs:** one short “on it” ack, then silence until the fix/result is ready. Never spam “still working…”, “waiting for CI…”, or “took too long” at teammates. Timeouts retry once silently and escalate owners only.
+- **Never** post raw exceptions, `fatal:` git advice, stack traces, or `TimeoutError` class names to Slack. Log them; say a short human sentence + ask again.
+
+## Prefer surgical product fixes
+
+- When a bad PR lands (e.g. PEFSIS session-affinity photo pre-upload), prefer removing the broken step and **keeping** useful UX (pending/failed banners) over a blunt full revert.
+- Confirm production data before claiming a dashboard number is "wrong" — active-only filters vs all-status lists are a common false alarm.
+
+## Status honesty
+
+- "Code fixed" ≠ "live on prod". Say clearly when merge/deploy/smoke is still left.

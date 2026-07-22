@@ -9,12 +9,19 @@ ERROR_GENERIC = "Something went wrong on my end — try again in a moment."
 ERROR_EMPTY_REPLY = "I didn't catch that — could you rephrase?"
 
 GUEST_PRIVATE_COMING_SOON = (
-    "Email, calendar, WhatsApp, and meeting tools aren't available on Slack yet. "
-    "I can still help with general questions and Jira tickets here."
+    "Email, calendar, WhatsApp, meeting tools, and repo coding aren't available "
+    "for your Slack account. Ask the Tempa owner to add you to "
+    "`SLACK_ALLOWED_USER_IDS`, or use general questions and Jira here."
+)
+
+GUEST_CODING_DENIED = (
+    "Repo coding via Cursor is limited to allowlisted Slack users. "
+    "Ask the Tempa owner to add your user ID to `SLACK_ALLOWED_USER_IDS` "
+    "(or set `SLACK_ALLOW_ALL=true` only on a trusted workspace)."
 )
 
 ERROR_CLAUDE_RUNNER = (
-    "I couldn't reach the Claude runner. Check ANTHROPIC_API_KEY or Claude Code CLI."
+    "I couldn’t finish that just now — please try again in a moment."
 )
 
 SLACK_MERGE_STYLE = (

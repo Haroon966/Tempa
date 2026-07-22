@@ -57,9 +57,17 @@ def download_youtube_clip(url: str, dest_dir: Path, *, duration_seconds: int = 6
     return out
 
 
-def start_youtube_player(media_path: Path, *, duration_seconds: int = 60) -> AvTestPlayer:
-    """Play video fullscreen on DISPLAY; audio routes to the default Pulse sink."""
-    display = os.environ.get("DISPLAY", ":99")
+def start_youtube_player(
+    media_path: Path,
+    *,
+    duration_seconds: int = 60,
+    display: str | None = None,
+    pulse_sink: str | None = None,
+) -> AvTestPlayer:
+    """Play video fullscreen on DISPLAY; audio routes to the session Pulse sink."""
+    display = (display or os.environ.get("DISPLAY", ":99")).strip() or ":99"
+    if not display.startswith(":"):
+        display = f":{display}"
     if not shutil.which("ffplay"):
         raise RuntimeError("ffplay not found")
 
@@ -74,8 +82,16 @@ def start_youtube_player(media_path: Path, *, duration_seconds: int = 60) -> AvT
         "error",
         str(media_path),
     ]
-    _logger.info("GMEET AV-TEST: starting ffplay on %s for %ss", display, duration_seconds)
-    proc = subprocess.Popen(cmd, env={**os.environ, "DISPLAY": display})
+    env = {**os.environ, "DISPLAY": display}
+    if pulse_sink:
+        env["PULSE_SINK"] = pulse_sink
+    _logger.info(
+        "GMEET AV-TEST: starting ffplay on %s (sink=%s) for %ss",
+        display,
+        pulse_sink or "default",
+        duration_seconds,
+    )
+    proc = subprocess.Popen(cmd, env=env)
     return AvTestPlayer(process=proc, media_path=media_path)
 
 
@@ -153,10 +169,18 @@ async def run_av_test(
     work_dir: Path,
     *,
     duration_seconds: int = 60,
+    display: str | None = None,
+    pulse_sink: str | None = None,
 ) -> AvTestPlayer | None:
     """Download YouTube clip, play on Xvfb, and start Meet screen share."""
     clip = await asyncio.to_thread(download_youtube_clip, youtube_url, work_dir, duration_seconds=duration_seconds)
-    player = await asyncio.to_thread(start_youtube_player, clip, duration_seconds=duration_seconds)
+    player = await asyncio.to_thread(
+        start_youtube_player,
+        clip,
+        duration_seconds=duration_seconds,
+        display=display,
+        pulse_sink=pulse_sink,
+    )
     await asyncio.sleep(2)
     shared = await start_screen_share(page)
     if not shared:

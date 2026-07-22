@@ -83,6 +83,8 @@ const COLUMNS = [
 function RequestCard({ job, onOpen }: { job: QaJob; onOpen: (job: QaJob) => void }) {
   const ChannelIcon = channelIcon(job.source_channel)
   const failed = job.status === "failed"
+  const requester =
+    job.requested_by || (job.source_channel ? job.source_channel.replace(/_/g, " ") : "system")
   return (
     <button
       type="button"
@@ -105,16 +107,13 @@ function RequestCard({ job, onOpen }: { job: QaJob; onOpen: (job: QaJob) => void
       </div>
       <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-600">
         <ChannelIcon className="size-3.5 shrink-0" />
-        <span className="truncate">
-          {job.requested_by || job.source_channel || "unknown"}
-          {job.source_channel ? ` · ${job.source_channel.replace(/_/g, " ")}` : ""}
-        </span>
+        <span className="truncate capitalize">{requester}</span>
       </div>
-      {job.request_message && (
+      {job.request_message ? (
         <p className="mt-1.5 line-clamp-2 border-l-2 border-border pl-2 text-xs italic text-slate-600">
           “{job.request_message}”
         </p>
-      )}
+      ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <Badge variant="outline" className="text-[10px]">
           {JOB_TYPE_LABEL[job.job_type ?? ""] ?? job.job_type ?? "scan"}
@@ -130,6 +129,7 @@ function RequestCard({ job, onOpen }: { job: QaJob; onOpen: (job: QaJob) => void
     </button>
   )
 }
+
 
 function TimelineRow({ label, at }: { label: string; at?: string }) {
   return (
@@ -191,8 +191,8 @@ function JobDetailSheet({
           </SheetTitle>
           <SheetDescription className="flex items-center gap-1.5">
             <ChannelIcon className="size-3.5" />
-            Requested by {job.requested_by || "unknown"}
-            {job.source_channel ? ` via ${job.source_channel.replace(/_/g, " ")}` : ""}
+            Requested by {job.requested_by || (job.source_channel ? job.source_channel.replace(/_/g, " ") : "system")}
+            {job.source_channel && job.requested_by ? ` via ${job.source_channel.replace(/_/g, " ")}` : ""}
           </SheetDescription>
         </SheetHeader>
 
@@ -305,17 +305,29 @@ export function QaReviewBoard({ jobs }: { jobs: QaJob[] }) {
 
   if (jobs.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">
-        No review requests yet. Ask Tempa on any channel with a PR link, or trigger a scan above.
-      </p>
+      <div className="rounded-xl border border-dashed border-border/70 px-6 py-10 text-center">
+        <p className="font-medium text-foreground">No reviews in flight</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Ask Tempa with a PR link, or start a scan.
+        </p>
+      </div>
     )
   }
+
+  // Keep Done lean — recent finishes only; Queued/Running stay complete.
+  const recentDone = jobs
+    .filter((j) => j.status === "completed" || j.status === "failed")
+    .slice(0, 12)
+  const boardJobs = [
+    ...jobs.filter((j) => j.status === "queued" || j.status === "running"),
+    ...recentDone,
+  ]
 
   return (
     <>
       <div className="grid gap-3 md:grid-cols-3">
         {COLUMNS.map((col) => {
-          const items = jobs.filter((j) => col.match(j.status))
+          const items = boardJobs.filter((j) => col.match(j.status))
           const Icon = col.icon
           return (
             <div key={col.key} className="flex min-w-0 flex-col rounded-xl border border-border/60 bg-muted/20">
@@ -331,9 +343,9 @@ export function QaReviewBoard({ jobs }: { jobs: QaJob[] }) {
                   {items.length}
                 </Badge>
               </div>
-              <div className="flex max-h-96 flex-col gap-2 overflow-y-auto p-2">
+              <div className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto p-2">
                 {items.length === 0 ? (
-                  <p className="px-1 py-3 text-center text-xs text-slate-500">Empty</p>
+                  <p className="px-1 py-6 text-center text-xs text-muted-foreground">Nothing here</p>
                 ) : (
                   items.map((job) => <RequestCard key={job.id} job={job} onOpen={openJob} />)
                 )}

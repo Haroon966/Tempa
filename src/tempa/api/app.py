@@ -107,10 +107,10 @@ class DaemonSettingsRequest(BaseModel):
     meet_auto_join_on_reminder: bool | None = None
     meet_auto_join_enabled: bool | None = None
     meet_trigger_before_minutes: int | None = None
-    meet_trigger_after_start_minutes: int | None = None
     meet_skip_keywords: list[str] | None = None
     meet_retention_days: int | None = None
     meet_auto_send_summary_whatsapp: bool | None = None
+    meet_auto_send_summary_email: bool | None = None
     meet_copilot_whatsapp_notify: bool | None = None
 
 
@@ -446,6 +446,12 @@ async def _consolidation_loop() -> None:
             await asyncio.to_thread(run_consolidation)
         except Exception:
             pass
+        try:
+            from tempa.learning.curator import run_curator
+
+            await asyncio.to_thread(run_curator)
+        except Exception:
+            pass
 
 
 @asynccontextmanager
@@ -546,6 +552,18 @@ async def lifespan(app: FastAPI):
 
         _log.getLogger(__name__).exception("Cursor Slack worker failed to start")
 
+    if settings.tempa_hermes_cron_enabled:
+        try:
+            from tempa.hermes.cron import start_hermes_cron
+            import logging as _log
+
+            start_hermes_cron()
+            _log.getLogger(__name__).info("Hermes cron started")
+        except Exception:
+            import logging as _log
+
+            _log.getLogger(__name__).exception("Hermes cron failed to start")
+
     async def _deferred_background() -> None:
         global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _presence_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
         import logging as _log
@@ -637,6 +655,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
+        from tempa.hermes.cron import stop_hermes_cron
+
+        stop_hermes_cron()
+    except Exception:
+        pass
+    try:
         from tempa.channels.slack.cursor_worker import stop_cursor_worker
 
         await stop_cursor_worker()
@@ -649,8 +673,9 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
-        from tempa.channels.slack.bolt_app import stop_slack_socket_mode
+        from tempa.channels.slack.bolt_app import stop_slack_socket_mode, stop_socket_watchdog
 
+        await stop_socket_watchdog()
         await stop_slack_socket_mode()
     except Exception:
         pass
@@ -729,17 +754,26 @@ def create_app() -> FastAPI:
         def _cursor_check() -> dict[str, Any]:
             from pathlib import Path
 
-            from tempa.channels.slack.cursor_threads import load_cursor_threads
+            from tempa.channels.slack.cursor_threads import load_cursor_repos, load_cursor_threads
             from tempa.channels.slack.cursor_worktree import git_available, worktree_root
             from tempa.channels.slack.cursor_pr import gh_available
             from tempa.qa.cursor import cursor_configured
 
             mounts = []
-            for row in load_cursor_threads():
+            for row in list(load_cursor_threads()) + list(load_cursor_repos()):
                 cwd = str(row.get("local_cwd") or "")
-                ok = bool(cwd) and Path(cwd).is_dir()
+                if not cwd or any(m.get("cwd") == cwd for m in mounts):
+                    continue
+                ok = Path(cwd).is_dir()
                 writable = ok and os.access(cwd, os.W_OK)
-                mounts.append({"cwd": cwd, "exists": ok, "writable": writable, "label": row.get("label")})
+                mounts.append(
+                    {
+                        "cwd": cwd,
+                        "exists": ok,
+                        "writable": writable,
+                        "label": row.get("label") or row.get("id") or cwd,
+                    }
+                )
             try:
                 wr = worktree_root()
                 wr_ok = wr.is_dir() and os.access(wr, os.W_OK)
@@ -874,6 +908,132 @@ def create_app() -> FastAPI:
                 for s in load_all_skills()
             ]
         }
+
+    @app.post("/api/skills/reload")
+    async def reload_skills_endpoint():
+        from tempa.skills import reload_skills
+
+        count = reload_skills()
+        return {"reloaded": True, "count": count}
+
+    @app.get("/api/hermes/status")
+    async def hermes_status():
+        from tempa.hermes.coordinator import hermes_available
+        from tempa.hermes.cron import list_cron_jobs
+        from tempa.hermes.goals import list_goals, list_kanban
+        from tempa.hermes.mcp import mcp_status
+        from tempa.hermes.skills_bridge import mirror_learned_to_config, skills_dir
+        from tempa.settings import get_settings
+
+        settings = get_settings()
+        return {
+            "coordinator": settings.tempa_coordinator,
+            "hermes_selected": str(settings.tempa_coordinator or "").lower() == "hermes",
+            "ai_agent_installed": hermes_available(),
+            "skills_dir": str(skills_dir()),
+            "learned_skills": mirror_learned_to_config(),
+            "cron_jobs": list_cron_jobs(),
+            "cron_enabled": settings.tempa_hermes_cron_enabled,
+            "mcp": mcp_status(),
+            "goals": list_goals(status="open"),
+            "kanban": list_kanban(),
+            "adk_spike_parked": True,
+            "adk_spike_flag": settings.tempa_adk_spike,
+        }
+
+    @app.get("/api/hermes/mcp")
+    async def hermes_mcp():
+        from tempa.hermes.mcp import list_mcp_tools, mcp_status
+
+        return {"status": mcp_status(), "tools": await list_mcp_tools()}
+
+    @app.get("/api/hermes/cron")
+    async def hermes_cron_list():
+        from tempa.hermes.cron import list_cron_jobs
+
+        return {"jobs": list_cron_jobs()}
+
+    @app.post("/api/hermes/cron")
+    async def hermes_cron_save(body: dict):
+        from tempa.hermes.cron import save_cron_jobs
+
+        jobs = body.get("jobs") if isinstance(body, dict) else None
+        if not isinstance(jobs, list):
+            return {"error": "jobs list required"}
+        save_cron_jobs(jobs)
+        return {"saved": True, "jobs": jobs}
+
+    @app.get("/api/hermes/goals")
+    async def hermes_goals_list(status: str | None = None):
+        from tempa.hermes.goals import list_goals
+
+        return {"goals": list_goals(status=status)}
+
+    @app.post("/api/hermes/goals")
+    async def hermes_goals_create(body: dict):
+        from tempa.hermes.goals import create_goal
+
+        title = str((body or {}).get("title") or "").strip()
+        if not title:
+            return {"error": "title required"}
+        goal = create_goal(
+            title,
+            prompt=str((body or {}).get("prompt") or ""),
+            notes=str((body or {}).get("notes") or ""),
+        )
+        return {"goal": goal}
+
+    @app.patch("/api/hermes/goals/{goal_id}")
+    async def hermes_goals_update(goal_id: str, body: dict):
+        from tempa.hermes.goals import update_goal
+
+        goal = update_goal(
+            goal_id,
+            title=(body or {}).get("title"),
+            prompt=(body or {}).get("prompt"),
+            notes=(body or {}).get("notes"),
+            status=(body or {}).get("status"),
+            tick=bool((body or {}).get("tick")),
+        )
+        if not goal:
+            return {"error": "not found"}
+        return {"goal": goal}
+
+    @app.get("/api/hermes/kanban")
+    async def hermes_kanban_get():
+        from tempa.hermes.goals import list_kanban
+
+        return list_kanban()
+
+    @app.post("/api/hermes/skills/promote")
+    async def hermes_promote_learned():
+        from tempa.hermes.skills_bridge import promote_learned_to_skills
+
+        paths = promote_learned_to_skills()
+        return {"promoted": [str(p) for p in paths], "count": len(paths)}
+
+    @app.get("/api/learning/status")
+    async def learning_status():
+        from tempa.learning.curator import run_curator
+        from tempa.learning.loop import self_improve_enabled
+        from tempa.learning.store import auto_skills_dir, load_usage
+        from tempa.settings import get_settings
+
+        auto = auto_skills_dir()
+        skills = [p.name for p in auto.iterdir() if p.is_dir() and (p / "SKILL.md").is_file()] if auto.is_dir() else []
+        return {
+            "enabled": self_improve_enabled(),
+            "auto_skills": skills,
+            "auto_skills_dir": str(auto),
+            "usage": load_usage(),
+            "flag": get_settings().tempa_self_improve,
+        }
+
+    @app.post("/api/learning/curator")
+    async def learning_run_curator():
+        from tempa.learning.curator import run_curator
+
+        return run_curator()
 
     @app.get("/api/orchestrator")
     async def orchestrator_manifest():
@@ -1195,6 +1355,15 @@ if (window.opener) {{
         from tempa.channels.slack.session import connection_status
 
         return await connection_status()
+
+    @app.post("/api/connections/slack/reconnect")
+    async def slack_reconnect():
+        from tempa.channels.slack.bolt_app import reconnect_slack_socket_mode
+        from tempa.channels.slack.session import connection_status
+
+        ok = await reconnect_slack_socket_mode()
+        status = await connection_status()
+        return {"reconnected": ok, **status}
 
     @app.get("/api/connections/jira")
     async def jira_status():

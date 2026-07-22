@@ -1663,86 +1663,6 @@ async def _build_merge_prompt_async(
     return prompt, pack, sources
 
 
-def _build_merge_prompt(
-    user_message: str,
-    results: dict[str, str],
-    context: dict[str, Any],
-    sources: list[dict[str, Any]],
-) -> tuple[str, Any, list[dict[str, Any]]]:
-    """Build merge prompt and grounding pack. Returns (prompt, pack, sources)."""
-    from tempa.agents.grounding import build_grounding_pack, format_grounding_for_prompt
-    from tempa.agents.tool_policy import guest_merge_instruction
-
-    channel = context.get("channel", "")
-    lower = user_message.lower()
-    calendar_intent = any(
-        k in lower
-        for k in (
-            "calendar",
-            "meeting",
-            "schedule",
-            "event",
-            "agenda",
-            "today",
-            "tomorrow",
-            "what time",
-            "standup",
-        )
-    )
-
-    pack = build_grounding_pack(
-        user_message,
-        context,
-        specialist_results=results,
-        memory_answer=context.get("rag_context", ""),
-        include_calendar=calendar_intent,
-        action_notes=list(context.get("action_facts") or []),
-    )
-    grounding_block = format_grounding_for_prompt(
-        pack,
-        owner=context.get("whatsapp_number", "owner"),
-    )
-
-    citation_block = ""
-    if sources:
-        labels = [s.get("label", "") for s in sources[:5] if s.get("label")]
-        if labels:
-            citation_block = (
-                "Cite sources inline using [tool/source] labels when referencing memory: "
-                + ", ".join(labels)
-                + "\n"
-            )
-
-    from tempa.channels.slack.messages import SLACK_MERGE_STYLE
-
-    style = (
-        "Reply on WhatsApp — warm and direct.\n"
-        if channel == "whatsapp"
-        else (
-            SLACK_MERGE_STYLE
-            if channel == "slack" or context.get("inbound_slack")
-            else "Merge specialist outputs into one clear user-facing reply.\n"
-        )
-    )
-    guest_note = guest_merge_instruction(context)
-    from tempa.agents.clarification import CLARIFICATION_INSTRUCTION
-
-    prompt = (
-        f"{guest_note}"
-        f"{CLARIFICATION_INSTRUCTION}\n"
-        f"{_MERGE_FACTUAL_RULE}"
-        f"{style}"
-        f"{citation_block}"
-        f"Grounding facts:\n{grounding_block}\n\n"
-        f"Agent results JSON: {json.dumps(results, ensure_ascii=False)}"
-    )
-    if context.get("procedural_memory"):
-        prompt = f"{context['procedural_memory']}\n\n{prompt}"
-    if context.get("active_skills_prompt"):
-        prompt = f"## Active skills\n{context['active_skills_prompt']}\n\n{prompt}"
-    return prompt, pack, sources
-
-
 def _merge_max_tokens(context: dict[str, Any]) -> int:
     channel = str(context.get("channel") or "")
     if channel == "whatsapp" or context.get("inbound_whatsapp"):
@@ -1776,7 +1696,7 @@ async def merge_results_stream(
     if channel == "whatsapp" and "gmail" in results:
         short = _whatsapp_gmail_reply(results["gmail"])
         if short:
-            _, pack, _ = _build_merge_prompt(user_message, results, context, sources)
+            _, pack, _ = await _build_merge_prompt_async(user_message, results, context, sources)
             ok, verified = verify_reply(short, pack)
             final = verified if not ok else short
             if on_token:
@@ -1786,7 +1706,7 @@ async def merge_results_stream(
     if "calendar" in results:
         short = _calendar_action_reply(results["calendar"])
         if short:
-            _, pack, _ = _build_merge_prompt(user_message, results, context, sources)
+            _, pack, _ = await _build_merge_prompt_async(user_message, results, context, sources)
             ok, verified = verify_reply(short, pack)
             final = verified if not ok else short
             if on_token:
@@ -1800,7 +1720,7 @@ async def merge_results_stream(
             if not short:
                 short = _slack_send_reply(results["channel"])
         if short:
-            _, pack, _ = _build_merge_prompt(user_message, results, context, sources)
+            _, pack, _ = await _build_merge_prompt_async(user_message, results, context, sources)
             ok, verified = verify_reply(short, pack)
             final = verified if not ok else short
             if on_token:

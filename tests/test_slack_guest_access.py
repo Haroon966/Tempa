@@ -103,7 +103,9 @@ def test_wants_private_integrations():
 
 
 def test_coming_soon_message():
-    assert "slack yet" in GUEST_PRIVATE_COMING_SOON.lower()
+    lower = GUEST_PRIVATE_COMING_SOON.lower()
+    assert "coding" in lower or "repo" in lower
+    assert "jira" in lower
 
 
 def test_plan_subtasks_guest_filters(monkeypatch):

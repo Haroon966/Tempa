@@ -112,10 +112,46 @@ def update_job_status(job_id: str, *, status: JobStatus, error: str | None = Non
             row["error"] = error
         if result is not None:
             row["result"] = result
-        if status == "completed":
+        if status in ("completed", "failed"):
             row["completed_at"] = _now_iso()
         statuses[job_id] = row
         _write_statuses(statuses)
+
+
+def recover_stale_running_jobs(*, on_startup: bool = False) -> int:
+    """Re-queue jobs left in ``running`` after a process crash/restart.
+
+    Branch scans are idempotent, so orphans are put back on the queue rather
+    than failed. Only call with ``on_startup=True`` — during a live poll loop a
+    ``running`` job is the one currently being processed.
+    """
+    if not on_startup:
+        return 0
+    recovered = 0
+    with _lock:
+        statuses = _read_statuses()
+        lines: list[str] = []
+        for job_id, row in list(statuses.items()):
+            if row.get("status") != "running":
+                continue
+            fresh = {
+                **row,
+                "status": "queued",
+                "updated_at": _now_iso(),
+                "reclaimed_at": _now_iso(),
+            }
+            fresh.pop("started_at", None)
+            fresh.pop("error", None)
+            statuses[job_id] = fresh
+            lines.append(json.dumps({k: v for k, v in fresh.items() if k != "result"}, ensure_ascii=False))
+            recovered += 1
+        if recovered:
+            _write_statuses(statuses)
+            path = _queue_path()
+            existing = path.read_text(encoding="utf-8") if path.exists() else ""
+            # Orphans first so they finish before new scheduled fan-out.
+            path.write_text("\n".join(lines) + ("\n" if lines else "") + existing, encoding="utf-8")
+    return recovered
 
 
 def list_jobs(*, limit: int = 50) -> list[dict[str, Any]]:
@@ -130,3 +166,48 @@ def queue_depth() -> int:
         if not _queue_path().exists():
             return 0
         return len([ln for ln in _queue_path().read_text(encoding="utf-8").splitlines() if ln.strip()])
+
+
+def drop_queued_jobs(
+    *,
+    source_channel: str | None = None,
+    repo: str | None = None,
+    job_type: str | None = None,
+) -> int:
+    """Cancel queued jobs matching filters (leaves running/completed alone)."""
+    dropped = 0
+    with _lock:
+        path = _queue_path()
+        if not path.exists():
+            return 0
+        kept: list[str] = []
+        statuses = _read_statuses()
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            if not ln.strip():
+                continue
+            try:
+                job = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            if source_channel and str(job.get("source_channel") or "") != source_channel:
+                kept.append(ln)
+                continue
+            if repo and str(job.get("repo") or "") != repo:
+                kept.append(ln)
+                continue
+            if job_type and str(job.get("job_type") or "") != job_type:
+                kept.append(ln)
+                continue
+            job_id = str(job.get("id") or "")
+            if job_id:
+                row = statuses.get(job_id, job)
+                row["status"] = "cancelled"
+                row["updated_at"] = _now_iso()
+                row["completed_at"] = _now_iso()
+                row["error"] = "dropped from queue"
+                statuses[job_id] = row
+            dropped += 1
+        path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        if dropped:
+            _write_statuses(statuses)
+    return dropped

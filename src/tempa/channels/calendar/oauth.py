@@ -54,10 +54,15 @@ def save_google_credentials(client_id: str, client_secret: str) -> None:
     if not cid or not secret:
         raise ValueError("Google client ID and secret are required")
     port = settings.tempa_daemon_port
+    public = settings.resolve_public_base_url()
     redirect_uris = [
         f"http://localhost:{port}/api/connections/google/callback",
         f"http://localhost:{port}/api/connections/gmail/callback",
+        f"{public}/api/connections/google/callback",
+        f"{public}/api/connections/gmail/callback",
     ]
+    # De-dupe when public is already localhost
+    redirect_uris = list(dict.fromkeys(redirect_uris))
     config = {
         "web": {
             "client_id": cid,
@@ -118,13 +123,17 @@ def _clear_pending_oauth() -> None:
         legacy.unlink()
 
 
+def oauth_redirect_uri() -> str:
+    """Browser-facing OAuth callback — public HTTPS when tunnel/domain is set."""
+    return f"{get_settings().resolve_public_base_url()}{REDIRECT_PATH}"
+
+
 def get_oauth_flow() -> Flow:
-    settings = get_settings()
     secret = client_secret_path()
     return Flow.from_client_secrets_file(
         str(secret),
         scopes=list(google_oauth_scopes()),
-        redirect_uri=f"http://localhost:{settings.tempa_daemon_port}{REDIRECT_PATH}",
+        redirect_uri=oauth_redirect_uri(),
     )
 
 
@@ -215,4 +224,5 @@ __all__ = [
     "save_google_credentials",
     "disconnect_google",
     "client_secret_path",
+    "oauth_redirect_uri",
 ]

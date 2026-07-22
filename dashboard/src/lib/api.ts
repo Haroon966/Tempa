@@ -782,23 +782,86 @@ export interface QaJob {
   }
 }
 
+export interface SlackParticipant {
+  user_id: string
+  name: string
+  image?: string
+}
+
 export interface CursorAgentJob {
   id: string
   status: string
   phase?: string
+  mode?: string
   user_id?: string
+  user_name?: string
+  user_image?: string
+  participant_ids?: string[]
+  participants?: SlackParticipant[]
   channel_id?: string
   thread_ts?: string
+  message_ts?: string
   repo?: string
   branch?: string | null
   pr_url?: string | null
   pr_number?: number | null
   label?: string
   ask_text?: string
+  result_text?: string
+  worktree_path?: string
+  local_cwd?: string
+  jira_key?: string | null
   ci_fix_count?: number
   enqueued_at?: string
+  started_at?: string
+  completed_at?: string
   updated_at?: string
+  last_progress_at?: string
   error?: string
+}
+
+export interface SlackConversationTurn {
+  role?: string
+  user_id?: string
+  user_name?: string
+  user_image?: string
+  channel_id?: string
+  text?: string
+  id?: string
+  thread_ts?: string
+  conversation_key?: string
+  timestamp?: string
+}
+
+export interface CursorSessionActivity {
+  at?: string
+  kind: string
+  label: string
+  detail?: string
+}
+
+export interface CursorSessionDetail {
+  job: CursorAgentJob
+  conversation: SlackConversationTurn[]
+  activity: CursorSessionActivity[]
+}
+
+export async function fetchCursorJobs() {
+  return fetchJsonCached("cursor-jobs", 15_000, () =>
+    request<{ jobs: CursorAgentJob[] }>("/api/cursor/jobs"),
+  )
+}
+
+export async function fetchCursorSessions(limit = 100, status?: string) {
+  const qs = new URLSearchParams({ limit: String(limit) })
+  if (status) qs.set("status", status)
+  return request<{ sessions: CursorAgentJob[]; counts: { listed: number; active: number } }>(
+    `/api/cursor/sessions?${qs.toString()}`,
+  )
+}
+
+export async function fetchCursorSessionDetail(jobId: string) {
+  return request<CursorSessionDetail>(`/api/cursor/sessions/${encodeURIComponent(jobId)}`)
 }
 
 export async function fetchQaRepos() {
@@ -842,12 +905,6 @@ export async function fetchQaFindings() {
 export async function fetchQaJobs() {
   return fetchJsonCached("qa-jobs", 30_000, () =>
     request<{ jobs: QaJob[] }>("/api/qa/jobs"),
-  )
-}
-
-export async function fetchCursorJobs() {
-  return fetchJsonCached("cursor-jobs", 15_000, () =>
-    request<{ jobs: CursorAgentJob[] }>("/api/cursor/jobs"),
   )
 }
 
