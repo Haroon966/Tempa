@@ -20,7 +20,11 @@ DEFAULT_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/contacts.readonly",
 )
 
-YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+# force-ssl covers upload + metadata update + permanent delete (upload alone cannot delete).
+YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
+# Legacy grant still accepted until the next Google reconnect.
+YOUTUBE_UPLOAD_SCOPE_LEGACY = "https://www.googleapis.com/auth/youtube.upload"
+YOUTUBE_MANAGE_SCOPES = frozenset({YOUTUBE_UPLOAD_SCOPE, YOUTUBE_UPLOAD_SCOPE_LEGACY})
 
 
 def google_oauth_scopes() -> tuple[str, ...]:

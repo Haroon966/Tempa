@@ -52,6 +52,8 @@ async def test_only_bots_starts_grace_then_ends(monkeypatch):
     mono["t"] = 1040.0
     ended = await check_meeting_ended(page, tracker=tracker)
     assert ended is True
+    assert tracker.leave_reason == "no_humans"
+    assert tracker.humans_seen is False
 
 
 @pytest.mark.asyncio

@@ -137,23 +137,66 @@ async def handle_inbound_slack(
     slack_ctx = enrich_slack_context(event, {"slack_privileged": slack_privileged})
 
     # Cursor owns coding (pins or coding asks). Privileged users only.
+    # Rumi skills-pack asks are checked first so they never become PR/worktree jobs
+    # or meeting-search hallucinations.
     from tempa.channels.slack.cursor_threads import (
         ambiguous_repo_message,
         cursor_owns_coding,
         handle_cursor_job_message,
         is_cursor_thread,
         resolve_cursor_job_cfg,
+        rumi_agent_job_cfg,
     )
     from tempa.channels.slack.messages import GUEST_CODING_DENIED
-    from tempa.orchestrator.routing import is_coding_work_request
+    from tempa.orchestrator.routing import (
+        is_coding_work_request,
+        is_rumi_capability_ask,
+    )
 
     slack_ctx["slack_message_ts"] = message_ts
     slack_ctx["user_id"] = user_id
     pinned = is_cursor_thread(channel_id, thread_ts)
-    coding = pinned or (
-        cursor_owns_coding() and is_coding_work_request(text, slack_ctx)
+
+    # "do you have rumi skills?" / "use rumi to…" — permanent pack route (never meetings).
+    if is_rumi_capability_ask(text, slack_ctx):
+        from tempa.channels.slack.rumi_pack import format_rumi_capability_reply
+
+        cap_reply = format_rumi_capability_reply()
+        await _post_slack_reply(channel_id, cap_reply, reply_thread=reply_thread, say=say)
+        record_conversation_turn(
+            role="user",
+            text=text,
+            user_id=user_id,
+            channel_id=channel_id,
+            message_id=message_ts,
+            thread_ts=thread_ts,
+            conversation_key=conv_key,
+        )
+        record_conversation_turn(
+            role="assistant",
+            text=cap_reply,
+            user_id=user_id,
+            channel_id=channel_id,
+            thread_ts=reply_thread,
+            conversation_key=conv_key,
+        )
+        return {
+            "handled": 1,
+            "reply": cap_reply,
+            "skipped_coordinator": True,
+            "user": user_id,
+            "channel": channel_id,
+            "rumi_capability": True,
+        }
+
+    from tempa.rumi.classify import classify_rumi
+
+    rumi_kind = classify_rumi(text)
+    rumi_ask = cursor_owns_coding() and rumi_kind == "agent"
+    coding = (not rumi_ask) and (
+        pinned or (cursor_owns_coding() and is_coding_work_request(text, slack_ctx))
     )
-    if coding:
+    if rumi_ask or coding:
         if not slack_privileged:
             await _post_slack_reply(
                 channel_id, GUEST_CODING_DENIED, reply_thread=reply_thread, say=say
@@ -183,15 +226,21 @@ async def handle_inbound_slack(
                 "channel": channel_id,
                 "cursor_denied": True,
             }
-        cfg = resolve_cursor_job_cfg(text, channel_id=channel_id, thread_ts=thread_ts)
-        if cfg is None and not pinned:
-            cursor_reply = ambiguous_repo_message()
-        elif cfg is None:
-            cursor_reply = "_Something went wrong starting that job — please ask again in a moment._"
-        else:
+        if rumi_ask:
+            cfg = rumi_agent_job_cfg()
             cursor_reply = await handle_cursor_job_message(text, slack_ctx, cfg=cfg)
             if cursor_reply is None:
                 cursor_reply = "_Something went wrong starting that job — please ask again in a moment._"
+        else:
+            cfg = resolve_cursor_job_cfg(text, channel_id=channel_id, thread_ts=thread_ts)
+            if cfg is None and not pinned:
+                cursor_reply = ambiguous_repo_message()
+            elif cfg is None:
+                cursor_reply = "_Something went wrong starting that job — please ask again in a moment._"
+            else:
+                cursor_reply = await handle_cursor_job_message(text, slack_ctx, cfg=cfg)
+                if cursor_reply is None:
+                    cursor_reply = "_Something went wrong starting that job — please ask again in a moment._"
         await _post_slack_reply(channel_id, cursor_reply, reply_thread=reply_thread, say=say)
         record_conversation_turn(
             role="user",
@@ -218,7 +267,8 @@ async def handle_inbound_slack(
             "user": user_id,
             "channel": channel_id,
             "cursor_thread": pinned,
-            "cursor_coding": True,
+            "cursor_coding": not rumi_ask,
+            "rumi_agent": rumi_ask,
             **(
                 {"error": "enqueue_failed"}
                 if any(m in cursor_reply.lower() for m in _fail_markers)

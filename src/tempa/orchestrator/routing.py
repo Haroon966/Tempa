@@ -75,6 +75,22 @@ def _looks_like_code_followup(text: str) -> bool:
     )
 
 
+def is_rumi_agent_request(user_message: str, context: dict[str, Any] | None = None) -> bool:
+    """True when the message targets the vendored Rumi skills pack (any mode)."""
+    _ = context
+    from tempa.rumi.classify import classify_rumi
+
+    return classify_rumi(user_message) is not None
+
+
+def is_rumi_capability_ask(user_message: str, context: dict[str, Any] | None = None) -> bool:
+    """True for inventory/capability asks — never meeting search / Cursor."""
+    _ = context
+    from tempa.rumi.classify import classify_rumi
+
+    return classify_rumi(user_message) == "capability"
+
+
 def is_coding_work_request(user_message: str, context: dict[str, Any] | None = None) -> bool:
     """True when the message is a Varys/coding task — not calendar/email/meet.
 
@@ -97,6 +113,10 @@ def is_coding_work_request(user_message: str, context: dict[str, Any] | None = N
         return False
 
     if wants_calendar(text) or wants_meeting_archive(text):
+        return False
+
+    # Rumi skills-pack asks are not product coding / PR jobs.
+    if is_rumi_agent_request(text, ctx):
         return False
 
     if any(k in lower for k in ("calendar", "inbox", "gmail", "meet.google.com", "standup minutes")):

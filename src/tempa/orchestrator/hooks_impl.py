@@ -299,10 +299,68 @@ async def slack_direct_hook(user_message: str, context: dict[str, Any]) -> dict[
     return None
 
 
+async def rumi_pack_hook(user_message: str, context: dict[str, Any]) -> dict[str, Any] | None:
+    """Hard stop: Rumi pack asks never reach RAG / meeting grounding / merge invent.
+
+    Defense in depth for any channel that hits run_coordinator_full. Slack also
+    gates earlier in reply.py; this catches dashboard / missed paths.
+    """
+    from tempa.rumi.classify import classify_rumi
+
+    kind = classify_rumi(user_message)
+    if kind is None:
+        return None
+    context["rumi_route"] = kind
+
+    if kind == "capability":
+        from tempa.channels.slack.rumi_pack import format_rumi_capability_reply
+
+        return {
+            "response": format_rumi_capability_reply(),
+            "sources": [],
+            "paused": False,
+            "pending_actions": [],
+            "artifacts": [],
+            "planned_steps": [],
+        }
+
+    # agent — enqueue Cursor when Slack context is present; otherwise tell them how.
+    channel = str(context.get("channel") or "")
+    inbound_slack = bool(context.get("inbound_slack")) or channel == "slack"
+    if inbound_slack:
+        # Privileged Cursor path is owned by reply.py; if we reached the hook on Slack,
+        # reply gate was skipped — still never invent from meetings.
+        from tempa.channels.slack.rumi_pack import format_rumi_capability_reply
+
+        return {
+            "response": (
+                format_rumi_capability_reply()
+                + "\n\n_To run a skill now, say: `use rumi to …` (privileged Slack)._"
+            ),
+            "sources": [],
+            "paused": False,
+            "pending_actions": [],
+            "artifacts": [],
+            "planned_steps": [],
+        }
+
+    from tempa.channels.slack.rumi_pack import format_rumi_capability_reply
+
+    return {
+        "response": format_rumi_capability_reply(),
+        "sources": [],
+        "paused": False,
+        "pending_actions": [],
+        "artifacts": [],
+        "planned_steps": [],
+    }
+
+
 def register_all_hooks() -> None:
     from tempa.orchestrator.hooks import register_pre_hook
 
     register_pre_hook("go_signal", go_signal_hook)
+    register_pre_hook("rumi_pack", rumi_pack_hook)
     register_pre_hook("qa_results", qa_results_hook)
     register_pre_hook("qa_scan", qa_scan_hook)
     register_pre_hook("jira_ticket", jira_ticket_hook)

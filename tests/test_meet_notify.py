@@ -126,6 +126,17 @@ def test_build_meeting_summary_html_is_visually_structured():
     assert "cid:tempa-meeting-thumb" in packed["html"] or "i.ytimg.com" in packed["html"]
     assert 'height="311"' in packed["html"]
 
+    local_thumb = b"\xff\xd8\xff" + (b"J" * 2000)
+    with_local = build_meeting_summary_email(
+        title,
+        minutes,
+        youtube_url="https://youtu.be/sBg6Ra_soEU",
+        thumbnail_bytes=local_thumb,
+    )
+    assert "cid:tempa-meeting-thumb" in with_local["html"]
+    assert any(cid == "tempa-meeting-thumb" and data == local_thumb for cid, data, _ in with_local["inline_images"])
+    assert "i.ytimg.com" not in with_local["html"]
+
 
 def test_is_punjab_daily_sync_matches_title_variants():
     assert is_punjab_daily_sync("Team Punjab – Daily Sync")

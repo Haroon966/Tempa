@@ -21,7 +21,10 @@ export function useCursorSessions(pollMs = POLL_MS) {
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const listInFlight = useRef(false)
-  const detailInFlight = useRef(false)
+  const selectedIdRef = useRef<string | null>(null)
+  const detailSeq = useRef(0)
+
+  selectedIdRef.current = selectedId
 
   const refreshList = useCallback(async () => {
     if (listInFlight.current) return
@@ -44,18 +47,20 @@ export function useCursorSessions(pollMs = POLL_MS) {
   }, [])
 
   const refreshDetail = useCallback(async (jobId: string) => {
-    if (!jobId || detailInFlight.current) return
-    detailInFlight.current = true
+    if (!jobId) return
+    const seq = ++detailSeq.current
     setDetailLoading(true)
     try {
       const payload = await fetchCursorSessionDetail(jobId)
+      // Ignore stale responses from a previous selection or superseded poll.
+      if (seq !== detailSeq.current || selectedIdRef.current !== jobId) return
       setDetail((prev) => (equal(prev, payload) ? prev : payload))
       setError(null)
     } catch (err) {
+      if (seq !== detailSeq.current || selectedIdRef.current !== jobId) return
       setError(err instanceof Error ? err.message : String(err))
     } finally {
-      setDetailLoading(false)
-      detailInFlight.current = false
+      if (seq === detailSeq.current) setDetailLoading(false)
     }
   }, [])
 
@@ -67,9 +72,13 @@ export function useCursorSessions(pollMs = POLL_MS) {
 
   useEffect(() => {
     if (!selectedId) {
+      detailSeq.current += 1
       setDetail(null)
+      setDetailLoading(false)
       return
     }
+    // Drop pane content that belongs to another job immediately on switch.
+    setDetail((prev) => (prev?.job.id === selectedId ? prev : null))
     void refreshDetail(selectedId)
     const id = window.setInterval(() => void refreshDetail(selectedId), pollMs)
     return () => window.clearInterval(id)

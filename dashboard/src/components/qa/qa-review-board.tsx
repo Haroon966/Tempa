@@ -22,6 +22,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { fetchQaJobFindings, type QaFinding, type QaJob } from "@/lib/api"
+import { recentDoneJobs } from "@/lib/qa-jobs"
 import { cn } from "@/lib/utils"
 
 const SEVERITY_CLASS: Record<string, string> = {
@@ -151,14 +152,20 @@ function JobDetailSheet({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
+  const jobId = job?.id
   const [findings, setFindings] = useState<QaFinding[]>([])
-  const [findingsLoading, setFindingsLoading] = useState(false)
+  const [findingsLoading, setFindingsLoading] = useState(Boolean(open && jobId))
 
   useEffect(() => {
-    if (!open || !job) return
+    if (!open || !jobId) {
+      setFindings([])
+      setFindingsLoading(false)
+      return
+    }
     let cancelled = false
+    setFindings([])
     setFindingsLoading(true)
-    fetchQaJobFindings(job.id)
+    fetchQaJobFindings(jobId)
       .then((res) => {
         if (!cancelled) setFindings(res.findings)
       })
@@ -171,7 +178,7 @@ function JobDetailSheet({
     return () => {
       cancelled = true
     }
-  }, [open, job])
+  }, [open, jobId])
 
   if (!job) return null
   const ChannelIcon = channelIcon(job.source_channel)
@@ -315,9 +322,7 @@ export function QaReviewBoard({ jobs }: { jobs: QaJob[] }) {
   }
 
   // Keep Done lean — recent finishes only; Queued/Running stay complete.
-  const recentDone = jobs
-    .filter((j) => j.status === "completed" || j.status === "failed")
-    .slice(0, 12)
+  const recentDone = recentDoneJobs(jobs, 12)
   const boardJobs = [
     ...jobs.filter((j) => j.status === "queued" || j.status === "running"),
     ...recentDone,
@@ -354,7 +359,12 @@ export function QaReviewBoard({ jobs }: { jobs: QaJob[] }) {
           )
         })}
       </div>
-      <JobDetailSheet job={selected} open={detailOpen} onOpenChange={setDetailOpen} />
+      <JobDetailSheet
+        key={selected?.id ?? "closed"}
+        job={selected}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+      />
     </>
   )
 }

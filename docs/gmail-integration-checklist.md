@@ -8,7 +8,7 @@ Prerequisites:
 
 ## 1. Connection
 
-- [ ] Open dashboard Connections tab (or extension side panel)
+- [ ] Open dashboard Connections tab
 - [ ] Save Google OAuth credentials if not already saved
 - [ ] Click **Connect Gmail** and complete OAuth in popup
 - [ ] Verify `GET /api/connections` shows `gmail.connected: true`

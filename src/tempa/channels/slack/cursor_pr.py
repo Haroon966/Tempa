@@ -38,9 +38,35 @@ def parse_pr_url(text: str) -> dict[str, Any] | None:
     }
 
 
+def _normalize_pr_state(*, state: str = "", merged: Any = False) -> str:
+    """Return OPEN / MERGED / CLOSED from gh pr view fields."""
+    if merged is True:
+        return "MERGED"
+    st = (state or "").strip().upper()
+    if st == "MERGED":
+        return "MERGED"
+    if st in {"CLOSED", "CLOSE"}:
+        return "CLOSED"
+    if st == "OPEN" or not st:
+        return "OPEN"
+    return st
+
+
+def is_pr_open(info: dict[str, Any] | None) -> bool:
+    """True only when the PR is still open (not merged/closed)."""
+    if not info:
+        return False
+    if info.get("is_open") is False:
+        return False
+    if info.get("merged") is True:
+        return False
+    state = _normalize_pr_state(state=str(info.get("state") or ""), merged=info.get("merged"))
+    return state == "OPEN"
+
+
 def pr_head_ref(pr_number: int, *, cwd: str | None = None, repo: str = "") -> dict[str, Any]:
-    """Resolve the head branch for an existing PR (adopt path)."""
-    cmd = ["gh", "pr", "view", str(pr_number), "--json", "headRefName,url,number"]
+    """Resolve head branch + lifecycle for an existing PR (adopt / binding)."""
+    cmd = ["gh", "pr", "view", str(pr_number), "--json", "headRefName,url,number,state,merged,closedAt"]
     if repo:
         cmd.extend(["--repo", repo])
     proc = _run(cmd, cwd=cwd)
@@ -53,10 +79,16 @@ def pr_head_ref(pr_number: int, *, cwd: str | None = None, repo: str = "") -> di
     head = str(data.get("headRefName") or "").strip()
     if not head:
         raise RuntimeError(f"PR #{pr_number} has no headRefName")
+    merged = bool(data.get("merged"))
+    state = _normalize_pr_state(state=str(data.get("state") or ""), merged=merged)
     return {
         "branch": head,
         "pr_number": int(data.get("number") or pr_number),
         "pr_url": str(data.get("url") or ""),
+        "state": state,
+        "merged": merged,
+        "closedAt": data.get("closedAt"),
+        "is_open": state == "OPEN" and not merged,
     }
 
 
@@ -189,14 +221,15 @@ def checks_summary(
             pending = True
         elif state in {"FAIL", "FAILURE", "FAILED", "CANCELLED", "TIMED_OUT", "ERROR", "ACTION_REQUIRED"}:
             failed.append(name or state)
-        elif state in {"PASS", "SUCCESS", "SKIPPING", "SKIPPED", "NEUTRAL"}:
+        elif state in {"PASS", "SUCCESS"}:
             passed += 1
+        # SKIPPED / SKIPPING / NEUTRAL are not passes — leave pending until a real SUCCESS.
     if failed:
         return {"status": "red", "failed": failed, "pending": pending, "passed": passed}
     if pending or (required and passed == 0 and checks):
         return {"status": "pending", "failed": [], "pending": True, "passed": passed}
-    if not checks:
-        return {"status": "pending", "failed": [], "pending": True, "passed": 0}
+    if not checks or passed == 0:
+        return {"status": "pending", "failed": [], "pending": True, "passed": passed}
     return {"status": "green", "failed": [], "pending": False, "passed": passed}
 
 

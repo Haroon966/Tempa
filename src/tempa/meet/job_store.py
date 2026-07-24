@@ -32,9 +32,10 @@ def recover_stale_running_jobs(
 ) -> int:
     """Recover meet jobs stuck in running/finalizing (e.g. after worker crash).
 
-    On worker startup, any in-flight job is orphaned — fail it immediately.
-    During normal operation, only jobs older than *max_age_minutes* are touched,
-    and jobs still owned by this worker (*active_meeting_ids*) are never touched.
+    On worker startup, orphaned in-flight jobs become ``interrupted`` so the
+    worker can run the normal finalize path. During normal operation, only jobs
+    older than *max_age_minutes* are touched, and jobs still owned by this
+    worker (*active_meeting_ids*) are never touched.
     """
     _ensure_dir()
     now = datetime.now(timezone.utc)
@@ -82,10 +83,16 @@ def recover_stale_running_jobs(
                     if row.get("status") == "finalizing"
                     else "worker session interrupted"
                 )
-                statuses[job_id] = {**row, "status": "failed", "error": err}
+                statuses[job_id] = {
+                    **row,
+                    "status": "interrupted",
+                    "error": err,
+                    "leave_reason": "worker_interrupted",
+                }
                 changed = True
                 recovered += 1
                 continue
+            # Mid-flight stale during normal operation: re-queue for another attempt.
             statuses[job_id] = {**row, "status": "queued"}
             requeue = {
                 "id": job_id,
@@ -115,12 +122,21 @@ def recover_stale_running_jobs(
     return recovered
 
 
+def list_interrupted_job_ids() -> list[str]:
+    """Job ids awaiting finalize after a worker interrupt."""
+    with _lock:
+        statuses = _read_statuses_unlocked()
+    return [job_id for job_id, row in statuses.items() if row.get("status") == "interrupted"]
+
+
 def _active_job_for_url_unlocked(meet_url: str) -> str | None:
+    from tempa.meet.quality import ACTIVE_JOB_STATUSES
+
     if not meet_url:
         return None
     statuses = _read_statuses_unlocked()
     for job_id, row in statuses.items():
-        if row.get("meet_url") == meet_url and row.get("status") in ("queued", "running", "finalizing"):
+        if row.get("meet_url") == meet_url and row.get("status") in ACTIVE_JOB_STATUSES:
             return job_id
     return None
 
@@ -134,7 +150,7 @@ def _parse_utc_timestamp(raw: str | None) -> datetime | None:
     if not raw:
         return None
     try:
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
@@ -162,25 +178,129 @@ def latest_job_for_url(meet_url: str) -> tuple[str, dict[str, Any]] | None:
     return best[0], best[1]
 
 
-def should_retry_calendar_join(meet_url: str, *, cooldown_seconds: int = 180) -> bool:
-    """True when a prior join ended but the calendar event may still be active."""
-    latest = latest_job_for_url(meet_url)
-    if latest is None:
-        return True
-    _job_id, row = latest
-    status = str(row.get("status") or "")
-    if status in ("queued", "running", "finalizing"):
+def _jobs_for_event(
+    statuses: dict[str, dict[str, Any]],
+    *,
+    meet_url: str,
+    calendar_event_id: str | None,
+) -> list[tuple[str, dict[str, Any]]]:
+    event_id = (calendar_event_id or "").strip()
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for job_id, row in statuses.items():
+        if event_id:
+            if str(row.get("calendar_event_id") or "").strip() != event_id:
+                continue
+        elif row.get("meet_url") != meet_url:
+            continue
+        rows.append((job_id, row))
+    return rows
+
+
+def _job_has_speech(row: dict[str, Any]) -> bool:
+    try:
+        return int(row.get("segment_count") or 0) > 0
+    except (TypeError, ValueError):
         return False
-    started = _parse_utc_timestamp(str(row.get("started_at") or row.get("enqueued_at") or ""))
-    if started is not None:
-        age = (datetime.now(timezone.utc) - started).total_seconds()
-        if age < cooldown_seconds:
-            return False
-    event_end = _parse_utc_timestamp(str(row.get("calendar_event_end") or ""))
+
+
+def event_needs_coverage(
+    meet_url: str,
+    *,
+    calendar_event_id: str | None = None,
+    event_end: str | datetime | None = None,
+    debounce_seconds: int = 45,
+) -> bool:
+    """True when the calendar event still needs a Meet join attempt.
+
+    Coverage closes once any job for the event is ``completed`` (speech) or
+    ``empty`` (definitive no-humans). Never joins after ``event_end``.
+    """
+    from tempa.meet.quality import ACTIVE_JOB_STATUSES, TERMINAL_COVERED_STATUSES
+
+    if not meet_url:
+        return False
+
+    end_ts: datetime | None
+    if event_end is None:
+        end_ts = None
+    elif isinstance(event_end, str):
+        end_ts = _parse_utc_timestamp(event_end)
+    else:
+        # datetime-like (avoid isinstance(datetime) so tests can patch datetime.now)
+        end_ts = event_end  # type: ignore[assignment]
+        if getattr(end_ts, "tzinfo", None) is None:
+            end_ts = end_ts.replace(tzinfo=timezone.utc)  # type: ignore[union-attr]
     now = datetime.now(timezone.utc)
-    if event_end is not None and now < event_end:
+    if end_ts is not None and now >= end_ts:
+        return False
+
+    with _lock:
+        statuses = _read_statuses_unlocked()
+        if _active_job_for_url_unlocked(meet_url):
+            return False
+        jobs = _jobs_for_event(statuses, meet_url=meet_url, calendar_event_id=calendar_event_id)
+
+    if not jobs:
+        # Fall back to URL-scoped jobs when event id was not stored on older rows.
+        if calendar_event_id:
+            with _lock:
+                statuses = _read_statuses_unlocked()
+                jobs = _jobs_for_event(statuses, meet_url=meet_url, calendar_event_id=None)
+        if not jobs:
+            return True
+
+    for _job_id, row in jobs:
+        status = str(row.get("status") or "")
+        if status in TERMINAL_COVERED_STATUSES:
+            return False
+        if status == "completed" or status == "empty":
+            return False
+        if _job_has_speech(row):
+            return False
+
+    # Latest attempt debounce (anti-stampede only).
+    latest = max(
+        jobs,
+        key=lambda item: _parse_utc_timestamp(str(item[1].get("started_at") or item[1].get("enqueued_at") or ""))
+        or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    latest_row = latest[1]
+    latest_status = str(latest_row.get("status") or "")
+    if latest_status in ACTIVE_JOB_STATUSES:
+        return False
+
+    started = _parse_utc_timestamp(str(latest_row.get("started_at") or latest_row.get("enqueued_at") or ""))
+    if started is not None and (now - started).total_seconds() < debounce_seconds:
+        return False
+
+    # Mid-event failure with no speech yet: allow another join while event live.
+    if latest_status == "failed" and not _job_has_speech(latest_row):
         return True
-    return status == "failed"
+
+    # interrupted should be drained by finalize, not re-joined.
+    if latest_status == "interrupted":
+        return False
+
+    # Unknown legacy terminal — do not spam.
+    return False
+
+
+def should_retry_calendar_join(
+    meet_url: str,
+    *,
+    calendar_event_id: str | None = None,
+    event_end: str | None = None,
+    cooldown_seconds: int = 45,
+) -> bool:
+    """Compatibility wrapper: event coverage decides whether to re-join."""
+    latest = latest_job_for_url(meet_url)
+    row = latest[1] if latest else {}
+    return event_needs_coverage(
+        meet_url,
+        calendar_event_id=calendar_event_id or (str(row.get("calendar_event_id") or "") or None),
+        event_end=event_end or row.get("calendar_event_end"),
+        debounce_seconds=cooldown_seconds,
+    )
 
 
 def enqueue_meet_job(

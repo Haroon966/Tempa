@@ -115,6 +115,8 @@ class SystemMeetingRecorder:
     stats: SystemRecorderStats = field(default_factory=SystemRecorderStats)
     video_path: Optional[Path] = field(default=None, repr=False)
     pcm_path: Optional[Path] = field(default=None, repr=False)
+    recording_started_at: Optional[str] = field(default=None)
+    recording_ended_at: Optional[str] = field(default=None)
 
     def __post_init__(self) -> None:
         self.meeting_dir = Path(self.meeting_dir)
@@ -132,7 +134,11 @@ class SystemMeetingRecorder:
         if not use_system_capture():
             raise RuntimeError("System capture is not enabled or not available in this environment")
 
+        from datetime import datetime, timezone
+
         _ensure_pulse_running()
+        self.recording_started_at = datetime.now(timezone.utc).isoformat()
+        self.recording_ended_at = None
 
         display_input = self.display if self.display.startswith(":") else f":{self.display}"
         video_size = f"{self.width}x{self.height}"
@@ -299,6 +305,11 @@ class SystemMeetingRecorder:
             )
 
     async def stop(self) -> dict[str, Any]:
+        from datetime import datetime, timezone
+
+        if self.recording_ended_at is None:
+            self.recording_ended_at = datetime.now(timezone.utc).isoformat()
+
         result: dict[str, Any] = {
             "capture_source": "system",
             "video_path": str(self.video_path) if self.video_path else None,
@@ -307,6 +318,8 @@ class SystemMeetingRecorder:
             "peak_rms": round(self.stats.peak_rms, 2),
             "silent_capture": False,
             "pulse_source": self.pulse_source,
+            "recording_started_at": self.recording_started_at,
+            "recording_ended_at": self.recording_ended_at,
         }
 
         if self._monitor_task:

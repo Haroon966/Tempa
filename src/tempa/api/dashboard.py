@@ -566,13 +566,6 @@ def _component_checks(
             "message": "Shell, files, apps, browser with allowlist",
         },
         {
-            "id": "chrome_extension",
-            "name": "Chrome Extension",
-            "category": "ui",
-            "status": "healthy",
-            "message": "Side panel + popup + options; memory search; meeting viewer",
-        },
-        {
             "id": "web_dashboard",
             "name": "Web Dashboard",
             "category": "ui",

@@ -7,6 +7,13 @@ def msg_working() -> str:
     return "_On it — working in the background. I'll reply here when it's done._"
 
 
+def msg_rumi_working() -> str:
+    return (
+        "_On it with *Rumi* — Cursor is running the skills pack in the background. "
+        "You'll get the full answer here; reply in this thread anytime to steer._"
+    )
+
+
 def msg_still_working(minutes: int) -> str:
     # Kept for tests/compat — progress ticker no longer posts this to Slack.
     return f"_Tempa is still working on it… ({minutes}m)_"
@@ -27,6 +34,22 @@ def msg_queued(position: int) -> str:
 def msg_done(pr_url: str) -> str:
     link = pr_url or "the PR"
     return f"_Tempa confirmed green CI. Your work is done on <{link}>._"
+
+
+def msg_dead_pr_suggest(*, pr_url: str, state: str) -> str:
+    link = pr_url or "that PR"
+    label = (state or "closed").lower()
+    return (
+        f"That PR (<{link}>) is {label}. "
+        "We should open a new PR for follow-up work — "
+        "say “raise pr and fix …” if you want me to."
+    )
+
+
+def msg_dead_pr_new(*, pr_url: str, state: str) -> str:
+    link = pr_url or "that PR"
+    label = (state or "closed").lower()
+    return f"_PR <{link}> is {label} — opening a new PR instead._"
 
 
 def msg_problem(err: str) -> str:

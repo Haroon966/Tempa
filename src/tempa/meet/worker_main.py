@@ -118,17 +118,40 @@ def main() -> None:
     from tempa.settings import get_settings
 
     get_settings().ensure_dirs()
-    from tempa.meet.job_store import recover_stale_running_jobs
+    from tempa.meet.job_store import list_interrupted_job_ids, recover_stale_running_jobs
 
     recovered = recover_stale_running_jobs(on_startup=True)
     if recovered:
-        logger.info("Cleared %s orphaned meet job(s) from prior worker session", recovered)
+        logger.info("Marked %s orphaned meet job(s) interrupted for finalize", recovered)
+
+    interrupted = list_interrupted_job_ids()
+    if interrupted:
+        logger.info("Finalizing %s interrupted meet job(s)", len(interrupted))
+        asyncio.run(_finalize_interrupted_jobs(interrupted))
+
     logger.info(
         "Meet worker started (poll=%ss max_concurrent=%s)",
         os.environ.get("TEMPA_MEET_WORKER_POLL_SECONDS", "3"),
         get_settings().meet_max_concurrent,
     )
     asyncio.run(_poll_loop())
+
+
+async def _finalize_interrupted_jobs(job_ids: list[str]) -> None:
+    from tempa.meet.service import repair_meeting_finalize
+
+    for meeting_id in job_ids:
+        try:
+            await repair_meeting_finalize(meeting_id, send_notifications=False)
+            logger.info("Finalized interrupted meet job %s", meeting_id)
+        except Exception:
+            logger.exception("Failed to finalize interrupted meet job %s", meeting_id)
+            update_job_status(
+                meeting_id,
+                status="failed",
+                error="interrupted finalize failed",
+                leave_reason="worker_interrupted",
+            )
 
 
 if __name__ == "__main__":

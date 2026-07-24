@@ -42,11 +42,15 @@ services:
       - ./dashboard/dist:/app/dashboard/dist
       - ./data/huggingface:/root/.cache/huggingface
       # Learned skills / Hermes state live under ./data (persists across rebuilds)
-      # Extra checkouts under /repos (optional)
-      - ${TEMPA_REPOS_HOST:-./repos}:/repos
-      # Compliance Tracker for Cursor / local agent (rw for fixes + push)
+      # Mount each checkout as its own /repos/<name> bind. Do NOT also mount a parent
+      # ./repos:/repos — that single bind shadows nested /repos/* volumes (live failure:
+      # CT configured but /repos/compliancetracker missing inside the container).
       - ${COMPLIANCETRACKER_PATH:-/home/olufsen/compliancetracker-main}:/repos/compliancetracker
       - ${TEMPA_CURSOR_WORKTREE_HOST:-./data/tempa-worktrees}:/repos/tempa-worktrees
+      # Vendored Rumi agent-skills pack (TOKENS.md/KEYS.md live here; no .env).
+      - ./vendor/rumixtempa:/repos/rumixtempa
+      # Optional extra checkouts: add more "- /host/path:/repos/name" lines, or set
+      # TEMPA_REPOS_HOST only if it will NOT be mounted at /repos itself.
       # Claude Code CLI + auth from host
       - ${CLAUDE_CLI_BIN:-/home/olufsen/.local/share/claude/versions/2.1.206}:/usr/local/bin/claude:ro
       - ${CLAUDE_CONFIG_DIR:-/home/olufsen/.claude}:/root/.claude

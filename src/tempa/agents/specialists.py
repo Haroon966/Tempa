@@ -769,6 +769,7 @@ async def run_calendar_agent(task: str, context: dict[str, Any]) -> str:
 
 async def run_rag_agent_task(task: str, context: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     from tempa.agents.tool_policy import filter_rag_results, is_slack_guest
+    from tempa.rumi.classify import is_rumi_pack_route
 
     await event_bus.publish_json("rag", "retrieve", task[:120])
     query = context.get("user_message", task)
@@ -785,6 +786,10 @@ async def run_rag_agent_task(task: str, context: dict[str, Any]) -> tuple[str, l
             }
             for r in results
         ]
+
+    if is_rumi_pack_route(str(query or "")) or context.get("rumi_route"):
+        # Permanent: pack asks must not RAG into "Rumi Deep Dive" meeting titles.
+        return "No relevant memory found.", []
 
     if is_slack_guest(context):
         results = filter_rag_results(search_memory(query, top_k=20), context)

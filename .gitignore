@@ -8,7 +8,6 @@ data/
 dist/
 build/
 node_modules/
-extension/dist/
 dashboard/node_modules/
 dashboard/dist/
 

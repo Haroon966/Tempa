@@ -8,8 +8,10 @@ from tempa.meet.media import (
     _mp4_is_fragmented,
     compute_audio_waveform,
     compute_video_storyboard,
+    ensure_meeting_thumbnail,
     finalize_meeting_media_files,
     list_meeting_media,
+    resolve_meeting_thumbnail_path,
     resolve_storyboard_sprite_path,
     resolve_video_path,
     video_has_audio_stream,
@@ -186,6 +188,12 @@ def test_finalize_meeting_media_files_reports_mux(tmp_path, monkeypatch):
     monkeypatch.setattr("tempa.meet.media.finalize_mp4_for_playback", lambda path: path)
 
     def fake_run(cmd, **kwargs):
+        out_name = str(cmd[-1]) if cmd else ""
+        if out_name.endswith("thumbnail.jpg"):
+            Path(out_name).write_bytes(b"J" * 2000)
+            return subprocess.CompletedProcess(cmd, 0, stdout="10.0\n")
+        if "ffprobe" in str(cmd[0]) or (len(cmd) > 0 and "ffprobe" in str(cmd)):
+            return subprocess.CompletedProcess(cmd, 0, stdout="10.0\n")
         out = video.with_name(f"{video.stem}_avmux{video.suffix}")
         out.write_bytes(b"x" * 2000)
         return subprocess.CompletedProcess(cmd, 0)
@@ -195,6 +203,7 @@ def test_finalize_meeting_media_files_reports_mux(tmp_path, monkeypatch):
     first = finalize_meeting_media_files(meeting_id)
     assert first["has_video"] is True
     assert first["audio_muxed"] is True
+    assert (tmp_path / safe_id / "thumbnail.jpg").exists()
 
     second = finalize_meeting_media_files(meeting_id)
     assert second["audio_muxed"] is False
@@ -226,3 +235,30 @@ def test_mp4_is_fragmented_detects_fmp4(tmp_path):
     plain.write_bytes(b"\x00" * 32 + b"ftypisom" + b"\x00" * 80 + b"moov" + b"\x00" * 40)
     assert _mp4_is_fragmented(frag) is True
     assert _mp4_is_fragmented(plain) is False
+
+
+def test_ensure_meeting_thumbnail_writes_poster(tmp_path, monkeypatch):
+    meeting_id = "thumb-1"
+    video = tmp_path / meeting_id / "video" / f"{meeting_id}.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"v" * 5000)
+
+    class _Settings:
+        meetings_dir = tmp_path
+
+    monkeypatch.setattr("tempa.meet.media.get_settings", lambda: _Settings())
+    monkeypatch.setattr("tempa.meet.media.shutil.which", lambda _cmd: "/usr/bin/ffmpeg")
+    monkeypatch.setattr("tempa.meet.media.video_duration_seconds", lambda _path: 20.0)
+
+    def fake_run(cmd, **kwargs):
+        Path(cmd[-1]).write_bytes(b"J" * 2500)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("tempa.meet.media.subprocess.run", fake_run)
+
+    path = ensure_meeting_thumbnail(meeting_id, video_path=video)
+    assert path is not None
+    assert path.name == "thumbnail.jpg"
+    assert resolve_meeting_thumbnail_path(meeting_id) == path
+    # Idempotent — does not re-extract when present
+    assert ensure_meeting_thumbnail(meeting_id) == path

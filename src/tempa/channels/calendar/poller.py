@@ -106,7 +106,7 @@ def find_triggerable_meet_events(
 async def poll_once(state: PollerState, on_trigger: TriggerCallback) -> list[CalendarEvent]:
     import asyncio
 
-    from tempa.meet.job_store import has_active_job_for_url, should_retry_calendar_join
+    from tempa.meet.job_store import event_needs_coverage, has_active_job_for_url
 
     settings = get_settings()
     triggered: list[CalendarEvent] = []
@@ -120,10 +120,21 @@ async def poll_once(state: PollerState, on_trigger: TriggerCallback) -> list[Cal
         key = _event_key(ev)
         if ev.meet_url and has_active_job_for_url(ev.meet_url):
             continue
-        if key in state.triggered_keys:
-            if not should_retry_calendar_join(ev.meet_url or ""):
-                continue
+        event_end = ev.end.astimezone(dt.timezone.utc).isoformat()
+        needs = event_needs_coverage(
+            ev.meet_url or "",
+            calendar_event_id=ev.id,
+            event_end=event_end,
+        )
+        if key in state.triggered_keys and not needs:
+            continue
+        if key in state.triggered_keys and needs:
             state.triggered_keys.discard(key)
+        elif not needs:
+            # Already covered (e.g. empty/completed) — remember so we do not thrash.
+            state.triggered_keys.add(key)
+            save_poller_state(state)
+            continue
         try:
             ingest_calendar_event(ev)
         except Exception:

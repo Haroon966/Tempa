@@ -11,6 +11,7 @@ When fixing Tempa Slack/Cursor/QA behavior, preserve these permanent rules from 
 
 - Phrases like "check if the count…", "teacher vanishes", "dashboard shows 128" are **product/data investigations**.
 - They must **not** enqueue a lint/tests/security scan just because "compliance tracker" aliases to a repo.
+- **Rumi skills pack** is a hard route (`tempa.rumi.classify`): capability → inventory; `use rumi to…` → Cursor on `/repos/rumixtempa`. Never answer from meeting RAG (collides with Meet bot / “Rumi Deep Dive” titles). Pre-hook + grounding/RAG guards are mandatory defense in depth.
 - **Any GitHub-related ask** (repo URL, `owner/repo`, improve/review/explore) goes to **Cursor in the background**; Tempa acks and posts the result. Do not steal these into `qa_scan_hook` just because the message contains `github.com`.
 - Short follow-ups (`raise PR / fix it all`, including typos like `rase pr`) inherit the repo from the Slack thread — do **not** ask which issues to fix when findings are already in-thread.
 - **Completed sessions are not dead threads.** Follow-ups without @mention must still route when Tempa already replied or a Cursor job exists for that channel+thread.

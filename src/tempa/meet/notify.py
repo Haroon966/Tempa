@@ -347,6 +347,8 @@ def build_meeting_summary_email(
     youtube_url: str = "",
     live_notes_excerpt: str = "",
     for_preview: bool = False,
+    thumbnail_bytes: bytes | None = None,
+    meeting_id: str = "",
 ) -> dict[str, Any]:
     """Build HTML + CID inline images for Gmail (footer bg + video thumb)."""
     from datetime import date
@@ -370,8 +372,16 @@ def build_meeting_summary_email(
     video_id = _youtube_video_id(youtube_url)
     thumb_src = ""
     if youtube_url and video_id:
-        thumb_bytes = None if for_preview else _fetch_youtube_thumb_bytes(video_id)
+        thumb_bytes = thumbnail_bytes
+        if not thumb_bytes and meeting_id and not for_preview:
+            from tempa.meet.media import load_meeting_thumbnail_bytes
+
+            thumb_bytes = load_meeting_thumbnail_bytes(meeting_id)
+        if not thumb_bytes and not for_preview:
+            # CDN poster is often grey/missing right after upload — local frame is preferred.
+            thumb_bytes = _fetch_youtube_thumb_bytes(video_id)
         if thumb_bytes:
+            # Local extract is JPEG; YouTube CDN is also JPEG.
             inline_images.append((VIDEO_THUMB_CID, thumb_bytes, "jpeg"))
             thumb_src = f"cid:{VIDEO_THUMB_CID}"
         else:
@@ -481,6 +491,8 @@ def build_meeting_summary_html(
     youtube_url: str = "",
     live_notes_excerpt: str = "",
     for_preview: bool = False,
+    thumbnail_bytes: bytes | None = None,
+    meeting_id: str = "",
 ) -> str:
     """HTML-only helper (preview/tests). Prefer build_meeting_summary_email for sends."""
     return str(
@@ -491,6 +503,8 @@ def build_meeting_summary_html(
             youtube_url=youtube_url,
             live_notes_excerpt=live_notes_excerpt,
             for_preview=for_preview,
+            thumbnail_bytes=thumbnail_bytes,
+            meeting_id=meeting_id,
         )["html"]
     )
 
@@ -631,6 +645,7 @@ async def notify_meeting_completed(
         meet_link=meet_link,
         youtube_url=youtube_url,
         live_notes_excerpt=live_notes_excerpt,
+        meeting_id=str(record.get("id") or ""),
     )
     email_html = str(email_pack["html"])
     email_inline = list(email_pack.get("inline_images") or [])

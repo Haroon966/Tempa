@@ -183,6 +183,52 @@ def test_checks_summary_red_green():
     assert green["status"] == "green"
 
 
+def test_checks_summary_skipped_is_not_green():
+    skipped_only = cpr.checks_summary(
+        [{"name": "backend-ci", "state": "SKIPPED"}, {"name": "lint", "state": "NEUTRAL"}],
+    )
+    assert skipped_only["status"] == "pending"
+    assert skipped_only["passed"] == 0
+
+    required_skipped = cpr.checks_summary(
+        [{"name": "backend-ci", "state": "SKIPPED"}, {"name": "other", "state": "SUCCESS"}],
+        required=["backend-ci"],
+    )
+    assert required_skipped["status"] == "pending"
+
+    required_pass = cpr.checks_summary(
+        [{"name": "backend-ci", "state": "SUCCESS"}, {"name": "optional", "state": "SKIPPED"}],
+        required=["backend-ci"],
+    )
+    assert required_pass["status"] == "green"
+    assert required_pass["passed"] == 1
+
+
+def test_pr_head_ref_includes_lifecycle(monkeypatch):
+    class FakeProc:
+        returncode = 0
+        stdout = (
+            '{"headRefName":"fix/x","url":"https://github.com/o/r/pull/492",'
+            '"number":492,"state":"MERGED","merged":true,"closedAt":"2026-07-21T00:00:00Z"}'
+        )
+        stderr = ""
+
+    monkeypatch.setattr(cpr, "_run", lambda *a, **k: FakeProc())
+    head = cpr.pr_head_ref(492, repo="o/r")
+    assert head["branch"] == "fix/x"
+    assert head["state"] == "MERGED"
+    assert head["merged"] is True
+    assert head["is_open"] is False
+    assert cpr.is_pr_open(head) is False
+
+
+def test_is_pr_open_helpers():
+    assert cpr.is_pr_open({"state": "OPEN", "merged": False, "is_open": True}) is True
+    assert cpr.is_pr_open({"state": "CLOSED", "merged": False, "is_open": False}) is False
+    assert cpr.is_pr_open({"state": "OPEN", "merged": True}) is False
+    assert cpr.is_pr_open(None) is False
+
+
 def test_ensure_git_safe_directories_sets_env(tmp_path, monkeypatch):
     from tempa.channels.slack import cursor_worktree as wt
 
@@ -454,3 +500,200 @@ def test_missing_test_context_asks_once(tmp_path, monkeypatch):
     assert msg is not None
     assert "credentials" in msg.lower() or "missing" in msg.lower()
     assert cqa.missing_test_context_message(cwd=str(tmp_path), ask_text="what is the status?") is None
+
+
+@pytest.mark.asyncio
+async def test_process_job_dead_binding_opens_new_pr(tmp_path):
+    from tempa.channels.slack import cursor_worker as cw
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    key = jobs.pr_key(channel_id="C1", thread_ts="1.1", user_id="U1", repo="o/r")
+    old = jobs.enqueue_cursor_job(
+        {
+            "channel_id": "C1",
+            "thread_ts": "1.1",
+            "user_id": "U1",
+            "repo": "o/r",
+            "pr_key": key,
+            "branch": "tempa/old-492",
+            "pr_url": "https://github.com/o/r/pull/492",
+            "pr_number": 492,
+        }
+    )
+    jobs.claim_next_jobs(1)  # drain queue so the follow-up job is claimed next
+    jobs.update_job(old, status="completed", phase="completed")
+
+    jid = jobs.enqueue_cursor_job(
+        {
+            "channel_id": "C1",
+            "thread_ts": "1.1",
+            "user_id": "U1",
+            "ask_text": "rase pr and fix it all",
+            "mode": "write",
+            "local_cwd": str(repo),
+            "repo": "o/r",
+            "pr_key": key,
+            "required_checks": [],
+            "base_ref": "main",
+        }
+    )
+    claimed = jobs.claim_next_jobs(1)[0]
+    assert claimed["id"] == jid
+
+    async def fake_agent(job, *, comments="", ci_logs=""):
+        return "fixed"
+
+    create_calls: list[dict] = []
+
+    def fake_create_pr(**kwargs):
+        create_calls.append(kwargs)
+        return {"pr_url": "https://github.com/o/r/pull/500", "pr_number": 500}
+
+    with (
+        patch.object(cw.wt, "git_available", return_value=True),
+        patch.object(cw.wt, "ensure_worktree", return_value=str(repo)),
+        patch.object(cw.wt, "remove_worktree"),
+        patch.object(cw.wt, "branch_name", return_value="tempa/fresh-500"),
+        patch.object(cw.cpr, "push_branch"),
+        patch.object(cw.cpr, "create_pr", side_effect=fake_create_pr),
+        patch.object(
+            cw.cpr,
+            "pr_head_ref",
+            return_value={
+                "branch": "tempa/old-492",
+                "pr_number": 492,
+                "pr_url": "https://github.com/o/r/pull/492",
+                "state": "MERGED",
+                "merged": True,
+                "is_open": False,
+            },
+        ),
+        patch.object(cw, "_run_agent", side_effect=fake_agent),
+        patch.object(cw, "_post"),
+        patch.object(cw.cqa, "notify_done", return_value={}) as notify,
+    ):
+        await cw._process_job(claimed)
+
+    assert create_calls, "expected a new PR after dead binding"
+    assert jobs.get_job(jid)["status"] == "completed"
+    assert jobs.get_job(jid)["pr_number"] == 500
+    summary = notify.call_args.kwargs.get("summary") or ""
+    assert "492" in summary and "merged" in summary.lower()
+    assert "https://github.com/o/r/pull/500" in summary
+    assert "confirmed green ci" not in summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_process_job_dead_adopt_write_opens_new_pr(tmp_path):
+    from tempa.channels.slack import cursor_worker as cw
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    jid = jobs.enqueue_cursor_job(
+        {
+            "channel_id": "C1",
+            "thread_ts": "1.1",
+            "user_id": "U1",
+            "ask_text": "fix https://github.com/o/r/pull/492 and raise pr",
+            "mode": "write",
+            "local_cwd": str(repo),
+            "repo": "o/r",
+            "required_checks": [],
+            "base_ref": "main",
+        }
+    )
+    claimed = jobs.claim_next_jobs(1)[0]
+
+    async def fake_agent(job, *, comments="", ci_logs=""):
+        assert job.get("dead_pr_replaced") is True
+        return "new fix"
+
+    with (
+        patch.object(cw.wt, "git_available", return_value=True),
+        patch.object(cw.wt, "ensure_worktree", return_value=str(repo)) as ensure_wt,
+        patch.object(cw.wt, "remove_worktree"),
+        patch.object(cw.wt, "branch_name", return_value="tempa/fresh"),
+        patch.object(cw.cpr, "push_branch"),
+        patch.object(
+            cw.cpr,
+            "create_pr",
+            return_value={"pr_url": "https://github.com/o/r/pull/501", "pr_number": 501},
+        ) as create_pr,
+        patch.object(
+            cw.cpr,
+            "pr_head_ref",
+            return_value={
+                "branch": "old-head",
+                "pr_number": 492,
+                "pr_url": "https://github.com/o/r/pull/492",
+                "state": "MERGED",
+                "merged": True,
+                "is_open": False,
+            },
+        ),
+        patch.object(cw, "_run_agent", side_effect=fake_agent),
+        patch.object(cw, "_post"),
+        patch.object(cw.cqa, "notify_done", return_value={}) as notify,
+    ):
+        await cw._process_job(claimed)
+
+    create_pr.assert_called_once()
+    # Fresh worktree from base, not the dead PR head.
+    assert ensure_wt.call_args.kwargs.get("branch") == "tempa/fresh"
+    summary = notify.call_args.kwargs.get("summary") or ""
+    assert "opening a new pr" in summary.lower()
+    assert "pull/501" in summary
+
+
+@pytest.mark.asyncio
+async def test_process_job_dead_adopt_suggests_without_write(tmp_path):
+    from tempa.channels.slack import cursor_worker as cw
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    jid = jobs.enqueue_cursor_job(
+        {
+            "channel_id": "C1",
+            "thread_ts": "1.1",
+            "user_id": "U1",
+            "ask_text": "look at https://github.com/o/r/pull/492",
+            "mode": "write",  # enqueue treats PR URL as write; intent gate uses is_write_intent
+            "local_cwd": str(repo),
+            "repo": "o/r",
+            "base_ref": "main",
+        }
+    )
+    claimed = jobs.claim_next_jobs(1)[0]
+    posts: list[str] = []
+
+    with (
+        patch.object(cw.wt, "git_available", return_value=True),
+        patch.object(cw.wt, "ensure_worktree") as ensure_wt,
+        patch.object(cw.cpr, "push_branch") as push,
+        patch.object(cw.cpr, "create_pr") as create_pr,
+        patch.object(
+            cw.cpr,
+            "pr_head_ref",
+            return_value={
+                "branch": "old-head",
+                "pr_number": 492,
+                "pr_url": "https://github.com/o/r/pull/492",
+                "state": "MERGED",
+                "merged": True,
+                "is_open": False,
+            },
+        ),
+        patch.object(cw, "_run_agent", new_callable=AsyncMock) as agent,
+        patch.object(cw, "_post", side_effect=lambda *a, **k: posts.append(a[2] if len(a) > 2 else "")),
+    ):
+        await cw._process_job(claimed)
+
+    assert jobs.get_job(jid)["status"] == "completed"
+    assert agent.await_count == 0
+    ensure_wt.assert_not_called()
+    push.assert_not_called()
+    create_pr.assert_not_called()
+    assert posts
+    assert "merged" in posts[0].lower()
+    assert "new pr" in posts[0].lower()

@@ -149,3 +149,55 @@ def cleanup_orphan_worktrees() -> int:
 
 def git_available() -> bool:
     return shutil.which("git") is not None
+
+
+def ensure_repo_mirror(repo: str, *, ref: str = "main") -> Path:
+    """Shallow clone (or update) an unmounted GitHub repo for local Cursor + gh PR.
+
+    Used when Cursor cloud cannot see the repo but Tempa's GitHub token can clone.
+    """
+    slug = (repo or "").strip().replace("https://github.com/", "").strip("/")
+    if slug.count("/") != 1:
+        raise ValueError(f"invalid github repo slug: {repo!r}")
+    branch = (ref or "main").strip() or "main"
+    dest = worktree_root() / "mirrors" / safe_slug(slug.replace("/", "__"), max_len=64)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    ensure_git_safe_directories(dest, dest.parent, "/repos")
+
+    token = ""
+    try:
+        from tempa.qa.github.auth import get_github_token
+
+        token = (get_github_token(slug) or "").strip()
+    except Exception:
+        token = ""
+    if token:
+        clone_url = f"https://x-access-token:{token}@github.com/{slug}.git"
+    else:
+        clone_url = f"https://github.com/{slug}.git"
+
+    if (dest / ".git").exists():
+        # Refresh mirror to the requested branch tip.
+        _run(["git", "remote", "set-url", "origin", clone_url], cwd=dest)
+        fetch = _run(["git", "fetch", "--depth", "1", "origin", branch], cwd=dest)
+        if fetch.returncode != 0:
+            raise RuntimeError((fetch.stderr or fetch.stdout or "git fetch failed").strip()[:400])
+        checkout = _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=dest)
+        if checkout.returncode != 0:
+            raise RuntimeError((checkout.stderr or checkout.stdout or "git checkout failed").strip()[:400])
+        return dest
+
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+    proc = _run(
+        ["git", "clone", "--depth", "1", "--branch", branch, clone_url, str(dest)],
+        cwd=dest.parent,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "git clone failed").strip()[:400])
+    # Avoid leaking the token into later `git remote -v` logs for child agents.
+    _run(["git", "remote", "set-url", "origin", f"https://github.com/{slug}.git"], cwd=dest)
+    if token:
+        # Keep authenticated push URL in a helper remote for Tempa push/create_pr.
+        _run(["git", "remote", "set-url", "origin", clone_url], cwd=dest)
+    return dest

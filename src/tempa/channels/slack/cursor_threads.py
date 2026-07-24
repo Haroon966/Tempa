@@ -194,13 +194,16 @@ def _cloud_cfg_from_github(text: str) -> dict[str, Any] | None:
             slug = None
     if not slug or slug.count("/") != 1:
         return None
+    from tempa.qa.cursor import resolve_cloud_starting_ref
+
+    start = resolve_cloud_starting_ref(slug, None)
     return {
         "id": slug,
         "repo": slug,
-        "starting_ref": None,
+        "starting_ref": start,
         "local_cwd": "",
         "label": slug,
-        "base_ref": "main",
+        "base_ref": start,
         "jira_key": None,
         "required_checks": [],
         "aliases": [slug.lower(), slug.rsplit("/", 1)[-1].lower()],
@@ -301,6 +304,33 @@ def thread_coding_context_blob(context: dict[str, Any] | None = None) -> str:
     return "\n".join(parts)
 
 
+def coerce_cloud_when_mount_missing(
+    cfg: dict[str, Any],
+    text: str = "",
+) -> dict[str, Any]:
+    """Configured mount that isn't on disk → Cursor cloud (repo from cfg or message).
+
+    Live failure: CT is in cursor_threads.yaml but /repos/compliancetracker isn't
+    mounted in the container; explicit github.com asks must not die on Docker mount
+    copy — cloud can still investigate/fix.
+    """
+    local_cwd = str(cfg.get("local_cwd") or "").strip()
+    if not local_cwd or Path(local_cwd).is_dir():
+        return cfg
+    repo = str(cfg.get("repo") or "").strip() or (_github_slug_from_text(text) or "")
+    if not repo:
+        return cfg
+    out = dict(cfg)
+    out["local_cwd"] = ""
+    out["repo"] = repo
+    log.warning(
+        "cursor mount missing at %s — falling back to Cursor cloud for %s",
+        local_cwd,
+        repo,
+    )
+    return out
+
+
 def resolve_cursor_job_cfg(
     text: str,
     *,
@@ -310,11 +340,11 @@ def resolve_cursor_job_cfg(
     """Pin override, else repo resolve for coding asks (mount, cloud URL, or thread history)."""
     pin = match_cursor_thread(channel_id, thread_ts)
     if pin:
-        return pin
+        return coerce_cloud_when_mount_missing(pin, text)
     # Do not sole-default on short follow-ups — that steals "fix it all" onto the wrong repo.
     cfg = match_cursor_repo(text, allow_sole_default=False)
     if cfg:
-        return cfg
+        return coerce_cloud_when_mount_missing(cfg, text)
     if channel_id and thread_ts:
         blob = thread_coding_context_blob(
             {"slack_channel_id": channel_id, "slack_thread_ts": thread_ts}
@@ -322,8 +352,9 @@ def resolve_cursor_job_cfg(
         if blob:
             hist = match_cursor_repo(blob, allow_sole_default=False)
             if hist:
-                return hist
-    return match_cursor_repo(text, allow_sole_default=True)
+                return coerce_cloud_when_mount_missing(hist, text)
+    sole = match_cursor_repo(text, allow_sole_default=True)
+    return coerce_cloud_when_mount_missing(sole, text) if sole else None
 
 
 def ambiguous_repo_message() -> str:
@@ -339,6 +370,25 @@ def ambiguous_repo_message() -> str:
         label = row.get("label") or row.get("id") or row.get("local_cwd") or row.get("repo")
         lines.append(f"• *{label}* (`{aliases}`)")
     return "\n".join(lines)
+
+
+RUMI_AGENT_LOCAL_CWD = "/repos/rumixtempa"
+
+
+def rumi_agent_job_cfg() -> dict[str, Any]:
+    """Fixed cfg for org-wide Rumi skills-pack jobs (never a PR/worktree target)."""
+    return {
+        "id": "rumixtempa",
+        "local_cwd": RUMI_AGENT_LOCAL_CWD,
+        "repo": "",
+        "starting_ref": None,
+        "label": "Rumi agent skills",
+        "base_ref": "main",
+        "jira_key": None,
+        "required_checks": [],
+        "aliases": ["rumixtempa", "agent-skills", "agent skills"],
+        "job_kind": "rumi_agent",
+    }
 
 
 def _resolve_user_label(client: Any, user_id: str, cache: dict[str, str]) -> str:
@@ -419,6 +469,12 @@ async def handle_cursor_job_message(
     job_cfg = cfg or resolve_cursor_job_cfg(text, channel_id=channel_id, thread_ts=thread_ts)
     if not job_cfg:
         return None
+    # Pins / callers may pass a cfg that still points at a dead mount.
+    # Rumi skills pack has no GitHub cloud fallback — keep local_cwd.
+    if str(job_cfg.get("job_kind") or "") != "rumi_agent":
+        job_cfg = coerce_cloud_when_mount_missing(dict(job_cfg), text)
+    else:
+        job_cfg = dict(job_cfg)
     if not cursor_configured():
         from tempa.core.chat_errors import sanitize_user_error
 
@@ -437,6 +493,8 @@ async def handle_cursor_job_message(
         return slack_problem_message(str(result["error"]))
     if result.get("queued_position"):
         return prog.msg_queued(int(result["queued_position"]))
+    if str(job_cfg.get("job_kind") or "") == "rumi_agent":
+        return prog.msg_rumi_working()
     return prog.msg_working()
 
 

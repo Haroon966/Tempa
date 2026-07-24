@@ -19,6 +19,11 @@ STORYBOARD_COLUMNS = 10
 STORYBOARD_MAX_TILES = 60
 STORYBOARD_MIN_INTERVAL = 2.0
 
+# YouTube custom thumbs want ≥640×360; 1280×720 JPEG stays under the 2MB API cap.
+THUMBNAIL_WIDTH = 1280
+THUMBNAIL_HEIGHT = 720
+THUMBNAIL_NAME = "thumbnail.jpg"
+
 
 def _ffprobe_ok(path: Path) -> bool:
     try:
@@ -217,6 +222,10 @@ def finalize_meeting_media_files(meeting_id: str, *, audio_path_hint: str = "") 
     else:
         result["video_ready"] = video_path.stat().st_size > 50_000
 
+    # Poster lives next to video/ so it survives delete_local_meeting_video.
+    if result["has_video"]:
+        ensure_meeting_thumbnail(meeting_id, video_path=video_path)
+
     return result
 
 
@@ -313,7 +322,7 @@ def resolve_playable_video_path(meeting_id: str, *, audio_path_hint: str = "") -
 def delete_local_meeting_video(meeting_id: str) -> bool:
     """Remove the local video directory once the recording lives on YouTube.
 
-    Audio and transcript artifacts live in sibling directories and are kept.
+    Audio, transcript, and meeting-root thumbnail.jpg are kept (email/YouTube poster).
     """
     video_dir = meeting_dir_for_id(meeting_id) / "video"
     if not video_dir.exists():
@@ -325,6 +334,96 @@ def delete_local_meeting_video(meeting_id: str) -> bool:
     except Exception:
         _logger.exception("GMEET: failed to remove local video meeting=%s", meeting_id)
         return False
+
+
+def meeting_thumbnail_path(meeting_id: str) -> Path:
+    return meeting_dir_for_id(meeting_id) / THUMBNAIL_NAME
+
+
+def resolve_meeting_thumbnail_path(meeting_id: str) -> Path | None:
+    path = meeting_thumbnail_path(meeting_id)
+    if path.exists() and path.stat().st_size > 1000:
+        return path
+    return None
+
+
+def load_meeting_thumbnail_bytes(meeting_id: str) -> bytes | None:
+    path = resolve_meeting_thumbnail_path(meeting_id)
+    if not path:
+        return None
+    try:
+        data = path.read_bytes()
+        return data if len(data) > 1000 else None
+    except OSError:
+        return None
+
+
+def ensure_meeting_thumbnail(
+    meeting_id: str,
+    *,
+    video_path: Path | None = None,
+) -> Path | None:
+    """Extract a 16:9 JPEG poster from the recording for YouTube + email CID."""
+    existing = resolve_meeting_thumbnail_path(meeting_id)
+    if existing:
+        return existing
+
+    path = video_path
+    if path is None or not path.exists():
+        path = resolve_video_path(meeting_id)
+    if path is None or not path.exists() or path.stat().st_size < 1024:
+        return None
+    if not shutil.which("ffmpeg"):
+        return None
+
+    dest = meeting_thumbnail_path(meeting_id)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    duration = video_duration_seconds(path)
+    if duration > 3:
+        seek = min(max(duration * 0.15, 1.0), duration - 1.0)
+    elif duration > 0:
+        seek = max(duration * 0.5, 0.0)
+    else:
+        seek = 0.0
+
+    scale = (
+        f"scale={THUMBNAIL_WIDTH}:{THUMBNAIL_HEIGHT}:"
+        "force_original_aspect_ratio=decrease,"
+        f"pad={THUMBNAIL_WIDTH}:{THUMBNAIL_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
+    )
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{seek:.3f}",
+        "-i",
+        str(path),
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        "-vf",
+        scale,
+        str(dest),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
+        if result.returncode != 0 or not dest.exists() or dest.stat().st_size < 1000:
+            _logger.warning(
+                "GMEET: thumbnail extract failed meeting=%s stderr=%s",
+                meeting_id,
+                (result.stderr or b"").decode(errors="replace")[:300],
+            )
+            dest.unlink(missing_ok=True)
+            return None
+        return dest
+    except Exception:
+        _logger.exception("GMEET: thumbnail extract failed meeting=%s", meeting_id)
+        dest.unlink(missing_ok=True)
+        return None
 
 
 def resolve_audio_download_path(meeting_id: str, *, audio_path_hint: str = "") -> Path | None:

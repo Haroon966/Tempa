@@ -31,6 +31,7 @@ channels:
 
 - Phrases like "check if the count…", "teacher vanishes", "dashboard shows 128" are **product/data investigations**.
 - They must **not** enqueue a lint/tests/security scan just because a product alias maps to a repo.
+- **Rumi skills pack** is a hard route (`classify_rumi` + `rumi_pack` pre-hook): never answer from meeting archives / RAG.
 - QA scans require **strong** intent (`scan`, `run qa`, `audit`, `deep review`) **or** an explicit `github.com` / `owner/repo` ref plus review/test wording.
 - Product investigations with a known product/repo alias go to **Cursor jobs** (read or write), not `qa_scan_hook`.
 - Coding write jobs: one short ack, then silence until the fix is ready. Never spam progress.

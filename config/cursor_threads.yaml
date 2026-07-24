@@ -16,6 +16,16 @@ repos:
       - pefsis
       - compliance tracker
 
+  # Org-wide Rumi skills pack (Notion/Slack/data/creation). Not a coding/PR target.
+  - id: rumixtempa
+    local_cwd: /repos/rumixtempa
+    base_ref: main
+    required_checks: []
+    aliases:
+      - rumixtempa
+      - agent-skills
+      - agent skills
+
 threads:
   - channel_id: C0AV0MUTCJW
     thread_ts: "1784541760.548649"

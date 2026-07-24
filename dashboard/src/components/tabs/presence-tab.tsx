@@ -17,7 +17,7 @@ import { PageHeader } from "@/components/dashboard/page-header"
 import { PanelCard } from "@/components/dashboard/panel-card"
 import { StatCard } from "@/components/dashboard/stat-card"
 import { PresenceBoard } from "@/components/presence/presence-board"
-import { flattenEntries } from "@/components/presence/presence-board-model"
+import { buildClusters, flattenEntries } from "@/components/presence/presence-board-model"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -25,22 +25,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { usePresence } from "@/hooks/use-presence"
 import type { PresenceEntry, PresenceLocation, PresenceStatus } from "@/lib/api"
 import { cn } from "@/lib/utils"
-
-const STATUS_ORDER: PresenceStatus[] = [
-  "leave",
-  "half_day",
-  "leave_early",
-  "remote",
-  "late",
-  "partial_away",
-  "ooo",
-  "office",
-  "field_visit",
-  "travel",
-  "limited",
-  "back",
-  "other",
-]
 
 const STATUS_LABEL: Record<PresenceStatus, string> = {
   leave: "On leave",
@@ -57,15 +41,6 @@ const STATUS_LABEL: Record<PresenceStatus, string> = {
   limited: "Limited",
   other: "Other",
 }
-
-const LOCATION_ORDER: PresenceLocation[] = [
-  "i10",
-  "niete",
-  "h9",
-  "rawalpindi",
-  "moawin_hq",
-  "other_site",
-]
 
 const LOCATION_LABEL: Record<PresenceLocation, string> = {
   i10: "I10",
@@ -162,16 +137,8 @@ export function PresenceTab() {
   }, [data])
 
   const boardEntries = useMemo(() => (data ? flattenEntries(data) : []), [data])
-
-  const filledGroups = useMemo(() => {
-    if (!data) return []
-    return STATUS_ORDER.filter((s) => (data.groups[s]?.length ?? 0) > 0)
-  }, [data])
-
-  const filledLocations = useMemo(() => {
-    if (!data) return []
-    return LOCATION_ORDER.filter((l) => (data.by_location[l]?.length ?? 0) > 0)
-  }, [data])
+  // Same partition as board: located people live under a site cluster only (no double listing).
+  const listClusters = useMemo(() => buildClusters(boardEntries), [boardEntries])
 
   return (
     <div className="space-y-6">
@@ -252,35 +219,22 @@ export function PresenceTab() {
           {view === "board" ? (
             <PresenceBoard entries={boardEntries} />
           ) : (
-            <>
-              <div className="grid gap-4 lg:grid-cols-2">
-                {filledGroups.map((status) => (
-                  <PanelCard key={status} title={STATUS_LABEL[status]} description={`${data.groups[status].length} people`}>
-                    {data.groups[status].map((entry) => (
-                      <PersonRow key={`${entry.user_id}-${entry.message_ts}`} entry={entry} />
-                    ))}
-                  </PanelCard>
-                ))}
-              </div>
-
-              {filledLocations.length > 0 ? (
-                <div className="space-y-3">
-                  <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">By location</h2>
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    {filledLocations.map((loc) => (
-                      <PanelCard key={loc} title={LOCATION_LABEL[loc]} description={`${data.by_location[loc].length} people`}>
-                        {data.by_location[loc].map((entry) => (
-                          <PersonRow key={`${loc}-${entry.user_id}-${entry.message_ts}`} entry={entry} />
-                        ))}
-                      </PanelCard>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </>
+            <div className="grid gap-4 lg:grid-cols-2">
+              {listClusters.map((cluster) => (
+                <PanelCard
+                  key={cluster.id}
+                  title={cluster.label}
+                  description={`${cluster.entries.length} people`}
+                >
+                  {cluster.entries.map((entry) => (
+                    <PersonRow key={`${entry.user_id}-${entry.message_ts}`} entry={entry} />
+                  ))}
+                </PanelCard>
+              ))}
+            </div>
           )}
 
-          {filledGroups.length === 0 ? (
+          {boardEntries.length === 0 ? (
             <PanelCard title="No updates" description="No classified presence posts for this date yet. Try Sync.">
               <p className="text-sm text-muted-foreground">
                 Tempa reads Slack #{data.channel.name} and classifies leave, remote, office sites, and field visits.

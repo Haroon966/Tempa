@@ -268,24 +268,35 @@ def build_grounding_pack(
             pack["slack_context"] = ""
 
     if private_ok and not casual_slack:
-        try:
-            from tempa.meet.archive import get_recent_meetings_context
+        from tempa.rumi.classify import is_rumi_pack_route
 
-            pack["meeting_history"] = get_recent_meetings_context(limit=3)
-        except Exception as exc:
-            logger.warning("Meeting history context failed: %s", exc)
-
-        if wants_meeting_archive(user_message):
+        rumi_pack = is_rumi_pack_route(user_message) or bool(context.get("rumi_route"))
+        if rumi_pack:
+            # Permanent: never ground Rumi pack asks in meeting archives (name collision).
+            pack["meeting_history"] = ""
+            pack["meeting_facts"] = ""
+        else:
             try:
-                from tempa.meet.archive import get_latest_meeting_context
+                from tempa.meet.archive import get_recent_meetings_context
 
-                pack["meeting_facts"] = get_latest_meeting_context()
-                if not pack["meeting_facts"]:
-                    pack["memory_answer"] = pack.get("memory_answer") or "No archived meeting found yet."
+                pack["meeting_history"] = get_recent_meetings_context(limit=3)
             except Exception as exc:
-                logger.warning("Meeting archive context failed: %s", exc)
+                logger.warning("Meeting history context failed: %s", exc)
 
-        pack["meet_job_facts"] = _fetch_meet_job_facts()
+            if wants_meeting_archive(user_message):
+                try:
+                    from tempa.meet.archive import get_latest_meeting_context
+
+                    pack["meeting_facts"] = get_latest_meeting_context()
+                    if not pack["meeting_facts"]:
+                        pack["memory_answer"] = pack.get("memory_answer") or "No archived meeting found yet."
+                except Exception as exc:
+                    logger.warning("Meeting archive context failed: %s", exc)
+
+        if not rumi_pack:
+            pack["meet_job_facts"] = _fetch_meet_job_facts()
+        else:
+            pack["meet_job_facts"] = ""
 
     if specialist_results:
         pack["action_facts"].extend(_action_facts_from_results(specialist_results))

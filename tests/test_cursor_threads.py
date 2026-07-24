@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -271,6 +272,72 @@ def test_match_cursor_repo_cloud_fallback_for_unmounted_github():
     assert cfg is not None
     assert cfg["repo"] == "Haroon966/Klip-Board"
     assert cfg["local_cwd"] == ""
+
+
+def test_missing_configured_mount_falls_back_to_cloud(tmp_path):
+    """Live Slack: CT yaml mount missing → cloud, not 'Docker repo mount' error."""
+    from tempa.channels.slack.cursor_threads import coerce_cloud_when_mount_missing
+
+    dead = "/repos/compliancetracker-does-not-exist"
+    assert not Path(dead).is_dir()
+    cfg = coerce_cloud_when_mount_missing(
+        {
+            "id": "compliancetracker",
+            "local_cwd": dead,
+            "repo": "Orenda-Project/compliancetracker",
+            "base_ref": "main",
+            "required_checks": [],
+            "aliases": [],
+        },
+        "github.com/Orenda-Project/compliancetracker check this repo",
+    )
+    assert cfg["local_cwd"] == ""
+    assert cfg["repo"] == "Orenda-Project/compliancetracker"
+
+    # Mount path that exists stays local.
+    live = tmp_path / "mounted-ct"
+    live.mkdir()
+    kept = coerce_cloud_when_mount_missing(
+        {
+            "local_cwd": str(live),
+            "repo": "Orenda-Project/compliancetracker",
+        },
+        "check ct",
+    )
+    assert kept["local_cwd"] == str(live)
+
+
+@pytest.mark.asyncio
+async def test_handle_cursor_job_missing_mount_enqueues_cloud(monkeypatch):
+    """Haroon ask: github.com/.../compliancetracker must not reply with mount error."""
+    from tempa.channels.slack import cursor_threads as ct
+
+    enqueued: dict = {}
+
+    def fake_enqueue(*, text, context, cfg):
+        enqueued["cfg"] = dict(cfg)
+        return {"job_id": "j1"}
+
+    monkeypatch.setattr(
+        "tempa.channels.slack.cursor_worker.enqueue_from_slack",
+        fake_enqueue,
+    )
+
+    reply = await ct.handle_cursor_job_message(
+        "github.com/Orenda-Project/compliancetracker check this repo and find what is wrong",
+        {"slack_channel_id": "C1", "slack_thread_ts": "1.1"},
+        cfg={
+            "local_cwd": "/repos/compliancetracker-missing",
+            "repo": "Orenda-Project/compliancetracker",
+            "base_ref": "main",
+            "required_checks": [],
+        },
+    )
+    assert reply is not None
+    assert "Docker repo mount" not in reply
+    assert "working" in reply.lower() or "Tempa" in reply
+    assert enqueued["cfg"]["local_cwd"] == ""
+    assert enqueued["cfg"]["repo"] == "Orenda-Project/compliancetracker"
 
 
 def test_github_url_with_trailing_spaces_not_stolen_by_ct_alias():

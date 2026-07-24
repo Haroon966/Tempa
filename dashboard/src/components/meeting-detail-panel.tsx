@@ -15,6 +15,7 @@ import { AudioWaveform } from "@/components/audio-waveform"
 import { VideoPlayer } from "@/components/video-player"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { parseYoutubeVideoId } from "@/lib/youtube"
 import { cn } from "@/lib/utils"
 
 function formatTranscript(raw: string): string {
@@ -130,10 +131,12 @@ export function MeetingDetailPanel({ meeting }: MeetingDetailPanelProps) {
   const hasAudio = media?.has_audio ?? artifacts.audio
   const hasLocalVideo = media?.has_video ?? artifacts.video
   const youtubeUrl = m.youtube_url
-  const youtubeEmbedUrl = m.youtube_video_id
-    ? `https://www.youtube.com/embed/${m.youtube_video_id}`
+  const youtubeVideoId = parseYoutubeVideoId(m.youtube_video_id) || parseYoutubeVideoId(youtubeUrl)
+  const youtubeEmbedUrl = youtubeVideoId
+    ? `https://www.youtube.com/embed/${youtubeVideoId}`
     : null
-  const hasVideo = hasLocalVideo || Boolean(youtubeUrl)
+  // Only claim a Video section when we can render a player or a real YouTube link.
+  const hasVideo = Boolean(hasLocalVideo || youtubeEmbedUrl || youtubeUrl)
   const hasTranscript = media?.has_transcript ?? artifacts.transcript
 
   return (

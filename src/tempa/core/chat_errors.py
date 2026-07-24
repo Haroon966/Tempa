@@ -120,6 +120,19 @@ def sanitize_user_error(err: str | BaseException | None) -> str:
         return "I couldn’t reach an upstream service — try again in a moment."
     if "no claude runner" in lower or "claude code cli failed" in lower:
         return "I couldn’t reach the Claude runner — try again shortly, or ask the owner to check it."
+    if "default branch" in lower or "failed to determine repository" in lower:
+        return (
+            "I couldn’t start a cloud job on that repo (default branch). "
+            "Please ask again — I’ll pin `main` and retry. "
+            "If it keeps failing, the Cursor GitHub connection may not see that repo."
+        )
+    if "failed to verify existence of branch" in lower or (
+        "branch" in lower and "repository" in lower and "ensure the branch" in lower
+    ):
+        return (
+            "I couldn’t reach that GitHub branch from Cursor cloud. "
+            "Please ask again — I’ll clone it locally and open the PR from Tempa."
+        )
 
     # Unknown: never echo raw exception text to teammates.
     return _GENERIC

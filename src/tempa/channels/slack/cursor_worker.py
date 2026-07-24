@@ -91,6 +91,36 @@ def _is_timeout_error(err: str) -> bool:
 def _build_agent_prompt(job: dict[str, Any], *, comments: str = "", ci_logs: str = "") -> str:
     import os
 
+    if str(job.get("job_kind") or "") == "rumi_agent":
+        from tempa.channels.slack.rumi_pack import load_rumi_pack_context
+
+        cwd = str(job.get("worktree_path") or job.get("local_cwd") or "/repos/rumixtempa")
+        pack_ctx = load_rumi_pack_context(cwd)
+        parts = [
+            "You are Rumi (via Tempa) answering a Slack teammate. Cursor runs you in the "
+            "background against the vendored Taleemabad agent-skills pack.",
+            f"Requester Slack user: {job.get('user_id')}",
+            f"Working directory (use this cwd for all reads/scripts): {cwd}",
+            "=== FULL RUMI PACK CONTEXT (use this — do not invent skills) ===",
+            pack_ctx,
+            "=== END RUMI PACK CONTEXT ===",
+            "Procedure:",
+            "1. Use the CLAUDE.md router above to pick ONE skill.",
+            "2. Open that skills/<name>/SKILL.md from disk and follow it exactly.",
+            "3. Run scripts under skills/*/scripts as needed (export creds from TOKENS.md/KEYS.md first).",
+            "Credentials: read TOKENS.md and KEYS.md on disk; export into the shell. "
+            "Do NOT create or write a .env file. Never print token values. If a value is missing, "
+            "name the exact TOKENS.md/KEYS.md row and stop.",
+            "Output rules (user has 100% control):",
+            "- Your final message IS the Slack reply — include the complete answer, links, "
+            "IDs, and next options. No hidden steps, no 'I would…' without doing it.",
+            "- Prefer tool/script facts over guessing.",
+            "- Do not open PRs, merge, push branches, or edit Tempa itself.",
+            "- End with 1–3 concrete follow-ups the user can reply with to steer.",
+            "User request:\n" + str(job.get("ask_text") or ""),
+        ]
+        return "\n\n".join(parts)
+
     parts = [
         "You are Tempa working a Slack engineering request via Cursor.",
         f"Requester Slack user: {job.get('user_id')}",
@@ -104,6 +134,11 @@ def _build_agent_prompt(job: dict[str, Any], *, comments: str = "", ci_logs: str
         parts.append(f"Branch: {job['branch']}")
     if job.get("pr_url"):
         parts.append(f"PR: {job['pr_url']}")
+    if job.get("dead_pr_replaced"):
+        parts.append(
+            "The referenced PR is merged or closed. Do NOT continue that PR. "
+            "Open a NEW pull request for this work."
+        )
     if str(job.get("mode") or "") == "write" and not str(job.get("local_cwd") or "").strip():
         parts.append(
             "Cloud write mode: fix the issues from the request/findings, commit, and open a PR. "
@@ -138,11 +173,13 @@ async def _run_agent(job: dict[str, Any], *, comments: str = "", ci_logs: str = 
     # Long-running by design — teammates prefer silence until the fix lands.
     timeout = max(300, int(get_settings().tempa_cursor_job_timeout_sec or 7200))
     auto_pr = str(job.get("mode") or "") == "write" and not cwd
+    # Cloud SDK requires an explicit ref — fall back to base_ref / main.
+    start_ref = str(job.get("starting_ref") or job.get("base_ref") or "").strip() or None
     return await asyncio.wait_for(
         cursor_prompt(
             prompt,
             repo=str(job.get("repo") or ""),
-            starting_ref=job.get("starting_ref"),
+            starting_ref=start_ref,
             local_cwd=cwd,
             auto_create_pr=auto_pr,
         ),
@@ -161,18 +198,54 @@ async def _process_job(job: dict[str, Any]) -> None:
     try:
         settings = get_settings()
         mode = str(job.get("mode") or "read")
+        job_kind = str(job.get("job_kind") or "").strip()
         local_cwd = str(job.get("local_cwd") or "")
         required = list(job.get("required_checks") or [])
         base_ref = str(job.get("base_ref") or "main")
         jira_key = str(job.get("jira_key") or "").strip() or None
         repo = str(job.get("repo") or "")
 
-        adopted = cpr.parse_pr_url(ask)
+        # Rumi skills pack: never enter write/PR/worktree path.
+        if job_kind == "rumi_agent":
+            mode = "read"
+            job = {**job, "mode": "read"}
+
+        adopted = cpr.parse_pr_url(ask) if job_kind != "rumi_agent" else None
         worktree_path = ""
         branch = ""
         pr_url = ""
         pr_number: int | None = None
         jira_key = cqa.extract_jira_key(ask, jira_key)
+        write_intent = cpr.is_write_intent(ask) if job_kind != "rumi_agent" else False
+        dead_pr_note = ""
+
+        if adopted and not local_cwd:
+            # Cloud path may still resolve lifecycle via --repo before writing.
+            try:
+                life = await asyncio.to_thread(
+                    cpr.pr_head_ref,
+                    int(adopted["pr_number"]),
+                    cwd=None,
+                    repo=str(adopted.get("full_repo") or repo),
+                )
+            except Exception:
+                life = None
+            if life is not None and not cpr.is_pr_open(life):
+                dead_url = str(life.get("pr_url") or adopted.get("pr_url") or "")
+                dead_state = str(life.get("state") or "CLOSED")
+                if not write_intent:
+                    msg = prog.msg_dead_pr_suggest(pr_url=dead_url, state=dead_state)
+                    jobs.update_job(job_id, status="completed", phase="completed", result_text=msg[:4000])
+                    _post(channel_id, thread_ts, msg)
+                    return
+                dead_pr_note = prog.msg_dead_pr_new(pr_url=dead_url, state=dead_state)
+                job = {
+                    **job,
+                    "dead_pr_replaced": True,
+                    "pr_url": "",
+                    "pr_number": None,
+                }
+                adopted = None
 
         if (mode == "write" or adopted) and not local_cwd:
             # Unmounted GitHub target — Cursor cloud agent fixes + opens the PR.
@@ -181,6 +254,8 @@ async def _process_job(job: dict[str, Any]) -> None:
             jobs.update_job(job_id, phase="running", status="running")
             reply = await _run_agent(job)
             reply = (reply or "").strip() or "Tempa finished the cloud fix pass."
+            if dead_pr_note:
+                reply = f"{dead_pr_note}\n\n{reply}".strip()
             if len(reply) > 12000:
                 reply = reply[:11900] + "\n\n_(truncated)_"
             jobs.update_job(job_id, status="completed", phase="completed", result_text=reply[:4000])
@@ -204,48 +279,111 @@ async def _process_job(job: dict[str, Any]) -> None:
                     cwd=local_cwd,
                     repo=repo,
                 )
-                branch = str(head.get("branch") or "")
-                if head.get("pr_url"):
-                    pr_url = str(head["pr_url"])
-                if not branch:
-                    raise RuntimeError(f"could not resolve head branch for PR #{pr_number}")
-                worktree_path = str(
-                    await asyncio.to_thread(
-                        wt.ensure_worktree,
-                        repo_cwd=local_cwd,
-                        branch=branch,
-                        job_id=job_id,
-                        starting_ref=branch,
-                    )
-                )
-            else:
-                binding = jobs.find_pr_binding(
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
-                    user_id=str(job.get("user_id") or ""),
-                    repo=repo,
-                )
-                if binding and binding.get("branch"):
-                    branch = str(binding["branch"])
-                    pr_url = str(binding.get("pr_url") or "")
-                    pr_number = binding.get("pr_number")
-                    if isinstance(pr_number, str) and pr_number.isdigit():
-                        pr_number = int(pr_number)
-                else:
+                if not cpr.is_pr_open(head):
+                    dead_url = str(head.get("pr_url") or pr_url)
+                    dead_state = str(head.get("state") or "CLOSED")
+                    if not write_intent:
+                        msg = prog.msg_dead_pr_suggest(pr_url=dead_url, state=dead_state)
+                        jobs.update_job(
+                            job_id, status="completed", phase="completed", result_text=msg[:4000]
+                        )
+                        _post(channel_id, thread_ts, msg)
+                        return
+                    # Write intent on a dead PR → fresh branch + new PR (do not adopt).
+                    dead_pr_note = prog.msg_dead_pr_new(pr_url=dead_url, state=dead_state)
+                    adopted = None
+                    pr_url = ""
+                    pr_number = None
                     branch = wt.branch_name(
                         user_id=str(job.get("user_id") or "user"),
                         thread_ts=thread_ts,
                         job_id=job_id,
                     )
-                worktree_path = str(
-                    await asyncio.to_thread(
-                        wt.ensure_worktree,
-                        repo_cwd=local_cwd,
-                        branch=branch,
-                        job_id=job_id,
-                        starting_ref=job.get("starting_ref"),
+                    worktree_path = str(
+                        await asyncio.to_thread(
+                            wt.ensure_worktree,
+                            repo_cwd=local_cwd,
+                            branch=branch,
+                            job_id=job_id,
+                            starting_ref=job.get("starting_ref") or base_ref,
+                        )
                     )
-                )
+                    job = {**job, "dead_pr_replaced": True}
+                else:
+                    branch = str(head.get("branch") or "")
+                    if head.get("pr_url"):
+                        pr_url = str(head["pr_url"])
+                    if not branch:
+                        raise RuntimeError(f"could not resolve head branch for PR #{pr_number}")
+                    worktree_path = str(
+                        await asyncio.to_thread(
+                            wt.ensure_worktree,
+                            repo_cwd=local_cwd,
+                            branch=branch,
+                            job_id=job_id,
+                            starting_ref=branch,
+                        )
+                    )
+            if not adopted:
+                if worktree_path:
+                    # Fresh branch already created after refusing a dead PR URL.
+                    pass
+                else:
+                    binding = jobs.find_pr_binding(
+                        channel_id=channel_id,
+                        thread_ts=thread_ts,
+                        user_id=str(job.get("user_id") or ""),
+                        repo=repo,
+                    )
+                    if binding and binding.get("branch"):
+                        bind_pr = binding.get("pr_number")
+                        if isinstance(bind_pr, str) and bind_pr.isdigit():
+                            bind_pr = int(bind_pr)
+                        bind_open = True
+                        if isinstance(bind_pr, int) and bind_pr > 0:
+                            try:
+                                life = await asyncio.to_thread(
+                                    cpr.pr_head_ref,
+                                    bind_pr,
+                                    cwd=local_cwd,
+                                    repo=repo,
+                                )
+                                bind_open = cpr.is_pr_open(life)
+                                if not bind_open:
+                                    dead_pr_note = dead_pr_note or prog.msg_dead_pr_new(
+                                        pr_url=str(life.get("pr_url") or binding.get("pr_url") or ""),
+                                        state=str(life.get("state") or "CLOSED"),
+                                    )
+                            except Exception:
+                                log.warning("could not check binding PR #%s lifecycle", bind_pr)
+                        if bind_open:
+                            branch = str(binding["branch"])
+                            pr_url = str(binding.get("pr_url") or "")
+                            pr_number = bind_pr if isinstance(bind_pr, int) else None
+                        else:
+                            branch = wt.branch_name(
+                                user_id=str(job.get("user_id") or "user"),
+                                thread_ts=thread_ts,
+                                job_id=job_id,
+                            )
+                            pr_url = ""
+                            pr_number = None
+                            job = {**job, "dead_pr_replaced": True}
+                    else:
+                        branch = wt.branch_name(
+                            user_id=str(job.get("user_id") or "user"),
+                            thread_ts=thread_ts,
+                            job_id=job_id,
+                        )
+                    worktree_path = str(
+                        await asyncio.to_thread(
+                            wt.ensure_worktree,
+                            repo_cwd=local_cwd,
+                            branch=branch,
+                            job_id=job_id,
+                            starting_ref=job.get("starting_ref"),
+                        )
+                    )
 
             jobs.update_job(
                 job_id,
@@ -275,8 +413,8 @@ async def _process_job(job: dict[str, Any]) -> None:
                 if failed_local:
                     reply = await _run_agent(job, ci_logs=test_out)
 
-            # Ensure PR exists for write path
-            if mode == "write" and not pr_number and not adopted:
+            # Ensure PR exists for write path (including dead-PR → fresh create).
+            if mode == "write" and not pr_number:
                 try:
                     await asyncio.to_thread(cpr.push_branch, cwd=worktree_path, branch=branch)
                     created = await asyncio.to_thread(
@@ -414,6 +552,8 @@ async def _process_job(job: dict[str, Any]) -> None:
                     return
 
             final = (reply or "").strip()
+            if dead_pr_note:
+                final = f"{dead_pr_note}\n\n{final}".strip()
             if pr_url:
                 final = (final + f"\n\nPR: {pr_url}").strip()
             if pr_number and last_ci.get("status") == "green":
@@ -444,6 +584,14 @@ async def _process_job(job: dict[str, Any]) -> None:
         job["worktree_path"] = local_cwd
         reply = await _run_agent(job)
         reply = (reply or "").strip() or "Tempa had nothing to add."
+        if job_kind == "rumi_agent":
+            from tempa.channels.slack.rumi_pack import format_rumi_user_reply
+
+            # Full answer to Slack (chunked by outbound). Store a long preview in the job row.
+            reply = format_rumi_user_reply(reply)
+            jobs.update_job(job_id, status="completed", phase="completed", result_text=reply[:32000])
+            _post(channel_id, thread_ts, reply)
+            return
         if len(reply) > 12000:
             reply = reply[:11900] + "\n\n_(truncated)_"
         jobs.update_job(job_id, status="completed", phase="completed", result_text=reply[:4000])
@@ -470,6 +618,22 @@ async def _process_job(job: dict[str, Any]) -> None:
             log.warning("cursor job %s timed out — silent background retry", job_id)
             jobs.update_job(job_id, status="running", phase="running", error=None)
             await _process_job({**job, "_timeout_retried": True})
+            return
+        # Cloud SDK sometimes fails without a concrete starting_ref — pin main and retry once.
+        if (
+            not job.get("_default_branch_retried")
+            and ("default branch" in err.lower() or "failed to determine repository" in err.lower())
+        ):
+            log.warning("cursor job %s default-branch fail — retry with starting_ref=main", job_id)
+            jobs.update_job(job_id, status="running", phase="running", error=None)
+            await _process_job(
+                {
+                    **job,
+                    "_default_branch_retried": True,
+                    "starting_ref": str(job.get("starting_ref") or job.get("base_ref") or "main"),
+                    "base_ref": str(job.get("base_ref") or "main"),
+                }
+            )
             return
         if _is_timeout_error(err):
             jobs.update_job(job_id, status="needs_help", phase="needs_help", error=err[:500])
@@ -577,14 +741,46 @@ def enqueue_from_slack(
     channel_id = str(context.get("slack_channel_id") or context.get("channel_id") or "")
     thread_ts = str(context.get("slack_thread_ts") or context.get("thread_ts") or "")
     user_id = str(context.get("slack_user_id") or context.get("user_id") or "")
+    from tempa.channels.slack.cursor_threads import coerce_cloud_when_mount_missing
+
+    cfg = coerce_cloud_when_mount_missing(dict(cfg), text) if str(cfg.get("job_kind") or "") != "rumi_agent" else dict(cfg)
     local_cwd = str(cfg.get("local_cwd") or "").strip()
     settings = get_settings()
 
-    write = cpr.is_write_intent(text) or bool(cpr.parse_pr_url(text))
-    repo = str(cfg.get("repo") or "").strip()
+    job_kind = str(cfg.get("job_kind") or "").strip()
+    # Rumi skills pack: always read-only agent run (never PR/worktree), even if ask says "create".
+    if job_kind == "rumi_agent":
+        write = False
+        local_cwd = local_cwd or "/repos/rumixtempa"
+        cfg["local_cwd"] = local_cwd
+        repo = ""
+    else:
+        write = cpr.is_write_intent(text) or bool(cpr.parse_pr_url(text))
+        repo = str(cfg.get("repo") or "").strip()
     # Cloud write when we have a GitHub repo but no mount (Cursor opens the PR).
     if write and not local_cwd and not repo:
         return {"error": "need a GitHub repo (or a mounted checkout) to raise a PR."}
+    # Always pin a concrete ref for cloud Cursor (SDK fails on missing default branch).
+    if write and not local_cwd and repo:
+        from tempa.qa.cursor import resolve_cloud_starting_ref
+
+        cfg["starting_ref"] = resolve_cloud_starting_ref(
+            repo, str(cfg.get("starting_ref") or cfg.get("base_ref") or "") or None
+        )
+        if not str(cfg.get("base_ref") or "").strip():
+            cfg["base_ref"] = cfg["starting_ref"]
+        # Prefer a local mirror when git+gh work — Cursor cloud often cannot see
+        # arbitrary GitHub repos even when Tempa's token can clone them.
+        if wt.git_available() and cpr.gh_available():
+            try:
+                mirror = wt.ensure_repo_mirror(
+                    repo, ref=str(cfg.get("starting_ref") or cfg.get("base_ref") or "main")
+                )
+                local_cwd = str(mirror)
+                cfg["local_cwd"] = local_cwd
+                log.info("cursor enqueue: using local mirror %s for %s", local_cwd, repo)
+            except Exception as exc:
+                log.warning("local mirror failed for %s — falling back to Cursor cloud: %s", repo, exc)
     if write and local_cwd:
         from pathlib import Path
         import os
@@ -627,9 +823,11 @@ def enqueue_from_slack(
             "user_id": user_id,
             "ask_text": ask_text,
             "mode": "write" if write else "read",
+            "job_kind": job_kind or None,
             "local_cwd": local_cwd,
             "repo": repo,
-            "starting_ref": cfg.get("starting_ref"),
+            "starting_ref": str(cfg.get("starting_ref") or cfg.get("base_ref") or "main").strip()
+            or "main",
             "base_ref": str(cfg.get("base_ref") or "main"),
             "required_checks": list(cfg.get("required_checks") or []),
             "jira_key": str(cfg.get("jira_key") or "").strip() or None,

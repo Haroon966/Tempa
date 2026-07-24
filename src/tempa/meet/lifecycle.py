@@ -79,9 +79,19 @@ class MeetingEndTracker:
     """Tracks human presence so Tempa does not exit while humans remain (bots ignored)."""
 
     alone_since: float | None = None
-    saw_multiple_participants: bool = False
+    humans_seen: bool = False
     alone_grace_seconds: float = 300.0
     last_human_count: int = -1
+    leave_reason: str | None = None
+
+    # Backward-compatible alias used by older call sites / tests.
+    @property
+    def saw_multiple_participants(self) -> bool:
+        return self.humans_seen
+
+    @saw_multiple_participants.setter
+    def saw_multiple_participants(self, value: bool) -> None:
+        self.humans_seen = bool(value)
 
 
 def calendar_start_timestamp(raw: str | None) -> float | None:
@@ -130,12 +140,17 @@ async def check_meeting_ended(
             tracker.alone_since = None
         return False
 
+    def _mark_leave(reason: str) -> bool:
+        if tracker is not None:
+            tracker.leave_reason = reason
+        return True
+
     for selector in _END_SELECTORS:
         try:
             count = await page.locator(selector).count()
             if count > 0:
                 _logger.info("GMEET: meeting-end signal detected: %s", selector)
-                return True
+                return _mark_leave("call_ended")
         except Exception as err:
             _logger.debug("GMEET: end selector check failed selector=%s err=%s", selector, err)
 
@@ -145,7 +160,7 @@ async def check_meeting_ended(
             url = page.url or ""
             if "meet.google.com" not in url:
                 _logger.info("GMEET: navigated away from Meet, treating as ended")
-                return True
+                return _mark_leave("call_ended")
     except Exception as err:
         _logger.debug("GMEET: leave button check failed err=%s", err)
 
@@ -159,7 +174,7 @@ async def check_meeting_ended(
     if human_count > 0:
         if tracker is not None:
             tracker.alone_since = None
-            tracker.saw_multiple_participants = True
+            tracker.humans_seen = True
         return False
 
     # No humans left — only Tempa and/or other meeting bots remain.
@@ -183,6 +198,6 @@ async def check_meeting_ended(
             alone_for,
             tracker.alone_grace_seconds,
         )
-        return True
+        return _mark_leave("no_humans")
 
     return False

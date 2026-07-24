@@ -16,7 +16,7 @@ const LIVE_POLL_MS = 5000
 
 function isLiveSession(m: ActiveMeetingLive): boolean {
   const status = m.status ?? ""
-  return Boolean(m.meeting_id) && ["queued", "running", "finalizing"].includes(status)
+  return Boolean(m.meeting_id) && ["queued", "running", "finalizing", "waiting_to_record", "interrupted", "recording"].includes(status)
 }
 
 export function LiveMeetingTab() {
@@ -145,8 +145,11 @@ export function LiveMeetingTab() {
   const statusHint = (status?: string) => {
     if (status === "scheduled") return "In the join window — Tempa will join automatically."
     if (status === "queued") return "Join queued — starting soon."
-    if (status === "completed") return "Last session ended — Tempa may re-join while this event is active."
-    if (status === "failed") return "Last join attempt failed — will retry if the event is still active."
+    if (status === "waiting_to_record") return "In call — waiting for calendar start or first human before recording."
+    if (status === "interrupted") return "Prior session interrupted — finalizing artifacts."
+    if (status === "completed") return "Speech captured for this event — Tempa will not re-join."
+    if (status === "empty") return "Joined an empty room — Tempa will not keep re-joining this event."
+    if (status === "failed") return "Last join attempt failed — will retry only if the event still needs coverage."
     return null
   }
 

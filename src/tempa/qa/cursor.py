@@ -4,14 +4,55 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from tempa.settings import get_settings
 
 log = logging.getLogger(__name__)
 
+_GITHUB_SLUG_RE = re.compile(
+    r"(?:https?://github\.com/)?(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?/?$",
+    re.I,
+)
+
 
 def cursor_configured() -> bool:
     return bool(get_settings().cursor_api_key.strip())
+
+
+def _repo_slug(repo: str) -> str:
+    raw = (repo or "").strip()
+    if not raw:
+        return ""
+    m = _GITHUB_SLUG_RE.match(raw.rstrip("/"))
+    if m:
+        return f"{m.group('owner')}/{m.group('repo')}"
+    # Already owner/repo (or close enough).
+    parts = raw.replace("https://github.com/", "").strip("/").split("/")
+    if len(parts) >= 2:
+        return f"{parts[0]}/{parts[1].removesuffix('.git')}"
+    return raw
+
+
+def resolve_cloud_starting_ref(repo: str, starting_ref: str | None = None) -> str:
+    """Concrete ref for Cursor cloud — never leave unset (SDK fails without it)."""
+    ref = (starting_ref or "").strip()
+    if ref:
+        return ref
+    slug = _repo_slug(repo)
+    if slug and "/" in slug:
+        try:
+            from tempa.qa.github.auth import get_github_token
+            from tempa.qa.github.client import gh_get
+
+            token = get_github_token(slug)
+            if token:
+                branch = str(gh_get(f"/repos/{slug}", token).get("default_branch") or "").strip()
+                if branch:
+                    return branch
+        except Exception:
+            log.warning("could not resolve default branch for %s — using main", slug)
+    return "main"
 
 
 def _prompt_sync(
@@ -48,6 +89,7 @@ def _prompt_sync(
         )
     elif repo:
         url = repo if repo.startswith("http") else f"https://github.com/{repo}"
+        ref = resolve_cloud_starting_ref(repo, starting_ref)
         options = AgentOptions(
             api_key=api_key,
             model=model,
@@ -55,7 +97,7 @@ def _prompt_sync(
                 repos=[
                     CloudRepository(
                         url=url,
-                        starting_ref=starting_ref or None,
+                        starting_ref=ref,
                     )
                 ],
                 auto_create_pr=bool(auto_create_pr),

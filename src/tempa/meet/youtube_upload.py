@@ -10,7 +10,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-from tempa.channels.calendar.client import YOUTUBE_UPLOAD_SCOPE, google_oauth_scopes
+from tempa.channels.calendar.client import YOUTUBE_MANAGE_SCOPES, google_oauth_scopes
 from tempa.meet.media import resolve_playable_video_path
 from tempa.settings import get_settings
 
@@ -44,9 +44,9 @@ def load_youtube_credentials() -> Credentials | None:
         return None
 
     token_data = json.loads(token_json)
-    granted = list(token_data.get("scopes") or [])
-    if YOUTUBE_UPLOAD_SCOPE not in granted:
-        logger.warning("Google token missing youtube.upload scope — reconnect Google in dashboard")
+    granted = set(token_data.get("scopes") or [])
+    if not (granted & YOUTUBE_MANAGE_SCOPES):
+        logger.warning("Google token missing YouTube manage scope — reconnect Google in dashboard")
         return None
 
     creds = Credentials.from_authorized_user_info(token_data)
@@ -94,12 +94,33 @@ def _existing_youtube_id(meeting_id: str) -> str | None:
 _UNCONFIRMED_UPLOAD_STATUS = frozenset({"failed", "rejected", "deleted"})
 
 
+def set_youtube_thumbnail(video_id: str, thumb_path: Path, *, youtube: Any | None = None) -> bool:
+    """Attach a custom poster to an uploaded video (needs youtube.force-ssl)."""
+    if not video_id or not thumb_path.exists() or thumb_path.stat().st_size < 1000:
+        return False
+    client = youtube
+    if client is None:
+        creds = load_youtube_credentials()
+        if not creds:
+            return False
+        client = build("youtube", "v3", credentials=creds, cache_discovery=False)
+    try:
+        media = MediaFileUpload(str(thumb_path), mimetype="image/jpeg", resumable=False)
+        client.thumbnails().set(videoId=video_id, media_body=media).execute()
+        logger.info("YouTube thumbnail set for %s", video_id)
+        return True
+    except Exception:
+        logger.warning("YouTube thumbnail set failed for %s", video_id, exc_info=True)
+        return False
+
+
 def upload_meeting_video(
     video_path: Path,
     *,
     title: str,
     description: str,
     privacy: str,
+    thumbnail_path: Path | None = None,
 ) -> dict[str, Any]:
     creds = load_youtube_credentials()
     if not creds:
@@ -130,11 +151,16 @@ def upload_meeting_video(
     upload_status = str((response.get("status") or {}).get("uploadStatus") or "").lower()
     confirmed = upload_status not in _UNCONFIRMED_UPLOAD_STATUS
 
+    thumb_ok = False
+    if thumbnail_path is not None:
+        thumb_ok = set_youtube_thumbnail(video_id, thumbnail_path, youtube=youtube)
+
     return {
         "youtube_video_id": video_id,
         "youtube_url": f"https://youtu.be/{video_id}",
         "status": upload_status or "uploaded",
         "confirmed": confirmed,
+        "thumbnail_set": thumb_ok,
     }
 
 
@@ -144,10 +170,25 @@ def maybe_upload_meeting_to_youtube(
     *,
     meet_link: str = "",
     audio_path_hint: str = "",
+    segment_count: int | None = None,
+    humans_seen: bool = False,
 ) -> dict[str, Any] | None:
+    from tempa.meet.quality import meeting_is_uploadable
+
     settings = get_settings()
     if not settings.meet_youtube_upload_enabled:
         return None
+
+    if segment_count is not None and not meeting_is_uploadable(
+        segment_count=segment_count,
+        humans_seen=humans_seen,
+    ):
+        logger.info(
+            "YouTube upload skipped for %s — not uploadable (segments=%s)",
+            meeting_id,
+            segment_count,
+        )
+        return {"status": "skipped_empty", "confirmed": False}
 
     existing = _existing_youtube_id(meeting_id)
     if existing:
@@ -157,10 +198,21 @@ def maybe_upload_meeting_to_youtube(
             "status": "skipped",
         }
 
+    # When segment_count was not provided (backfill), require playable video then
+    # derive speech from transcript — empty transcripts never upload.
     video_path = resolve_playable_video_path(meeting_id, audio_path_hint=audio_path_hint)
     if not video_path or not video_path.exists() or video_path.stat().st_size < 50_000:
         logger.info("YouTube upload skipped for %s — no playable video", meeting_id)
         return None
+
+    if segment_count is None:
+        segment_count = _segment_count_on_disk(meeting_id)
+        if not meeting_is_uploadable(segment_count=segment_count, humans_seen=humans_seen):
+            logger.info(
+                "YouTube upload skipped for %s — transcript has no speech segments",
+                meeting_id,
+            )
+            return {"status": "skipped_empty", "confirmed": False}
 
     if not load_youtube_credentials():
         logger.warning("YouTube upload skipped for %s — no credentials", meeting_id)
@@ -178,15 +230,32 @@ def maybe_upload_meeting_to_youtube(
     description = "\n".join(description_parts)
 
     try:
+        from tempa.meet.media import ensure_meeting_thumbnail
+
+        thumb_path = ensure_meeting_thumbnail(meeting_id, video_path=video_path)
         return upload_meeting_video(
             video_path,
             title=title or f"Meeting {meeting_id[:8]}",
             description=description,
             privacy=privacy,
+            thumbnail_path=thumb_path,
         )
     except Exception as exc:
         logger.exception("YouTube upload failed for %s", meeting_id)
         return {"status": "error", "error": str(exc)}
+
+
+def _segment_count_on_disk(meeting_id: str) -> int:
+    from tempa.meet.archive import _parse_transcript_jsonl
+    from tempa.meet.quality import count_transcript_segments
+
+    settings = get_settings()
+    safe_id = meeting_id.replace("/", "_").replace("\\", "_")
+    path = settings.meetings_dir / safe_id / "transcripts" / f"{safe_id}.jsonl"
+    if not path.exists():
+        return 0
+    _, segments = _parse_transcript_jsonl(path)
+    return count_transcript_segments(segments)
 
 
 def _meeting_ids_on_disk() -> list[str]:
@@ -274,6 +343,10 @@ async def backfill_youtube_uploads() -> dict[str, Any]:
         )
 
         # Confirmed = freshly stored on YouTube; skipped = already there. Both mean local is safe to drop.
+        # skipped_empty must keep local media.
+        if yt.get("status") == "skipped_empty":
+            already += 1
+            continue
         if yt.get("confirmed") or yt.get("status") == "skipped":
             await asyncio.to_thread(delete_local_meeting_video, meeting_id)
             if yt.get("status") == "skipped":

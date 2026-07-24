@@ -39,7 +39,7 @@ async def test_poller_skips_already_triggered_keys():
 
     with patch("tempa.channels.calendar.poller.find_triggerable_meet_events", return_value=[ev]):
         with patch("tempa.meet.job_store.has_active_job_for_url", return_value=False):
-            with patch("tempa.meet.job_store.should_retry_calendar_join", return_value=False):
+            with patch("tempa.meet.job_store.event_needs_coverage", return_value=False):
                 result = await poll_once(state, on_trigger)
 
     assert result == []
@@ -59,9 +59,10 @@ async def test_poller_does_not_persist_key_when_join_not_scheduled():
 
     with patch("tempa.channels.calendar.poller.find_triggerable_meet_events", return_value=[ev]):
         with patch("tempa.meet.job_store.has_active_job_for_url", return_value=False):
-            with patch("tempa.channels.calendar.poller.ingest_calendar_event"):
-                with patch("tempa.core.events.event_bus.publish_json", new_callable=AsyncMock):
-                    result = await poll_once(state, on_trigger)
+            with patch("tempa.meet.job_store.event_needs_coverage", return_value=True):
+                with patch("tempa.channels.calendar.poller.ingest_calendar_event"):
+                    with patch("tempa.core.events.event_bus.publish_json", new_callable=AsyncMock):
+                        result = await poll_once(state, on_trigger)
 
     assert len(calls) == 1
     assert result == []
@@ -81,7 +82,7 @@ async def test_poller_retries_after_terminal_job_in_same_window():
 
     with patch("tempa.channels.calendar.poller.find_triggerable_meet_events", return_value=[ev]):
         with patch("tempa.meet.job_store.has_active_job_for_url", return_value=False):
-            with patch("tempa.meet.job_store.should_retry_calendar_join", return_value=True):
+            with patch("tempa.meet.job_store.event_needs_coverage", return_value=True):
                 with patch("tempa.channels.calendar.poller.ingest_calendar_event"):
                     with patch("tempa.core.events.event_bus.publish_json", new_callable=AsyncMock):
                         result = await poll_once(state, on_trigger)
@@ -110,7 +111,10 @@ async def test_poller_triggers_once_and_persists_key(tmp_path, monkeypatch):
 
     with patch("tempa.channels.calendar.poller.find_triggerable_meet_events", return_value=[ev]):
         with patch("tempa.meet.job_store.has_active_job_for_url", return_value=False):
-            with patch("tempa.meet.job_store.should_retry_calendar_join", return_value=False):
+            with patch(
+                "tempa.meet.job_store.event_needs_coverage",
+                side_effect=[True, False],
+            ):
                 with patch("tempa.channels.calendar.poller.ingest_calendar_event"):
                     with patch("tempa.core.events.event_bus.publish_json", new_callable=AsyncMock):
                         first = await poll_once(state, on_trigger)

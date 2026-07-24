@@ -114,6 +114,88 @@ def _latest_pcm_path(meeting_dir: Path) -> Path | None:
     return pcm_files[0] if pcm_files else None
 
 
+def _last_segment_timestamp(segments: list[dict[str, Any]]) -> str | None:
+    for row in reversed(segments):
+        ts = row.get("timestamp")
+        if ts:
+            return str(ts)
+    return None
+
+
+def _ffprobe_duration_seconds(path: Path | None) -> float | None:
+    if not path or not path.exists() or path.stat().st_size < 1000:
+        return None
+    try:
+        import json
+        import subprocess
+
+        out = subprocess.check_output(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        data = json.loads(out)
+        dur = float((data.get("format") or {}).get("duration") or 0)
+        return dur if dur > 0 else None
+    except Exception:
+        return None
+
+
+def _resolve_meeting_timeline(
+    *,
+    config_started_at: str | None,
+    recording_started_at: str | None,
+    recording_ended_at: str | None,
+    segments: list[dict[str, Any]],
+    meeting_id: str,
+    audio_path: Path | None,
+) -> tuple[str, str]:
+    """Prefer recorder timestamps; never invent end from finalize wall-clock first."""
+    now = datetime.now(timezone.utc).isoformat()
+    started = recording_started_at or config_started_at or now
+    if recording_ended_at:
+        return started, recording_ended_at
+
+    last_seg = _last_segment_timestamp(segments)
+    if last_seg:
+        return started, last_seg
+
+    settings = get_settings()
+    safe_id = meeting_id.replace("/", "_").replace("\\", "_")
+    meeting_dir = settings.meetings_dir / safe_id
+    video = meeting_dir / "video" / f"{safe_id}.mp4"
+    wav = None
+    if audio_path and audio_path.suffix.lower() == ".wav":
+        wav = audio_path
+    elif audio_path:
+        candidate = audio_path.with_suffix(".wav")
+        wav = candidate if candidate.exists() else None
+    if wav is None:
+        wav_candidate = meeting_dir / "audio" / f"{safe_id}.wav"
+        wav = wav_candidate if wav_candidate.exists() else None
+
+    dur = _ffprobe_duration_seconds(video if video.exists() else None) or _ffprobe_duration_seconds(wav)
+    if dur and started:
+        try:
+            start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
+            end_dt = start_dt.timestamp() + dur
+            return started, datetime.fromtimestamp(end_dt, tz=timezone.utc).isoformat()
+        except Exception:
+            pass
+    return started, now
+
+
 async def _try_finalize_partial_meeting(
     config: WorkerConfig,
     *,
@@ -121,15 +203,18 @@ async def _try_finalize_partial_meeting(
     meeting_dir: Path,
     transcript_path: Path,
     notes_path: Path,
-) -> bool:
+    leave_reason: str = "error",
+    humans_seen: bool = False,
+) -> dict[str, Any] | None:
     """Best-effort archive when a meeting job fails but artifacts exist on disk."""
     from tempa.meet.archive import _parse_transcript_jsonl
 
     audio_path = _latest_pcm_path(meeting_dir)
     _, segments = _parse_transcript_jsonl(transcript_path)
     has_audio = audio_path is not None and audio_path.exists()
-    if not segments and not has_audio:
-        return False
+    has_video = (meeting_dir / "video").exists() and any((meeting_dir / "video").glob("*"))
+    if not segments and not has_audio and not has_video:
+        return None
 
     if not segments and has_audio:
         try:
@@ -140,7 +225,7 @@ async def _try_finalize_partial_meeting(
             logger.exception("Post-failure audio transcription failed for %s", config.meeting_id)
 
     try:
-        await _finalize_meeting(
+        return await _finalize_meeting(
             config,
             title=title,
             transcript_path=transcript_path if transcript_path.exists() else None,
@@ -148,11 +233,12 @@ async def _try_finalize_partial_meeting(
             live_notes_path=notes_path if notes_path.exists() else None,
             notify_number=None,
             send_notifications=False,
+            humans_seen=humans_seen,
+            leave_reason=leave_reason,
         )
-        return True
     except Exception:
         logger.exception("Post-failure finalize failed for %s", config.meeting_id)
-        return False
+        return None
 
 
 async def _finalize_meeting(
@@ -164,7 +250,13 @@ async def _finalize_meeting(
     live_notes_path: Path | None,
     notify_number: str | None,
     send_notifications: bool = True,
+    humans_seen: bool = False,
+    leave_reason: str = "call_ended",
+    recording_started_at: str | None = None,
+    recording_ended_at: str | None = None,
 ) -> dict[str, Any]:
+    from tempa.meet.quality import meeting_is_uploadable, quality_from_parts
+
     meeting_id = config.meeting_id
     meet_url = config.meet_url
     transcript_text, segments = _parse_transcript_jsonl(transcript_path) if transcript_path else ("", [])
@@ -173,9 +265,17 @@ async def _finalize_meeting(
         if live_notes:
             transcript_text = f"{transcript_text}\n\n--- Live Notes ---\n{live_notes}"
 
+    quality = quality_from_parts(
+        humans_seen=humans_seen,
+        segments=segments,
+        leave_reason=leave_reason,
+        recording_started_at=recording_started_at,
+        recording_ended_at=recording_ended_at,
+    )
+
     minutes: dict[str, Any] = {}
     minutes_status = "none"
-    if transcript_text.strip():
+    if transcript_text.strip() and quality.uploadable:
         try:
             minutes = await generate_minutes_from_transcript(transcript_text, source_name="transcript.txt")
             minutes_status = "complete"
@@ -188,12 +288,17 @@ async def _finalize_meeting(
     if audio_path and audio_path.exists():
         meeting_dir = audio_path.parent.parent if audio_path.parent.name == "audio" else audio_path.parent
         wav_path = resolve_audio_path(meeting_dir, meeting_id)
-    ended_at = datetime.now(timezone.utc).isoformat()
-    started_at = config.started_at or ended_at
+
+    started_at, ended_at = _resolve_meeting_timeline(
+        config_started_at=config.started_at,
+        recording_started_at=recording_started_at or quality.recording_started_at,
+        recording_ended_at=recording_ended_at or quality.recording_ended_at,
+        segments=segments,
+        meeting_id=meeting_id,
+        audio_path=wav_path or audio_path,
+    )
 
     followups: list[dict[str, Any]] = []
-    # Attendee-wide email/WhatsApp follow-up drafts are disabled — notes go to
-    # organizer + owner only via notify_meeting_completed.
 
     record: dict[str, Any] = {
         "id": meeting_id,
@@ -211,6 +316,7 @@ async def _finalize_meeting(
         "minutes": minutes,
         "minutes_status": minutes_status,
         "followups": followups,
+        **quality.as_dict(),
     }
 
     safe_id = meeting_id.replace("/", "_").replace("\\", "_")
@@ -229,7 +335,10 @@ async def _finalize_meeting(
     from tempa.settings import get_settings
 
     yt: dict[str, Any] | None = None
-    if get_settings().meet_youtube_upload_enabled:
+    if get_settings().meet_youtube_upload_enabled and meeting_is_uploadable(
+        segment_count=quality.segment_count,
+        humans_seen=quality.humans_seen,
+    ):
         from tempa.meet.youtube_upload import maybe_upload_meeting_to_youtube
 
         yt = await asyncio.to_thread(
@@ -238,26 +347,30 @@ async def _finalize_meeting(
             title or f"Meeting {meeting_id[:8]}",
             meet_link=meet_url,
             audio_path_hint=str(audio_path or ""),
+            segment_count=quality.segment_count,
+            humans_seen=quality.humans_seen,
         )
         if yt and yt.get("youtube_video_id"):
             record["youtube_video_id"] = yt["youtube_video_id"]
             record["youtube_url"] = yt.get("youtube_url") or f"https://youtu.be/{yt['youtube_video_id']}"
+    elif get_settings().meet_youtube_upload_enabled:
+        logger.info(
+            "YouTube upload skipped for %s — not uploadable (segments=%s)",
+            meeting_id,
+            quality.segment_count,
+        )
 
     write_meeting_artifacts(meeting_dir, record, followups)
 
     await save_meeting_archive(record)
 
-    # Only drop the local copy once the YouTube id is persisted above, so a crash
-    # never leaves us with a deleted recording and no link on record.
     if yt and yt.get("confirmed") and record.get("youtube_video_id"):
         from tempa.meet.media import delete_local_meeting_video
 
         await asyncio.to_thread(delete_local_meeting_video, meeting_id)
 
-    if transcript_text.strip():
+    if transcript_text.strip() and quality.uploadable:
         await index_meeting_to_rag(record, transcript_text)
-
-    pending_ids: list[str] = []
 
     from tempa.meet.notify import notify_meeting_completed
 
@@ -265,15 +378,25 @@ async def _finalize_meeting(
     if live_notes_path and live_notes_path.exists():
         notes_excerpt = live_notes_path.read_text(encoding="utf-8")[:2500]
 
-    if send_notifications:
+    if send_notifications and quality.uploadable:
         await notify_meeting_completed(
-            record, minutes, notify_number=notify_number, live_notes_excerpt=notes_excerpt
+            record,
+            minutes,
+            notify_number=notify_number,
+            live_notes_excerpt=notes_excerpt,
         )
 
+    _set_status(
+        meeting_id,
+        status=quality.terminal_status,
+        **quality.as_dict(),
+        started_at=started_at,
+        ended_at=ended_at,
+    )
     await event_bus.publish_json(
         "meet",
-        "completed",
-        {"meeting_id": meeting_id, "pending_action_ids": pending_ids},
+        quality.terminal_status,
+        {"meeting_id": meeting_id, "uploadable": quality.uploadable},
     )
     return record
 
@@ -317,9 +440,11 @@ async def _run_meeting_job(
         logger.debug("Copilot loop not started", exc_info=True)
 
     _set_status(config.meeting_id, status="running", meet_url=config.meet_url, title=title)
+    session_meta: dict[str, Any] = {}
     try:
         stt = create_stt_adapter("groq")
-        await run_meeting_worker_with_session(config, stt_adapter=stt, title=title)
+        session_meta = await run_meeting_worker_with_session(config, stt_adapter=stt, title=title)
+        audio_path = _latest_pcm_path(meeting_dir) or audio_path
         _set_status(config.meeting_id, status="finalizing")
         await _finalize_meeting(
             config,
@@ -328,8 +453,11 @@ async def _run_meeting_job(
             audio_path=audio_path,
             live_notes_path=notes_path,
             notify_number=notify_number or load_default_whatsapp_number() or None,
+            humans_seen=bool(session_meta.get("humans_seen")),
+            leave_reason=str(session_meta.get("leave_reason") or "call_ended"),
+            recording_started_at=session_meta.get("recording_started_at"),
+            recording_ended_at=session_meta.get("recording_ended_at"),
         )
-        _set_status(config.meeting_id, status="completed")
     except Exception as exc:
         logger.exception("Meeting job failed: %s", config.meeting_id)
         repaired = await _try_finalize_partial_meeting(
@@ -338,11 +466,13 @@ async def _run_meeting_job(
             meeting_dir=meeting_dir,
             transcript_path=transcript_path,
             notes_path=notes_path,
+            leave_reason="error",
+            humans_seen=bool(session_meta.get("humans_seen")),
         )
-        if repaired:
-            _set_status(config.meeting_id, status="completed", error=f"recovered after: {exc}")
+        if repaired is not None:
+            _set_status(config.meeting_id, error=f"recovered after: {exc}")
         else:
-            _set_status(config.meeting_id, status="failed", error=str(exc))
+            _set_status(config.meeting_id, status="failed", error=str(exc), leave_reason="error")
             try:
                 from tempa.channels.whatsapp.action_state import record_action
 
@@ -378,11 +508,16 @@ async def run_meeting_worker_with_session(
     *,
     stt_adapter: Any = None,
     title: str = "",
-) -> None:
+) -> dict[str, Any]:
     """Run meeting worker and register Playwright page for live chat/copilot."""
     from tempa.meet.admission import wait_for_meet_admission
     from tempa.meet.joiner import join_meet
-    from tempa.meet.lifecycle import MeetingEndTracker, calendar_start_timestamp, check_meeting_ended
+    from tempa.meet.lifecycle import (
+        MeetingEndTracker,
+        calendar_start_timestamp,
+        check_meeting_ended,
+        get_human_participant_count,
+    )
     from tempa.meet.pipeline import setup_pipeline
     from tempa.meet.recording_ui import show_recording_notice
     from tempa.meet.session_registry import register_session, unregister_session
@@ -490,6 +625,7 @@ async def run_meeting_worker_with_session(
     )
 
     system_recorder: SystemMeetingRecorder | None = None
+    recording_started = False
     if system_capture:
         slot_display = (config.join.display or os.environ.get("DISPLAY", ":99")).strip() or ":99"
         if not slot_display.startswith(":"):
@@ -509,7 +645,6 @@ async def run_meeting_worker_with_session(
                 await pipeline.stt_adapter.send_audio(chunk)
 
         system_recorder.on_pcm_chunk = _on_system_pcm
-        await system_recorder.start()
 
     audio_monitor: asyncio.Task | None = None
     if browser_audio:
@@ -519,36 +654,68 @@ async def run_meeting_worker_with_session(
 
     end_tracker = MeetingEndTracker(alone_grace_seconds=float(settings.meet_alone_grace_seconds))
     event_start_ts = calendar_start_timestamp(config.calendar_event_start)
+    event_end_ts = calendar_start_timestamp(config.calendar_event_end)
     start_time = time.time()
+    rec_result: dict[str, Any] = {}
+    _set_status(config.meeting_id, status="waiting_to_record")
+
+    async def _should_start_recording() -> bool:
+        if recording_started:
+            return False
+        humans = await get_human_participant_count(session.page)
+        if humans > 0:
+            end_tracker.humans_seen = True
+            return True
+        if event_start_ts is not None and time.time() >= event_start_ts:
+            return True
+        if event_start_ts is None:
+            # No calendar start — record once admitted.
+            return True
+        return False
+
     try:
         while True:
-            await asyncio.sleep(30)
+            if system_recorder and not recording_started and await _should_start_recording():
+                await system_recorder.start()
+                recording_started = True
+                _set_status(config.meeting_id, status="recording")
+                logger.info("GMEET: recording started for %s", config.meeting_id)
+
+            await asyncio.sleep(5 if not recording_started else 30)
             if config.join.virtual_camera_path:
                 from tempa.meet.joiner import ensure_camera_enabled
 
                 await ensure_camera_enabled(session.page, retries=1)
+
             if await check_meeting_ended(
                 session.page, tracker=end_tracker, event_start_ts=event_start_ts
             ):
                 break
+
             elapsed = time.time() - start_time
-            from tempa.meet.lifecycle import MEET_HARD_MAX_SECONDS, get_human_participant_count
+            from tempa.meet.lifecycle import MEET_HARD_MAX_SECONDS
 
             if elapsed >= MEET_HARD_MAX_SECONDS:
                 logger.info("GMEET: hard max duration reached (%.0fs)", elapsed)
+                end_tracker.leave_reason = end_tracker.leave_reason or "hard_max"
                 break
+            if event_end_ts is not None and time.time() >= event_end_ts and not end_tracker.humans_seen:
+                # Calendar ended with no humans and (possibly) no recording — leave empty.
+                if not recording_started:
+                    end_tracker.leave_reason = "never_recorded"
+                    break
             if elapsed >= config.duration_seconds:
-                # Soft calendar duration: stay if humans are still present.
                 humans = await get_human_participant_count(session.page)
                 if humans <= 0:
                     logger.info("GMEET: calendar duration reached and no humans left")
+                    end_tracker.leave_reason = end_tracker.leave_reason or "calendar_duration"
                     break
     finally:
         if audio_monitor:
             audio_monitor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await audio_monitor
-        if system_recorder:
+        if system_recorder and recording_started:
             rec_result = await system_recorder.stop()
             pcm_path = system_recorder.pcm_path
             if pcm_path and pcm_path.exists():
@@ -563,6 +730,23 @@ async def run_meeting_worker_with_session(
             stop_youtube_player(av_player)
         unregister_session(config.meeting_id)
         await session.close()
+
+    if not end_tracker.leave_reason:
+        end_tracker.leave_reason = "call_ended" if recording_started else "never_recorded"
+
+    return {
+        "humans_seen": end_tracker.humans_seen,
+        "leave_reason": end_tracker.leave_reason,
+        "recording_started_at": (
+            (system_recorder.recording_started_at if system_recorder else None)
+            or rec_result.get("recording_started_at")
+        ),
+        "recording_ended_at": (
+            (system_recorder.recording_ended_at if system_recorder else None)
+            or rec_result.get("recording_ended_at")
+        ),
+        "recorded": recording_started,
+    }
 
 
 def run_meeting_job_sync(
@@ -740,8 +924,10 @@ def get_meeting_jobs() -> dict[str, dict[str, Any]]:
 
 
 def get_active_meeting_ids() -> list[str]:
+    from tempa.meet.quality import ACTIVE_JOB_STATUSES
+
     jobs = get_meeting_jobs()
-    return [mid for mid, row in jobs.items() if row.get("status") in ("queued", "running", "finalizing")]
+    return [mid for mid, row in jobs.items() if row.get("status") in ACTIVE_JOB_STATUSES]
 
 
 def get_live_meeting_views() -> list[dict[str, Any]]:
@@ -842,4 +1028,8 @@ async def repair_meeting_finalize(
         live_notes_path=notes_path if notes_path.exists() else None,
         notify_number=number,
         send_notifications=send_notifications,
+        humans_seen=bool(meta.get("humans_seen")),
+        leave_reason=str(meta.get("leave_reason") or "worker_interrupted"),
+        recording_started_at=meta.get("recording_started_at"),
+        recording_ended_at=meta.get("recording_ended_at"),
     )

@@ -54,7 +54,6 @@ https://github.com/Haroon966/Tempa/raw/main/animated_tempa.mp4
 <ul>
 <li>🧠 <strong>Unified RAG</strong> — one ChromaDB store, no memory silos</li>
 <li>🤖 <strong>Varys coordinator</strong> — Claude Code CLI brain + optional LangGraph specialists</li>
-<li>🧩 <strong>Extension</strong> — lightweight companion for status &amp; approvals (dashboard is primary)</li>
 <li>🔒 <strong>Local-first</strong> — your data stays on your machine</li>
 </ul>
 </td>
@@ -73,7 +72,6 @@ Everything funnels through the **Tempa daemon** (`8787`). Channels ingest into u
 flowchart TB
     subgraph clients [Clients]
         Dashboard[Dashboard]
-        Extension[Extension]
         SlackIn[Slack DMs and mentions]
         WhatsAppIn[WhatsApp webhook]
     end
@@ -104,7 +102,6 @@ flowchart TB
     end
 
     Dashboard --> Daemon
-    Extension --> Daemon
     SlackIn --> SlackOut --> Daemon
     WhatsAppIn --> WhatsAppBridge --> Daemon
 
@@ -279,7 +276,7 @@ tempa vault-sync      # index vault into Chroma RAG
 <pre><code>cp .env.example .env</code></pre>
 <p><strong>②</strong> Launch stack</p>
 <pre><code>docker compose up -d</code></pre>
-<p><strong>③</strong> Complete setup at <strong>Setup</strong> (dashboard is the primary UI; extension is optional)</p>
+<p><strong>③</strong> Complete setup at <strong>Setup</strong> (dashboard is the primary UI)</p>
 </td>
 <td width="50%" valign="top">
 <h3>🛠 Native</h3>
