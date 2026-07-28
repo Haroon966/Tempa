@@ -202,6 +202,16 @@ def _jira_connection_status(*, refresh: bool = False) -> dict[str, Any]:
     return _cache_set("jira", jira_connection_status())
 
 
+def _coolify_connection_status(*, refresh: bool = False) -> dict[str, Any]:
+    if not refresh:
+        cached = _cache_get("coolify", _CACHE_TTL_CHECKS)
+        if cached is not None:
+            return cached
+    from tempa.channels.coolify.status import coolify_connection_status
+
+    return _cache_set("coolify", coolify_connection_status())
+
+
 async def _whatsapp_connection_detail(*, refresh: bool = False) -> dict[str, Any]:
     if not refresh:
         cached = _cache_get("whatsapp_detail", _CACHE_TTL_CHECKS)
@@ -450,6 +460,47 @@ def _jira_component(jira: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _coolify_component(coolify: dict[str, Any]) -> dict[str, Any]:
+    connected = coolify.get("connected", False)
+    configured = coolify.get("configured", False)
+    enabled = coolify.get("enabled", False)
+    if connected and enabled:
+        return {
+            "id": "coolify",
+            "name": "Coolify",
+            "category": "integrations",
+            "status": "healthy",
+            "message": coolify.get("detail") or "Coolify connected",
+            "action": None,
+        }
+    if connected and not enabled:
+        return {
+            "id": "coolify",
+            "name": "Coolify",
+            "category": "integrations",
+            "status": "degraded",
+            "message": "Connected — set COOLIFY_ENABLED=true to deploy from Slack",
+            "action": "/connections",
+        }
+    if configured:
+        return {
+            "id": "coolify",
+            "name": "Coolify",
+            "category": "integrations",
+            "status": "degraded",
+            "message": coolify.get("detail") or "Coolify credentials saved — connection test failed",
+            "action": "/connections",
+        }
+    return {
+        "id": "coolify",
+        "name": "Coolify",
+        "category": "integrations",
+        "status": "unhealthy",
+        "message": "Optional — connect Coolify on Connections for Slack deploys",
+        "action": "/connections",
+    }
+
+
 def _component_checks(
     *,
     groq: dict[str, Any],
@@ -458,6 +509,7 @@ def _component_checks(
     whatsapp: dict[str, Any],
     slack: dict[str, Any],
     jira: dict[str, Any],
+    coolify: dict[str, Any] | None = None,
     rag_connected: bool = True,
     rag_error: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -523,6 +575,7 @@ def _component_checks(
         _whatsapp_bridge_component(bridge, whatsapp),
         _slack_component(slack, groq),
         _jira_component(jira),
+        _coolify_component(coolify or {}),
         {
             "id": "whatsapp_autoreply",
             "name": "WhatsApp Auto-Reply",
@@ -761,6 +814,7 @@ async def _build_dashboard_payload_uncached(*, refresh: bool = False) -> dict[st
         wa_detail,
         slack_detail,
         jira_detail,
+        coolify_detail,
         upcoming_meets,
         triggerable,
         meetings,
@@ -773,6 +827,7 @@ async def _build_dashboard_payload_uncached(*, refresh: bool = False) -> dict[st
         _whatsapp_connection_detail(refresh=refresh),
         _slack_connection_detail(refresh=refresh),
         asyncio.to_thread(_jira_connection_status, refresh=refresh),
+        asyncio.to_thread(_coolify_connection_status, refresh=refresh),
         asyncio.to_thread(_fetch_upcoming_meets, refresh=refresh),
         asyncio.to_thread(_fetch_triggerable_meets, refresh=refresh),
         list_meetings(limit=20, include_artifacts=False),
@@ -859,6 +914,7 @@ async def _build_dashboard_payload_uncached(*, refresh: bool = False) -> dict[st
         whatsapp=wa_detail,
         slack=slack_detail,
         jira=jira_detail,
+        coolify=coolify_detail,
         rag_connected=rag_connected,
         rag_error=rag_error,
     )
@@ -893,6 +949,7 @@ async def _build_dashboard_payload_uncached(*, refresh: bool = False) -> dict[st
         "whatsapp_bridge": bridge,
         "slack": slack_detail,
         "jira": jira_detail,
+        "coolify": coolify_detail,
         "evolution_api": bridge,
         "meet_auto_join": {
             "ready": meet_ready.ready,

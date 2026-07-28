@@ -1,0 +1,20 @@
+# Local overrides for Sameer's machine (Coolify already owns :8080 and :5432).
+services:
+  postgres:
+    ports: !override
+      - "5433:5432"
+
+  whatsapp-bridge:
+    ports: !override
+      - "8081:8080"
+
+  tempa-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    volumes:
+      - ${COMPLIANCETRACKER_PATH:-./repos/compliancetracker}:/repos/compliancetracker
+      - ${TEMPA_CURSOR_WORKTREE_HOST:-./data/tempa-worktrees}:/repos/tempa-worktrees
+      - ./vendor/rumixtempa:/repos/rumixtempa
+      - ${CLAUDE_CLI_BIN:-./scripts/claude-stub}:/usr/local/bin/claude:ro
+      - ${CLAUDE_CONFIG_DIR:-./.claude-stub-home}:/root/.claude

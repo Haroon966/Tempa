@@ -66,6 +66,16 @@ class JiraConnectionRequest(BaseModel):
     enabled: bool = True
 
 
+class CoolifyConnectionRequest(BaseModel):
+    base_url: str
+    api_token: str = ""
+    server_uuid: str = ""
+    project_uuid: str = ""
+    github_app_uuid: str = ""
+    deploy_key_uuid: str = ""
+    enabled: bool = True
+
+
 class GoogleCredentialsRequest(BaseModel):
     client_id: str
     client_secret: str
@@ -1422,6 +1432,75 @@ if (window.opener) {{
         settings.jira_api_token = ""
         settings.jira_default_project = ""
         settings.jira_enabled = False
+        return {"status": "disconnected", "connected": False}
+
+    @app.get("/api/connections/coolify")
+    async def coolify_status():
+        from tempa.channels.coolify.status import coolify_connection_status
+
+        return await asyncio.to_thread(coolify_connection_status)
+
+    @app.post("/api/connections/coolify")
+    async def connect_coolify(body: CoolifyConnectionRequest):
+        from tempa.channels.coolify.client import test_connection
+        from tempa.channels.coolify.session import load_coolify_api_token, save_coolify_session_config
+
+        token = body.api_token.strip() or load_coolify_api_token()
+        if not body.base_url.strip() or not token:
+            return {
+                "status": "error",
+                "detail": "Base URL and API token are required",
+                "connected": False,
+            }
+        save_coolify_session_config(
+            base_url=body.base_url,
+            server_uuid=body.server_uuid,
+            project_uuid=body.project_uuid,
+            github_app_uuid=body.github_app_uuid,
+            deploy_key_uuid=body.deploy_key_uuid,
+            api_token=token if body.api_token.strip() else None,
+        )
+        settings.coolify_base_url = body.base_url.strip().rstrip("/")
+        settings.coolify_server_uuid = body.server_uuid.strip()
+        settings.coolify_project_uuid = body.project_uuid.strip()
+        settings.coolify_github_app_uuid = body.github_app_uuid.strip()
+        settings.coolify_deploy_key_uuid = body.deploy_key_uuid.strip()
+        settings.coolify_enabled = body.enabled
+        if body.api_token.strip():
+            settings.coolify_api_token = body.api_token.strip()
+        try:
+            result = await asyncio.to_thread(test_connection)
+            # Ensure deploy key exists so private repos work without a GitHub App.
+            try:
+                from tempa.channels.coolify.client import ensure_git_deploy_key
+
+                key = await asyncio.to_thread(ensure_git_deploy_key)
+                if key.get("uuid"):
+                    settings.coolify_deploy_key_uuid = str(key["uuid"])
+            except Exception:
+                pass
+            return {
+                "status": "connected",
+                "connected": True,
+                "version": result.get("version"),
+                "detail": f"Coolify {result.get('version', '')}".strip(),
+                "deploy_key_uuid": settings.coolify_deploy_key_uuid,
+            }
+        except Exception as exc:
+            return {"status": "error", "connected": False, "detail": str(exc)[:200]}
+
+    @app.delete("/api/connections/coolify")
+    async def disconnect_coolify():
+        from tempa.channels.coolify.session import clear_coolify_session
+
+        clear_coolify_session()
+        settings.coolify_base_url = "http://host.docker.internal:8000"
+        settings.coolify_api_token = ""
+        settings.coolify_server_uuid = ""
+        settings.coolify_project_uuid = ""
+        settings.coolify_github_app_uuid = ""
+        settings.coolify_deploy_key_uuid = ""
+        settings.coolify_enabled = False
         return {"status": "disconnected", "connected": False}
 
     @app.post("/api/chat/runs/{run_id}/cancel")

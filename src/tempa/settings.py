@@ -124,6 +124,14 @@ class Settings(BaseSettings):
     jira_default_project: str = ""
     jira_ticket_enabled: bool = True
     jira_ticket_rate_limit: int = 10
+    coolify_base_url: str = "http://host.docker.internal:8000"
+    coolify_api_token: str = ""
+    coolify_enabled: bool = False
+    coolify_server_uuid: str = ""
+    coolify_project_uuid: str = ""
+    coolify_github_app_uuid: str = ""
+    coolify_deploy_key_uuid: str = ""
+    coolify_wildcard_domain: str = ""
     claude_code_path: str = "claude"
     varys_claude_cli_only: bool = True
 

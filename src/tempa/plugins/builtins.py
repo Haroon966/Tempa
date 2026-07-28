@@ -243,6 +243,169 @@ def _register_jira_tools() -> None:
     )
 
 
+def _register_coolify_tools() -> None:
+    from tempa.channels.coolify.client import (
+        app_url,
+        coolify_configured,
+        create_application,
+        find_app_by_repo,
+        list_applications,
+        normalize_git_repository,
+        parse_env_block,
+        poll_deployment,
+        set_envs,
+        trigger_deploy,
+        get_application,
+    )
+
+    def coolify_list_apps() -> dict[str, Any]:
+        if not coolify_configured():
+            return {"status": "error", "reason": "Coolify not connected"}
+        apps = list_applications()
+        slim = [
+            {
+                "uuid": a.get("uuid"),
+                "name": a.get("name"),
+                "git_repository": a.get("git_repository"),
+                "fqdn": a.get("fqdn"),
+                "status": a.get("status"),
+            }
+            for a in apps
+        ]
+        return {"status": "ok", "count": len(slim), "applications": slim}
+
+    def coolify_status(git_repository: str = "") -> dict[str, Any]:
+        if not coolify_configured():
+            return {"status": "error", "reason": "Coolify not connected"}
+        repo = normalize_git_repository(git_repository)
+        if not repo:
+            return {"status": "error", "reason": "git_repository required"}
+        app = find_app_by_repo(repo)
+        if not app:
+            return {"status": "error", "reason": f"No Coolify app for {repo}"}
+        return {
+            "status": "ok",
+            "application": {
+                "uuid": app.get("uuid"),
+                "name": app.get("name"),
+                "git_repository": app.get("git_repository"),
+                "url": app_url(app),
+                "status": app.get("status"),
+            },
+        }
+
+    def coolify_set_envs(git_repository: str = "", env_text: str = "") -> dict[str, Any]:
+        if not coolify_configured():
+            return {"status": "error", "reason": "Coolify not connected"}
+        repo = normalize_git_repository(git_repository)
+        envs = parse_env_block(env_text)
+        if not repo or not envs:
+            return {"status": "error", "reason": "git_repository and KEY=value env_text required"}
+        app = find_app_by_repo(repo)
+        if not app:
+            return {"status": "error", "reason": f"No Coolify app for {repo}"}
+        set_envs(str(app["uuid"]), envs)
+        return {"status": "ok", "keys": list(envs.keys()), "uuid": app.get("uuid")}
+
+    def coolify_deploy(
+        git_repository: str = "",
+        git_branch: str = "main",
+        private: bool = False,
+        ports_exposes: str = "3000",
+        env_text: str = "",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        if not coolify_configured():
+            return {"status": "error", "reason": "Coolify not connected"}
+        repo = normalize_git_repository(git_repository)
+        if not repo:
+            return {"status": "error", "reason": "git_repository required"}
+        envs = parse_env_block(env_text)
+        existing = find_app_by_repo(repo)
+        if existing:
+            uuid = str(existing.get("uuid") or "")
+            if envs:
+                set_envs(uuid, envs)
+            dep_uuid = trigger_deploy(uuid, force=force)
+            dep = poll_deployment(dep_uuid)
+            app = get_application(uuid)
+            return {
+                "status": "ok",
+                "action": "redeploy",
+                "deployment_status": dep.get("status"),
+                "url": app_url(app),
+                "uuid": uuid,
+            }
+        app = create_application(
+            git_repository=repo,
+            git_branch=git_branch or "main",
+            private=bool(private),
+            ports_exposes=ports_exposes or "3000",
+            envs=envs or None,
+            instant_deploy=False,
+        )
+        uuid = str(app.get("uuid") or "")
+        if envs:
+            set_envs(uuid, envs)
+        dep_uuid = trigger_deploy(uuid, force=force)
+        dep = poll_deployment(dep_uuid)
+        app = get_application(uuid)
+        return {
+            "status": "ok",
+            "action": "create",
+            "deployment_status": dep.get("status"),
+            "url": app_url(app),
+            "uuid": uuid,
+        }
+
+    register_tool(
+        "coolify.list_apps",
+        "List applications on the connected Coolify instance",
+        coolify_list_apps,
+        input_schema={"type": "object", "properties": {}},
+    )
+    register_tool(
+        "coolify.status",
+        "Get Coolify app status/URL by GitHub repo (owner/repo)",
+        coolify_status,
+        input_schema={
+            "type": "object",
+            "properties": {"git_repository": {"type": "string"}},
+            "required": ["git_repository"],
+        },
+    )
+    register_tool(
+        "coolify.set_envs",
+        "Set Coolify app env vars from KEY=value lines (never echo values)",
+        coolify_set_envs,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "git_repository": {"type": "string"},
+                "env_text": {"type": "string"},
+            },
+            "required": ["git_repository", "env_text"],
+        },
+    )
+    register_tool(
+        "coolify.deploy",
+        "Create or redeploy a GitHub repo on Coolify and return the live URL",
+        coolify_deploy,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "git_repository": {"type": "string"},
+                "git_branch": {"type": "string", "default": "main"},
+                "private": {"type": "boolean", "default": False},
+                "ports_exposes": {"type": "string", "default": "3000"},
+                "env_text": {"type": "string"},
+                "force": {"type": "boolean", "default": False},
+            },
+            "required": ["git_repository"],
+        },
+    )
+
+
 def _register_notion_tools() -> None:
     from datetime import datetime, timedelta, timezone
 
@@ -276,6 +439,7 @@ def register_builtin_tools() -> None:
     _register_meet_tools()
     _register_preference_tools()
     _register_jira_tools()
+    _register_coolify_tools()
     _register_notion_tools()
 
     from tempa.pc import tools as pc_tools

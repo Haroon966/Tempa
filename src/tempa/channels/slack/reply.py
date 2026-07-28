@@ -155,6 +155,7 @@ async def handle_inbound_slack(
 
     slack_ctx["slack_message_ts"] = message_ts
     slack_ctx["user_id"] = user_id
+    slack_ctx["channel_id"] = channel_id
     pinned = is_cursor_thread(channel_id, thread_ts)
 
     # "do you have rumi skills?" / "use rumi to…" — permanent pack route (never meetings).
@@ -188,6 +189,43 @@ async def handle_inbound_slack(
             "channel": channel_id,
             "rumi_capability": True,
         }
+
+    # Coolify deploy beats Cursor — "deploy github.com/…" is hosting, not a PR job.
+    from tempa.channels.coolify.deploy import (
+        deploy_feature_enabled,
+        handle_coolify_deploy_message,
+        should_route_to_coolify_deploy,
+    )
+
+    if deploy_feature_enabled() and should_route_to_coolify_deploy(text, slack_ctx):
+        coolify_reply = await handle_coolify_deploy_message(text, slack_ctx)
+        if coolify_reply:
+            await _post_slack_reply(channel_id, coolify_reply, reply_thread=reply_thread, say=say)
+            record_conversation_turn(
+                role="user",
+                text=text,
+                user_id=user_id,
+                channel_id=channel_id,
+                message_id=message_ts,
+                thread_ts=thread_ts,
+                conversation_key=conv_key,
+            )
+            record_conversation_turn(
+                role="assistant",
+                text=coolify_reply,
+                user_id=user_id,
+                channel_id=channel_id,
+                thread_ts=reply_thread,
+                conversation_key=conv_key,
+            )
+            return {
+                "handled": 1,
+                "reply": coolify_reply,
+                "skipped_coordinator": True,
+                "user": user_id,
+                "channel": channel_id,
+                "coolify_deploy": True,
+            }
 
     from tempa.rumi.classify import classify_rumi
 

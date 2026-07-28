@@ -7,6 +7,7 @@ import {
   RefreshCwIcon,
   TicketIcon,
   UploadCloudIcon,
+  ServerIcon,
   VideoIcon,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -39,6 +40,8 @@ import {
   saveGroqKey,
   connectJira,
   disconnectJira,
+  connectCoolify,
+  disconnectCoolify,
   syncAll,
   startGmailOAuth,
   startGoogleOAuth,
@@ -61,6 +64,7 @@ export function SettingsTab({
   const whatsapp = data.connections.whatsapp
   const slack = data.connections.slack
   const jira = data.connections.jira
+  const coolify = data.connections.coolify
   const meetAutoJoin = data.connections.meet_auto_join
 
   const [groqKey, setGroqKey] = useState("")
@@ -93,6 +97,13 @@ export function SettingsTab({
   const [jiraProject, setJiraProject] = useState("")
   const [jiraBusy, setJiraBusy] = useState(false)
   const [identitySyncBusy, setIdentitySyncBusy] = useState(false)
+
+  const [coolifyBaseUrl, setCoolifyBaseUrl] = useState("http://host.docker.internal:8000")
+  const [coolifyToken, setCoolifyToken] = useState("")
+  const [coolifyServerUuid, setCoolifyServerUuid] = useState("")
+  const [coolifyProjectUuid, setCoolifyProjectUuid] = useState("")
+  const [coolifyGithubAppUuid, setCoolifyGithubAppUuid] = useState("")
+  const [coolifyBusy, setCoolifyBusy] = useState(false)
 
   const [youtube, setYoutube] = useState<YoutubeUploadStatus | null>(null)
   const [youtubeBusy, setYoutubeBusy] = useState(false)
@@ -247,6 +258,18 @@ export function SettingsTab({
     if (jira?.email) setJiraEmail(String(jira.email))
     if (jira?.default_project) setJiraProject(String(jira.default_project))
   }, [jira?.base_url, jira?.email, jira?.default_project])
+
+  useEffect(() => {
+    if (coolify?.base_url) setCoolifyBaseUrl(String(coolify.base_url))
+    if (coolify?.server_uuid) setCoolifyServerUuid(String(coolify.server_uuid))
+    if (coolify?.project_uuid) setCoolifyProjectUuid(String(coolify.project_uuid))
+    if (coolify?.github_app_uuid) setCoolifyGithubAppUuid(String(coolify.github_app_uuid))
+  }, [
+    coolify?.base_url,
+    coolify?.server_uuid,
+    coolify?.project_uuid,
+    coolify?.github_app_uuid,
+  ])
 
   useEffect(() => {
     if (groq?.connected) {
@@ -438,6 +461,53 @@ export function SettingsTab({
       toast.error(e instanceof Error ? e.message : "Failed to disconnect Jira")
     } finally {
       setJiraBusy(false)
+    }
+  }
+
+  async function handleSaveCoolify() {
+    if (!coolifyBaseUrl.trim()) {
+      toast.error("Enter Coolify base URL")
+      return
+    }
+    if (!coolify?.connected && !coolifyToken.trim()) {
+      toast.error("Enter a Coolify API token")
+      return
+    }
+    setCoolifyBusy(true)
+    try {
+      const result = await connectCoolify({
+        base_url: coolifyBaseUrl.trim(),
+        api_token: coolifyToken.trim() || undefined,
+        server_uuid: coolifyServerUuid.trim(),
+        project_uuid: coolifyProjectUuid.trim(),
+        github_app_uuid: coolifyGithubAppUuid.trim(),
+        enabled: true,
+      })
+      if (result.connected) {
+        toast.success(`Coolify connected${result.version ? ` (${result.version})` : ""}`)
+        setCoolifyToken("")
+        onRefresh()
+      } else {
+        toast.error(result.detail ?? "Coolify connection failed")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Coolify connection failed")
+    } finally {
+      setCoolifyBusy(false)
+    }
+  }
+
+  async function handleCoolifyDisconnect() {
+    setCoolifyBusy(true)
+    try {
+      await disconnectCoolify()
+      toast.success("Coolify disconnected")
+      setCoolifyToken("")
+      onRefresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to disconnect Coolify")
+    } finally {
+      setCoolifyBusy(false)
     }
   }
 
@@ -798,6 +868,91 @@ export function SettingsTab({
             in <code>config/varys.yaml</code> with <code>jira_enabled: true</code> and{" "}
             <code>jira_projects</code>. When connected, all Slack users can create and assign tickets
             via DM (in-thread confirmation — no owner approval required).
+          </p>
+        </PanelCard>
+
+        {/* Coolify */}
+        <PanelCard
+          title="Coolify"
+          description="Deploy teammate GitHub repos onto this machine"
+          icon={ServerIcon}
+          action={
+            <StatusBadge
+              status={
+                coolify?.connected
+                  ? "connected"
+                  : coolify?.configured
+                    ? "degraded"
+                    : (coolify?.status ?? "disconnected")
+              }
+            />
+          }
+          contentClassName="flex flex-col gap-3"
+        >
+          {"detail" in (coolify ?? {}) && typeof coolify?.detail === "string" && coolify.detail && (
+            <p className="text-sm text-muted-foreground">{coolify.detail}</p>
+          )}
+          <Input
+            placeholder="http://host.docker.internal:8000"
+            value={coolifyBaseUrl}
+            onChange={(e) => setCoolifyBaseUrl(e.target.value)}
+            autoComplete="off"
+            aria-label="Coolify base URL"
+            className="focus:border-primary/40"
+          />
+          <Input
+            type="password"
+            placeholder={coolify?.connected ? "API token (leave blank to keep)" : "Coolify API token"}
+            value={coolifyToken}
+            onChange={(e) => setCoolifyToken(e.target.value)}
+            autoComplete="off"
+            aria-label="Coolify API token"
+            className="focus:border-primary/40"
+          />
+          <Input
+            placeholder="Server UUID (optional)"
+            value={coolifyServerUuid}
+            onChange={(e) => setCoolifyServerUuid(e.target.value)}
+            autoComplete="off"
+            aria-label="Coolify server UUID"
+            className="focus:border-primary/40"
+          />
+          <Input
+            placeholder="Project UUID (optional)"
+            value={coolifyProjectUuid}
+            onChange={(e) => setCoolifyProjectUuid(e.target.value)}
+            autoComplete="off"
+            aria-label="Coolify project UUID"
+            className="focus:border-primary/40"
+          />
+          <Input
+            placeholder="GitHub App UUID (for private repos)"
+            value={coolifyGithubAppUuid}
+            onChange={(e) => setCoolifyGithubAppUuid(e.target.value)}
+            autoComplete="off"
+            aria-label="Coolify GitHub App UUID"
+            className="focus:border-primary/40"
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button className="cursor-pointer" onClick={() => void handleSaveCoolify()} disabled={coolifyBusy}>
+              {coolifyBusy ? "Testing…" : "Save & test"}
+            </Button>
+            {coolify?.connected && (
+              <Button
+                variant="outline"
+                className="cursor-pointer"
+                onClick={() => void handleCoolifyDisconnect()}
+                disabled={coolifyBusy}
+              >
+                Disconnect
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Create a token in Coolify → Keys & Tokens (read + write + deploy). From Docker, use{" "}
+            <code>host.docker.internal:8000</code>. Private repos use an SSH deploy key (no Coolify
+            GitHub App) — Tempa adds it via your GitHub token. Slack:{" "}
+            <code>deploy github.com/owner/repo</code> or <code>deploy … private</code>.
           </p>
         </PanelCard>
 

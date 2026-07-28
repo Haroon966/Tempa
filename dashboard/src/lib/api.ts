@@ -175,6 +175,47 @@ export async function disconnectJira() {
   })
 }
 
+export interface CoolifyStatus {
+  connected?: boolean
+  configured?: boolean
+  status?: string
+  detail?: string
+  base_url?: string
+  server_uuid?: string
+  project_uuid?: string
+  github_app_uuid?: string
+  version?: string
+  enabled?: boolean
+}
+
+export async function fetchCoolifyStatus() {
+  return request<CoolifyStatus>("/api/connections/coolify")
+}
+
+export async function connectCoolify(body: {
+  base_url: string
+  api_token?: string
+  server_uuid?: string
+  project_uuid?: string
+  github_app_uuid?: string
+  enabled?: boolean
+}) {
+  return request<{ status: string; connected: boolean; detail?: string; version?: string }>(
+    "/api/connections/coolify",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  )
+}
+
+export async function disconnectCoolify() {
+  return request<{ status: string; connected: boolean }>("/api/connections/coolify", {
+    method: "DELETE",
+  })
+}
+
 export async function restartWhatsApp() {
   return request<WhatsAppStatus>("/api/connections/whatsapp/restart", { method: "POST" })
 }

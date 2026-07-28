@@ -24,6 +24,7 @@ channels:
 - They must **not** enqueue a lint/tests/security scan just because a product alias maps to a repo.
 - **Use rumi / ask rumi / rumixtempa / agent-skills / rumi skills** → pack route above. Bare “Rumi” Meet-bot chatter is not this path.
 - **GitHub asks** (github.com URL, `owner/repo`, improve/review/explore a project) go to **Cursor jobs** in the background. Tempa is the Slack face: one short ack, then the Cursor result.
+- **Deploy / host / Coolify** (`deploy this repo`, `redeploy`, `coolify`, put live on this machine) go to **Coolify**, not Cursor or QA. Confirm → set envs → deploy → return the live URL.
 - Short follow-ups in the same thread (`raise PR`, `fix it all`, typos like `rase pr`) inherit the repo from prior turns — never ask which issues to fix when findings are already in the thread.
 - **Completed Cursor sessions do not end the thread.** Mid-thread follow-ups still route without another @mention when Tempa already participated or a Cursor job exists for that thread.
 - Explicit `github.com/owner/repo` always wins over product aliases. Never let a short alias like `ct` match inside unrelated words (`project`).

@@ -119,6 +119,15 @@ def is_coding_work_request(user_message: str, context: dict[str, Any] | None = N
     if is_rumi_agent_request(text, ctx):
         return False
 
+    # Coolify deploy/hosting is not a Cursor coding job.
+    try:
+        from tempa.channels.coolify.intent import wants_coolify_deploy
+
+        if wants_coolify_deploy(text):
+            return False
+    except Exception:
+        pass
+
     if any(k in lower for k in ("calendar", "inbox", "gmail", "meet.google.com", "standup minutes")):
         if "slack" not in lower and not _has_coding_context(text):
             return False
