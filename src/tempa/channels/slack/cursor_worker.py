@@ -139,6 +139,15 @@ def _build_agent_prompt(job: dict[str, Any], *, comments: str = "", ci_logs: str
             "The referenced PR is merged or closed. Do NOT continue that PR. "
             "Open a NEW pull request for this work."
         )
+    if job.get("pr_comment_intent"):
+        parts.append(
+            "The teammate asked you to comment on the GitHub PR. "
+            "Write the full PR review/comment body in markdown now — do NOT ask what to say. "
+            "Tempa will post your reply with `gh pr comment`. No Slack small-talk."
+        )
+        prior = str(job.get("prior_review_text") or "").strip()
+        if prior:
+            parts.append("Prior Tempa review in this thread (reuse/refine as the GitHub comment):\n" + prior[:8000])
     if str(job.get("mode") or "") == "write" and not str(job.get("local_cwd") or "").strip():
         parts.append(
             "Cloud write mode: fix the issues from the request/findings, commit, and open a PR. "
@@ -187,6 +196,59 @@ async def _run_agent(job: dict[str, Any], *, comments: str = "", ci_logs: str = 
     )
 
 
+def _prior_review_from_thread(*, channel_id: str, thread_ts: str, exclude_job_id: str = "") -> str:
+    """Latest completed Cursor review text for this Slack thread (for gh pr comment)."""
+    for row in jobs.find_jobs_for_thread(channel_id=channel_id, thread_ts=thread_ts, limit=20):
+        if str(row.get("id") or "") == exclude_job_id:
+            continue
+        if str(row.get("status") or "") != "completed":
+            continue
+        text = str(row.get("result_text") or "").strip()
+        if not text:
+            continue
+        lower = text.lower()
+        if "something went wrong" in lower or "on it — working" in lower:
+            continue
+        if any(k in lower for k in ("pr review", "verdict", "**approve**", "### verdict", "lgtm")):
+            return text
+        if len(text) > 400:
+            return text
+    return ""
+
+
+def _resolve_pr_from_thread(
+    *,
+    ask: str,
+    channel_id: str,
+    thread_ts: str,
+    repo: str = "",
+) -> dict[str, Any] | None:
+    adopted = cpr.parse_pr_url(ask)
+    if adopted:
+        return adopted
+    for row in jobs.find_jobs_for_thread(channel_id=channel_id, thread_ts=thread_ts, limit=20):
+        parsed = cpr.parse_pr_url(str(row.get("ask_text") or ""))
+        if parsed:
+            return parsed
+        pr_number = row.get("pr_number")
+        pr_url = str(row.get("pr_url") or "").strip()
+        row_repo = str(row.get("repo") or repo or "").strip()
+        if pr_url:
+            parsed = cpr.parse_pr_url(pr_url)
+            if parsed:
+                return parsed
+        if pr_number and row_repo and "/" in row_repo:
+            owner, name = row_repo.split("/", 1)
+            return {
+                "owner": owner,
+                "repo": name,
+                "full_repo": row_repo,
+                "pr_number": int(pr_number),
+                "pr_url": f"https://github.com/{row_repo}/pull/{int(pr_number)}",
+            }
+    return None
+
+
 async def _process_job(job: dict[str, Any]) -> None:
     job_id = str(job.get("id") or "")
     channel_id = str(job.get("channel_id") or "")
@@ -218,6 +280,111 @@ async def _process_job(job: dict[str, Any]) -> None:
         jira_key = cqa.extract_jira_key(ask, jira_key)
         write_intent = cpr.is_write_intent(ask) if job_kind != "rumi_agent" else False
         dead_pr_note = ""
+        comment_intent = cpr.is_pr_comment_intent(ask) if job_kind != "rumi_agent" else False
+
+        # "comment on github" / "final comment on pr" — draft + post via gh (never ask what to say).
+        if comment_intent:
+            binding = _resolve_pr_from_thread(
+                ask=ask, channel_id=channel_id, thread_ts=thread_ts, repo=repo
+            )
+            if not binding:
+                raise RuntimeError("need a PR URL in this thread to comment on GitHub")
+            pr_url = str(binding.get("pr_url") or "")
+            pr_number = int(binding["pr_number"])
+            repo = str(binding.get("full_repo") or repo)
+            prior = _prior_review_from_thread(
+                channel_id=channel_id, thread_ts=thread_ts, exclude_job_id=job_id
+            )
+            job = {
+                **job,
+                "pr_url": pr_url,
+                "pr_number": pr_number,
+                "repo": repo,
+                "pr_comment_intent": True,
+                "prior_review_text": prior,
+                "mode": "read",
+            }
+            jobs.update_job(
+                job_id,
+                phase="running",
+                status="running",
+                pr_url=pr_url,
+                pr_number=pr_number,
+                repo=repo,
+            )
+            # Bare "comment on github" after a review — post that review; otherwise draft first.
+            user_ask = ask.split("\n\nSlack thread context:")[0].strip()
+            user_lower = user_ask.lower()
+            bare = user_lower in {
+                "comment on github",
+                "comment on the pr",
+                "comment on pr",
+                "comment on this pr",
+                "post comment",
+                "post a comment",
+                "github comment",
+                "pr comment",
+            } or (
+                cpr.is_pr_comment_intent(user_ask)
+                and len(user_ask) < 48
+                and "read" not in user_lower
+                and "final" not in user_lower
+            )
+            if bare and prior:
+                body = prior
+            else:
+                if local_cwd:
+                    await asyncio.to_thread(wt.ensure_git_safe_directories, local_cwd, "/repos")
+                job["worktree_path"] = local_cwd
+                drafted = await _run_agent(job)
+                body = str(drafted or "").strip() or prior
+            body = str(body or "").strip()
+            if not body:
+                raise RuntimeError("could not draft a PR comment")
+            await asyncio.to_thread(
+                cpr.pr_comment, pr_number=int(pr_number), body=body[:65000], repo=repo
+            )
+            reply = f"Posted on <{pr_url}>:\n\n{body}"
+            if len(reply) > 12000:
+                reply = reply[:11900] + "\n\n_(truncated)_"
+            jobs.update_job(job_id, status="completed", phase="completed", result_text=reply[:4000])
+            _post(channel_id, thread_ts, reply)
+            return
+
+        # Review-only + PR URL: keep the link for the prompt, never adopt/worktree/cloud-write.
+        if adopted and mode != "write" and not write_intent:
+            pr_url = str(adopted.get("pr_url") or "")
+            pr_number = int(adopted["pr_number"])
+            repo = str(adopted.get("full_repo") or repo)
+            job = {**job, "pr_url": pr_url, "pr_number": pr_number, "repo": repo}
+            # Lifecycle tip when the PR is already dead — no agent run needed.
+            try:
+                life = await asyncio.to_thread(
+                    cpr.pr_head_ref,
+                    pr_number,
+                    cwd=local_cwd or None,
+                    repo=repo,
+                )
+            except Exception:
+                life = None
+            if life is not None and not cpr.is_pr_open(life):
+                msg = prog.msg_dead_pr_suggest(
+                    pr_url=str(life.get("pr_url") or pr_url),
+                    state=str(life.get("state") or "CLOSED"),
+                )
+                jobs.update_job(
+                    job_id,
+                    status="completed",
+                    phase="completed",
+                    result_text=msg[:4000],
+                    pr_url=pr_url or None,
+                    pr_number=pr_number,
+                    repo=repo or None,
+                )
+                _post(channel_id, thread_ts, msg)
+                return
+            adopted = None
+            jobs.update_job(job_id, pr_url=pr_url or None, pr_number=pr_number, repo=repo or None)
 
         if adopted and not local_cwd:
             # Cloud path may still resolve lifecycle via --repo before writing.
@@ -247,7 +414,7 @@ async def _process_job(job: dict[str, Any]) -> None:
                 }
                 adopted = None
 
-        if (mode == "write" or adopted) and not local_cwd:
+        if mode == "write" and not local_cwd:
             # Unmounted GitHub target — Cursor cloud agent fixes + opens the PR.
             if not repo:
                 raise RuntimeError("repo required for cloud write jobs")
@@ -594,7 +761,15 @@ async def _process_job(job: dict[str, Any]) -> None:
             return
         if len(reply) > 12000:
             reply = reply[:11900] + "\n\n_(truncated)_"
-        jobs.update_job(job_id, status="completed", phase="completed", result_text=reply[:4000])
+        jobs.update_job(
+            job_id,
+            status="completed",
+            phase="completed",
+            result_text=reply[:4000],
+            pr_url=str(job.get("pr_url") or "") or None,
+            pr_number=job.get("pr_number"),
+            repo=str(job.get("repo") or repo or "") or None,
+        )
         _post(channel_id, thread_ts, reply)
 
     except Exception as exc:
@@ -755,8 +930,14 @@ def enqueue_from_slack(
         cfg["local_cwd"] = local_cwd
         repo = ""
     else:
-        write = cpr.is_write_intent(text) or bool(cpr.parse_pr_url(text))
+        # PR URL alone is not write — "please review this PR" must stay read/cloud.
+        write = cpr.is_write_intent(text)
         repo = str(cfg.get("repo") or "").strip()
+        if not repo:
+            pr = cpr.parse_pr_url(text)
+            if pr:
+                repo = str(pr.get("full_repo") or "")
+                cfg["repo"] = repo
     # Cloud write when we have a GitHub repo but no mount (Cursor opens the PR).
     if write and not local_cwd and not repo:
         return {"error": "need a GitHub repo (or a mounted checkout) to raise a PR."}

@@ -73,6 +73,9 @@ def test_adopt_parse_pr_url():
     assert parsed is not None
     assert parsed["pr_number"] == 492
     assert parsed["full_repo"] == "Orenda-Project/compliancetracker"
+    assert cpr.is_write_intent(
+        "please QA https://github.com/Orenda-Project/compliancetracker/pull/492 until green"
+    ) is True
 
 
 def test_wants_channel_announce_only_when_asked():
@@ -209,7 +212,8 @@ def test_pr_head_ref_includes_lifecycle(monkeypatch):
         returncode = 0
         stdout = (
             '{"headRefName":"fix/x","url":"https://github.com/o/r/pull/492",'
-            '"number":492,"state":"MERGED","merged":true,"closedAt":"2026-07-21T00:00:00Z"}'
+            '"number":492,"state":"MERGED","mergedAt":"2026-07-21T00:00:00Z",'
+            '"closedAt":"2026-07-21T00:00:00Z"}'
         )
         stderr = ""
 
@@ -220,6 +224,29 @@ def test_pr_head_ref_includes_lifecycle(monkeypatch):
     assert head["merged"] is True
     assert head["is_open"] is False
     assert cpr.is_pr_open(head) is False
+    # gh 2.96+ rejects JSON field `merged` — we must request mergedAt.
+    call_cmd = None
+
+    def capture(cmd, **kwargs):
+        nonlocal call_cmd
+        call_cmd = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(cpr, "_run", capture)
+    cpr.pr_head_ref(1, repo="o/r")
+    assert call_cmd is not None
+    json_fields = call_cmd[call_cmd.index("--json") + 1]
+    assert "mergedAt" in json_fields
+    assert ",merged," not in f",{json_fields},"
+
+
+def test_parse_pr_url_accepts_bare_github():
+    parsed = cpr.parse_pr_url("please review this pr `github.com/Haroon966/Jay/pull/1`")
+    assert parsed is not None
+    assert parsed["full_repo"] == "Haroon966/Jay"
+    assert parsed["pr_number"] == 1
+    assert parsed["pr_url"] == "https://github.com/Haroon966/Jay/pull/1"
+    assert cpr.is_write_intent("please review this pr github.com/Haroon966/Jay/pull/1") is False
 
 
 def test_is_pr_open_helpers():
@@ -250,6 +277,152 @@ def test_interrupt_stale_active_jobs():
     out = jobs.interrupt_stale_active_jobs()
     assert len(out) == 1
     assert jobs.get_job(jid)["status"] == "interrupted"
+
+
+def test_enqueue_review_pr_stays_read_mode(monkeypatch):
+    """PR URL alone must not force write — Haroon's 'please review this pr' failure path."""
+    with (
+        patch("tempa.qa.cursor.cursor_configured", return_value=True),
+        patch("tempa.channels.slack.cursor_worktree.git_available", return_value=True),
+        patch("tempa.channels.slack.cursor_pr.gh_available", return_value=True),
+        patch("tempa.channels.slack.cursor_worktree.ensure_repo_mirror") as mirror,
+    ):
+        result = enqueue_from_slack(
+            text="please review this pr https://github.com/Haroon966/Jay/pull/1",
+            context={
+                "slack_channel_id": "C1",
+                "slack_thread_ts": "1.1",
+                "slack_user_id": "U1",
+            },
+            cfg={"repo": "Haroon966/Jay", "local_cwd": "", "base_ref": "main"},
+        )
+    assert "job_id" in result
+    mirror.assert_not_called()
+    row = jobs.get_job(result["job_id"])
+    assert row is not None
+    assert row["mode"] == "read"
+    assert row["repo"] == "Haroon966/Jay"
+
+
+@pytest.mark.asyncio
+async def test_process_job_review_open_pr_is_read_only(tmp_path):
+    from tempa.channels.slack import cursor_worker as cw
+
+    jid = jobs.enqueue_cursor_job(
+        {
+            "channel_id": "C1",
+            "thread_ts": "1.1",
+            "user_id": "U1",
+            "ask_text": "please review this pr https://github.com/Haroon966/Jay/pull/1",
+            "mode": "read",
+            "local_cwd": "",
+            "repo": "Haroon966/Jay",
+            "base_ref": "main",
+        }
+    )
+    claimed = jobs.claim_next_jobs(1)[0]
+    posts: list[str] = []
+
+    with (
+        patch.object(cw.wt, "ensure_worktree") as ensure_wt,
+        patch.object(
+            cw.cpr,
+            "pr_head_ref",
+            return_value={
+                "branch": "fix/x",
+                "pr_number": 1,
+                "pr_url": "https://github.com/Haroon966/Jay/pull/1",
+                "state": "OPEN",
+                "merged": False,
+                "is_open": True,
+            },
+        ),
+        patch.object(cw, "_run_agent", new_callable=AsyncMock, return_value="Looks good overall.") as agent,
+        patch.object(cw, "_post", side_effect=lambda *a, **k: posts.append(a[2] if len(a) > 2 else "")),
+    ):
+        await cw._process_job(claimed)
+
+    assert jobs.get_job(jid)["status"] == "completed"
+    assert agent.await_count == 1
+    ensure_wt.assert_not_called()
+    assert posts and "Looks good" in posts[0]
+    assert agent.await_args.args[0].get("pr_url") == "https://github.com/Haroon966/Jay/pull/1"
+
+
+@pytest.mark.asyncio
+async def test_process_job_comment_on_github_posts_prior_review(tmp_path):
+    from tempa.channels.slack import cursor_worker as cw
+
+    prior_id = jobs.enqueue_cursor_job(
+        {
+            "channel_id": "C1",
+            "thread_ts": "9.9",
+            "user_id": "U1",
+            "ask_text": "please review this pr https://github.com/Haroon966/Jay/pull/1",
+            "mode": "read",
+            "repo": "Haroon966/Jay",
+            "pr_number": 1,
+            "pr_url": "https://github.com/Haroon966/Jay/pull/1",
+        }
+    )
+    jobs.update_job(
+        prior_id,
+        status="completed",
+        result_text="## PR Review\n\n### Verdict: **Approve**\nLooks solid.",
+        pr_number=1,
+        pr_url="https://github.com/Haroon966/Jay/pull/1",
+        repo="Haroon966/Jay",
+    )
+
+    jid = jobs.enqueue_cursor_job(
+        {
+            "channel_id": "C1",
+            "thread_ts": "9.9",
+            "user_id": "U1",
+            "ask_text": "comment on github",
+            "mode": "read",
+            "repo": "Haroon966/Jay",
+        }
+    )
+    claimed = None
+    for _ in range(5):
+        batch = jobs.claim_next_jobs(1)
+        if not batch:
+            break
+        if batch[0]["id"] == jid:
+            claimed = batch[0]
+            break
+    assert claimed is not None, "comment job was not claimed"
+    posts: list[str] = []
+
+    with (
+        patch.object(cw, "_run_agent", new_callable=AsyncMock) as agent,
+        patch.object(cw.cpr, "pr_comment") as comment,
+        patch.object(cw, "_post", side_effect=lambda *a, **k: posts.append(a[2] if len(a) > 2 else "")),
+    ):
+        await cw._process_job(claimed)
+
+    assert jobs.get_job(jid)["status"] == "completed"
+    agent.assert_not_called()
+    comment.assert_called_once()
+    assert comment.call_args.kwargs.get("pr_number") == 1
+    assert "Approve" in (comment.call_args.kwargs.get("body") or "")
+    assert posts and "Posted on" in posts[0]
+
+
+def test_claim_next_skips_stale_completed_queue_rows():
+    done = jobs.enqueue_cursor_job(
+        {"channel_id": "C1", "thread_ts": "2.2", "user_id": "U1", "ask_text": "done already"}
+    )
+    jobs.update_job(done, status="completed")
+    live = jobs.enqueue_cursor_job(
+        {"channel_id": "C1", "thread_ts": "2.2", "user_id": "U1", "ask_text": "still queued"}
+    )
+    claimed = jobs.claim_next_jobs(2)
+    ids = [c["id"] for c in claimed]
+    assert live in ids
+    assert done not in ids
+    assert jobs.get_job(done)["status"] == "completed"
 
 
 def test_enqueue_rejects_write_when_git_missing(tmp_path, monkeypatch):
@@ -658,7 +831,7 @@ async def test_process_job_dead_adopt_suggests_without_write(tmp_path):
             "thread_ts": "1.1",
             "user_id": "U1",
             "ask_text": "look at https://github.com/o/r/pull/492",
-            "mode": "write",  # enqueue treats PR URL as write; intent gate uses is_write_intent
+            "mode": "read",  # review-only — PR URL must not force write/adopt
             "local_cwd": str(repo),
             "repo": "o/r",
             "base_ref": "main",

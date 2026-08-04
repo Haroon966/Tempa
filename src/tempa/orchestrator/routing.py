@@ -49,9 +49,9 @@ def _has_coding_context(text: str) -> bool:
 def _looks_like_code_followup(text: str) -> bool:
     """Short thread follow-ups that inherit the repo from prior turns."""
     try:
-        from tempa.channels.slack.cursor_pr import is_write_intent
+        from tempa.channels.slack.cursor_pr import is_pr_comment_intent, is_write_intent
 
-        if is_write_intent(text):
+        if is_write_intent(text) or is_pr_comment_intent(text):
             return True
     except Exception:
         pass
@@ -71,6 +71,15 @@ def _looks_like_code_followup(text: str) -> bool:
             "do it",
             "address the",
             "resolve the",
+            "comment on",
+            "post comment",
+            "post on github",
+            "on github",
+            "final comment",
+            "leave a comment",
+            "leave a review",
+            "approve the pr",
+            "approve pr",
         )
     )
 

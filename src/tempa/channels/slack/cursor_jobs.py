@@ -113,20 +113,30 @@ def claim_next_jobs(limit: int) -> list[dict[str, Any]]:
         lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         if not lines:
             return claimed
-        take = lines[:limit]
-        remaining = lines[limit:]
-        path.write_text("\n".join(remaining) + ("\n" if remaining else ""), encoding="utf-8")
         statuses = _read_statuses()
-        for raw in take:
-            job = json.loads(raw)
+        keep: list[str] = []
+        for raw in lines:
+            if len(claimed) >= limit:
+                keep.append(raw)
+                continue
+            try:
+                job = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
             job_id = str(job.get("id") or "")
+            current = statuses.get(job_id) or job
+            # Stale queue rows (completed/failed/interrupted) must not be re-claimed.
+            if str(current.get("status") or "") != "queued":
+                continue
+            job = dict(current)
             job["status"] = "running"
             job["started_at"] = _now_iso()
             job["updated_at"] = _now_iso()
             job["phase"] = "running"
             if job_id:
-                statuses[job_id] = {**statuses.get(job_id, {}), **job}
+                statuses[job_id] = job
             claimed.append(job)
+        path.write_text("\n".join(keep) + ("\n" if keep else ""), encoding="utf-8")
         _write_statuses(statuses)
     return claimed
 

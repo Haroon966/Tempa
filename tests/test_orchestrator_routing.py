@@ -77,6 +77,28 @@ def test_raise_pr_followup_inherits_thread_repo(monkeypatch: pytest.MonkeyPatch)
     assert is_coding_work_request("raise PR and fix it all", ctx) is True
 
 
+def test_comment_on_github_followup_is_coding_work(monkeypatch: pytest.MonkeyPatch):
+    """Live failure: after a PR review, 'comment on github' must hit Cursor — not LLM clarify."""
+    monkeypatch.setattr(
+        "tempa.channels.slack.cursor_threads.thread_coding_context_blob",
+        lambda ctx: (
+            "please review this pr https://github.com/Haroon966/Jay/pull/1\n"
+            "## PR Review: Approve"
+        ),
+    )
+    ctx = {
+        "channel": "slack",
+        "slack_channel_id": "C0BDR90S9HT",
+        "slack_thread_ts": "1785217853.773799",
+    }
+    assert is_coding_work_request("comment on github", ctx) is True
+    assert is_coding_work_request("read comment and give final comment on pr", ctx) is True
+    from tempa.channels.slack.cursor_pr import is_pr_comment_intent, is_write_intent
+
+    assert is_pr_comment_intent("comment on github") is True
+    assert is_write_intent("comment on github") is False
+
+
 def test_meet_url_is_not_coding_work():
     assert is_coding_work_request(
         "please join https://meet.google.com/abc-defg-hij now",

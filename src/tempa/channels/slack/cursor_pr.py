@@ -12,7 +12,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 _PR_URL_RE = re.compile(
-    r"https?://github\.com/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)/pull/(?P<num>\d+)",
+    r"(?:https?://)?github\.com/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)/pull/(?P<num>\d+)",
     re.I,
 )
 
@@ -29,12 +29,14 @@ def parse_pr_url(text: str) -> dict[str, Any] | None:
     m = _PR_URL_RE.search(text or "")
     if not m:
         return None
+    owner, repo, num = m.group("owner"), m.group("repo"), m.group("num")
     return {
-        "owner": m.group("owner"),
-        "repo": m.group("repo"),
-        "full_repo": f"{m.group('owner')}/{m.group('repo')}",
-        "pr_number": int(m.group("num")),
-        "pr_url": m.group(0).rstrip(").,]"),
+        "owner": owner,
+        "repo": repo,
+        "full_repo": f"{owner}/{repo}",
+        "pr_number": int(num),
+        # Always normalize — Slack often pastes bare github.com/... without a scheme.
+        "pr_url": f"https://github.com/{owner}/{repo}/pull/{num}",
     }
 
 
@@ -66,7 +68,8 @@ def is_pr_open(info: dict[str, Any] | None) -> bool:
 
 def pr_head_ref(pr_number: int, *, cwd: str | None = None, repo: str = "") -> dict[str, Any]:
     """Resolve head branch + lifecycle for an existing PR (adopt / binding)."""
-    cmd = ["gh", "pr", "view", str(pr_number), "--json", "headRefName,url,number,state,merged,closedAt"]
+    # gh ≥2.96 dropped `merged` from `pr view --json`; use `mergedAt` (+ state).
+    cmd = ["gh", "pr", "view", str(pr_number), "--json", "headRefName,url,number,state,mergedAt,closedAt"]
     if repo:
         cmd.extend(["--repo", repo])
     proc = _run(cmd, cwd=cwd)
@@ -79,7 +82,7 @@ def pr_head_ref(pr_number: int, *, cwd: str | None = None, repo: str = "") -> di
     head = str(data.get("headRefName") or "").strip()
     if not head:
         raise RuntimeError(f"PR #{pr_number} has no headRefName")
-    merged = bool(data.get("merged"))
+    merged = bool(data.get("mergedAt")) or str(data.get("state") or "").strip().upper() == "MERGED"
     state = _normalize_pr_state(state=str(data.get("state") or ""), merged=merged)
     return {
         "branch": head,
@@ -106,8 +109,32 @@ def wants_channel_announce(text: str) -> bool:
     )
 
 
+def is_pr_comment_intent(text: str) -> bool:
+    """True when the ask is to post/leave a comment or review on the GitHub PR."""
+    t = (text or "").lower()
+    keys = (
+        "comment on github",
+        "comment on the pr",
+        "comment on pr",
+        "comment on this pr",
+        "post on github",
+        "post a comment",
+        "post comment",
+        "leave a comment",
+        "leave a review",
+        "final comment on",
+        "give final comment",
+        "github comment",
+        "pr comment",
+    )
+    return any(k in t for k in keys)
+
+
 def is_write_intent(text: str) -> bool:
     t = (text or "").lower()
+    # Comment-on-PR is a separate path (gh pr comment) — not a code/write job.
+    if is_pr_comment_intent(t):
+        return False
     keys = (
         "fix",
         "implement",
