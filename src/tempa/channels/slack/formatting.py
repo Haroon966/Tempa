@@ -61,4 +61,6 @@ def format_for_slack(text: str) -> str:
 
 
 def prepare_slack_reply(text: str) -> str:
-    return format_for_slack(text).strip()
+    from tempa.agent.activity import scrub_outbound_text
+
+    return format_for_slack(scrub_outbound_text(text)).strip()

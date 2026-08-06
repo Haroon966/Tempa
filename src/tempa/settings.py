@@ -42,9 +42,6 @@ class Settings(BaseSettings):
     slack_owner_user_id: str = ""
     slack_allowed_user_ids: str = ""
     slack_allow_all: bool = False
-    slack_presence_channel_id: str = "C0AU4DPFG21"
-    slack_presence_channel_name: str = "presence"
-    slack_presence_llm_model: str = "llama-3.1-8b-instant"
     vector_db: str = "chroma"
     calendar_poll_seconds: int = 120
     meet_trigger_before_minutes: int = 2
@@ -96,6 +93,7 @@ class Settings(BaseSettings):
     tempa_qa_claude_model: str = "claude-sonnet-4-20250514"
     cursor_api_key: str = ""
     tempa_qa_cursor_model: str = "composer-2.5"
+    tempa_agent_home: str = ""  # optional override cwd for interactive Tempa agent (default: project root)
     tempa_cursor_progress_interval_sec: int = 120
     tempa_cursor_job_timeout_sec: int = 7200
     tempa_cursor_max_parallel: int = 8
@@ -200,7 +198,6 @@ class Settings(BaseSettings):
             self.sessions_dir / "gmail",
             self.sessions_dir / "whatsapp",
             self.sessions_dir / "slack",
-            self.sessions_dir / "presence",
             self.sessions_dir / "jira",
             self.sessions_dir / "qa",
             self.tempa_data_dir / "qa" / "worktrees",

@@ -147,7 +147,6 @@ _reminder_task: asyncio.Task | None = None
 _gmail_sync_task: asyncio.Task | None = None
 _calendar_sync_task: asyncio.Task | None = None
 _slack_sync_task: asyncio.Task | None = None
-_presence_sync_task: asyncio.Task | None = None
 _jira_user_sync_task: asyncio.Task | None = None
 _consolidation_task: asyncio.Task | None = None
 _retention_task: asyncio.Task | None = None
@@ -314,51 +313,6 @@ async def _slack_sync_loop() -> None:
         await _run_sync(full=False)
 
 
-async def _presence_sync_loop() -> None:
-    import logging
-
-    from tempa.channels.slack.presence_sync import sync_presence_async
-    from tempa.channels.slack.session import slack_configured
-    from tempa.core.sync_status import record_sync
-
-    logger = logging.getLogger(__name__)
-    if not slack_configured():
-        return
-    if not get_settings().slack_presence_channel_id.strip():
-        return
-
-    interval = 60
-    backoff = interval
-    syncing = False
-
-    async def _run_sync() -> None:
-        nonlocal syncing, backoff
-        if syncing:
-            return
-        syncing = True
-        try:
-            result = await sync_presence_async()
-            status = str(result.get("status", "ok"))
-            if status in {"ok", "skipped"}:
-                record_sync("presence", status=status, details=result)
-                backoff = interval
-            else:
-                err = str(result.get("reason") or result.get("error") or status)
-                record_sync("presence", status="error", error=err, details=result)
-                backoff = min(backoff * 2, interval * 8)
-        except Exception as exc:
-            logger.exception("Presence sync loop failed")
-            record_sync("presence", status="error", error=str(exc))
-            backoff = min(backoff * 2, interval * 8)
-        finally:
-            syncing = False
-
-    asyncio.create_task(_run_sync())
-    while True:
-        await asyncio.sleep(backoff)
-        await _run_sync()
-
-
 async def _jira_user_sync_loop() -> None:
     import logging
 
@@ -466,7 +420,7 @@ async def _consolidation_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _presence_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
+    global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
     from tempa.channels.contacts.store import init_contacts_db
     from tempa.channels.whatsapp.inbound_queue import stop_inbound_worker
     from tempa.channels.whatsapp.webhook import ensure_webhook_worker
@@ -575,7 +529,7 @@ async def lifespan(app: FastAPI):
             _log.getLogger(__name__).exception("Hermes cron failed to start")
 
     async def _deferred_background() -> None:
-        global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _presence_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
+        global _scheduler_task, _reminder_task, _gmail_sync_task, _calendar_sync_task, _slack_sync_task, _jira_user_sync_task, _consolidation_task, _retention_task
         import logging as _log
 
         _log.getLogger(__name__).info("Deferred background starting")
@@ -593,7 +547,6 @@ async def lifespan(app: FastAPI):
         _gmail_sync_task = asyncio.create_task(_gmail_sync_loop())
         _calendar_sync_task = asyncio.create_task(_calendar_sync_loop())
         _slack_sync_task = asyncio.create_task(_slack_sync_loop())
-        _presence_sync_task = asyncio.create_task(_presence_sync_loop())
         _jira_user_sync_task = asyncio.create_task(_jira_user_sync_loop())
         _consolidation_task = asyncio.create_task(_consolidation_loop())
         _retention_task = asyncio.create_task(_retention_loop())
@@ -647,8 +600,6 @@ async def lifespan(app: FastAPI):
         _calendar_sync_task.cancel()
     if _slack_sync_task:
         _slack_sync_task.cancel()
-    if _presence_sync_task:
-        _presence_sync_task.cancel()
     if _jira_user_sync_task:
         _jira_user_sync_task.cancel()
     try:
@@ -696,12 +647,10 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Tempa Daemon", version="0.1.0", lifespan=lifespan)
     from tempa.api.features import router as features_router
-    from tempa.api.presence import router as presence_router
     from tempa.api.qa import router as qa_router
 
     app.include_router(features_router, prefix="/api")
     app.include_router(qa_router, prefix="/api")
-    app.include_router(presence_router, prefix="/api")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.tempa_cors_origin] if settings.tempa_cors_origin != "*" else ["*"],

@@ -124,23 +124,17 @@ def test_should_handle_cursor_thread_without_bot_history():
 
 
 @pytest.mark.asyncio
-async def test_inbound_cursor_thread_skips_coordinator(monkeypatch, tmp_path):
+async def test_inbound_cursor_thread_uses_tempa_agent(monkeypatch, tmp_path):
     from tempa.channels.slack import session
 
     session._seen_event_ids.clear()
 
     say = AsyncMock()
-    with (
-        patch(
-            "tempa.channels.slack.cursor_threads.handle_cursor_job_message",
-            new_callable=AsyncMock,
-            return_value="_Tempa is working on it…_",
-        ) as mock_cursor,
-        patch(
-            "tempa.agents.graph.run_coordinator_full",
-            new_callable=AsyncMock,
-        ) as mock_coord,
-    ):
+    with patch(
+        "tempa.agent.slack_ingress.run_slack_tempa_turn",
+        new_callable=AsyncMock,
+        return_value={"handled": 1, "reply": "_On it — IDE steps…_", "ok": True, "tempa_agent": True},
+    ) as mock_agent:
         result = await handle_inbound_slack(
             {
                 "user": "U_DEV",
@@ -155,11 +149,8 @@ async def test_inbound_cursor_thread_skips_coordinator(monkeypatch, tmp_path):
         )
 
     assert result["handled"] == 1
-    assert result.get("cursor_thread") is True
-    assert "Tempa is working" in result["reply"]
-    mock_cursor.assert_awaited_once()
-    mock_coord.assert_not_called()
-    say.assert_awaited()
+    assert result.get("tempa_agent") is True
+    mock_agent.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -168,17 +159,12 @@ async def test_guest_coding_denied(monkeypatch, tmp_path):
     from tempa.channels.slack.messages import GUEST_CODING_DENIED
 
     session._seen_event_ids.clear()
-    say = AsyncMock()
-    with (
-        patch(
-            "tempa.channels.slack.cursor_threads.handle_cursor_job_message",
-            new_callable=AsyncMock,
-        ) as mock_cursor,
-        patch(
-            "tempa.agents.graph.run_coordinator_full",
-            new_callable=AsyncMock,
-        ) as mock_coord,
-    ):
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor_test")
+    from tempa.settings import get_settings
+
+    get_settings.cache_clear()
+    say = AsyncMock(return_value={"ts": "1.1"})
+    with patch("tempa.agent.runner.handle_interactive_turn", new_callable=AsyncMock) as mock_turn:
         result = await handle_inbound_slack(
             {
                 "user": "U_GUEST",
@@ -193,14 +179,13 @@ async def test_guest_coding_denied(monkeypatch, tmp_path):
         )
 
     assert result["handled"] == 1
-    assert result.get("cursor_denied") is True
+    assert result.get("denied") is True
     assert result["reply"] == GUEST_CODING_DENIED
-    mock_cursor.assert_not_called()
-    mock_coord.assert_not_called()
+    mock_turn.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_inbound_coding_ask_routes_to_cursor_without_pin(monkeypatch, tmp_path):
+async def test_inbound_coding_ask_routes_to_cursor_worker(monkeypatch, tmp_path):
     from tempa.channels.slack import session
 
     session._seen_event_ids.clear()
@@ -225,12 +210,12 @@ async def test_inbound_coding_ask_routes_to_cursor_without_pin(monkeypatch, tmp_
         patch(
             "tempa.channels.slack.cursor_threads.handle_cursor_job_message",
             new_callable=AsyncMock,
-            return_value="_Tempa is working on it…_",
+            return_value="_On it — working in the background…_",
         ) as mock_cursor,
         patch(
-            "tempa.agents.graph.run_coordinator_full",
+            "tempa.agent.slack_ingress.run_slack_tempa_turn",
             new_callable=AsyncMock,
-        ) as mock_coord,
+        ) as mock_agent,
     ):
         result = await handle_inbound_slack(
             {
@@ -247,9 +232,8 @@ async def test_inbound_coding_ask_routes_to_cursor_without_pin(monkeypatch, tmp_
 
     assert result["handled"] == 1
     assert result.get("cursor_coding") is True
-    assert result.get("cursor_thread") is False
     mock_cursor.assert_awaited_once()
-    mock_coord.assert_not_called()
+    mock_agent.assert_not_called()
 
 
 def test_match_cursor_repo_by_alias():
@@ -335,7 +319,8 @@ async def test_handle_cursor_job_missing_mount_enqueues_cloud(monkeypatch):
     )
     assert reply is not None
     assert "Docker repo mount" not in reply
-    assert "working" in reply.lower() or "Tempa" in reply
+    low = reply.lower()
+    assert "working" in low or "on it" in low or "tempa" in low
     assert enqueued["cfg"]["local_cwd"] == ""
     assert enqueued["cfg"]["repo"] == "Orenda-Project/compliancetracker"
 
@@ -384,7 +369,7 @@ def test_raise_pr_typo_is_write_intent():
 
 
 @pytest.mark.asyncio
-async def test_github_improve_routes_to_cursor_not_coordinator(tmp_path):
+async def test_github_improve_routes_to_cursor_worker(tmp_path):
     from tempa.channels.slack import session
 
     session._seen_event_ids.clear()
@@ -406,12 +391,12 @@ async def test_github_improve_routes_to_cursor_not_coordinator(tmp_path):
         patch(
             "tempa.channels.slack.cursor_threads.handle_cursor_job_message",
             new_callable=AsyncMock,
-            return_value="_Tempa is working on it…_",
+            return_value="_On it — working in the background…_",
         ) as mock_cursor,
         patch(
-            "tempa.agents.graph.run_coordinator_full",
+            "tempa.agent.slack_ingress.run_slack_tempa_turn",
             new_callable=AsyncMock,
-        ) as mock_coord,
+        ) as mock_agent,
     ):
         result = await handle_inbound_slack(
             {
@@ -432,12 +417,11 @@ async def test_github_improve_routes_to_cursor_not_coordinator(tmp_path):
     assert result["handled"] == 1
     assert result.get("cursor_coding") is True
     mock_cursor.assert_awaited_once()
-    mock_coord.assert_not_called()
+    mock_agent.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_raise_pr_followup_routes_to_cursor_not_clarifier(tmp_path):
-    """Live Slack failure: after QA findings, 'rase pr and fix it all' must hit Cursor."""
+async def test_raise_pr_followup_routes_to_cursor_worker(tmp_path):
     from tempa.channels.slack import session
 
     session._seen_event_ids.clear()
@@ -466,12 +450,12 @@ async def test_raise_pr_followup_routes_to_cursor_not_clarifier(tmp_path):
         patch(
             "tempa.channels.slack.cursor_threads.handle_cursor_job_message",
             new_callable=AsyncMock,
-            return_value="_Tempa is working on it…_",
+            return_value="_On it — working in the background…_",
         ) as mock_cursor,
         patch(
-            "tempa.agents.graph.run_coordinator_full",
+            "tempa.agent.slack_ingress.run_slack_tempa_turn",
             new_callable=AsyncMock,
-        ) as mock_coord,
+        ) as mock_agent,
     ):
         result = await handle_inbound_slack(
             {
@@ -489,7 +473,7 @@ async def test_raise_pr_followup_routes_to_cursor_not_clarifier(tmp_path):
     assert result["handled"] == 1
     assert result.get("cursor_coding") is True
     mock_cursor.assert_awaited_once()
-    mock_coord.assert_not_called()
+    mock_agent.assert_not_called()
 
 
 def test_empty_shipped_template_loads():

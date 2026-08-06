@@ -163,11 +163,19 @@ def notify_done(
         mentions = " ".join(f"<@{uid.strip()}>" for uid in escalate.split(",") if uid.strip())
         if mentions:
             try:
+                from tempa.agent.activity import scrub_outbound_text
+                from tempa.core.chat_errors import sanitize_user_error
+
+                safe_body = (
+                    sanitize_user_error(body)
+                    if escalate_only
+                    else scrub_outbound_text(body)[:500]
+                )
                 send_slack_message_sync(
                     channel_id,
-                    f"{mentions} — Tempa escalated a background Cursor job"
+                    f"{mentions} — Tempa escalated a background job"
                     + (f" for <@{user_id}>." if user_id else ".")
-                    + f"\n{body[:500]}",
+                    + f"\n{safe_body}",
                     thread_ts=thread_ts,
                     source_channel="cursor_job_escalate",
                 )

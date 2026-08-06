@@ -1,21 +1,21 @@
-"""Tempa-branded Slack status copy for Cursor jobs."""
+"""Tempa-branded Slack status copy for agent jobs (Cursor engine is invisible)."""
 
 from __future__ import annotations
 
 
 def msg_working() -> str:
-    return "_On it — working in the background. I'll reply here when it's done._"
+    return "_On it — I'll update this thread as I work._"
 
 
 def msg_rumi_working() -> str:
     return (
-        "_On it with *Rumi* — Cursor is running the skills pack in the background. "
+        "_On it with *Rumi* — running the skills pack in the background. "
         "You'll get the full answer here; reply in this thread anytime to steer._"
     )
 
 
 def msg_still_working(minutes: int) -> str:
-    # Kept for tests/compat — progress ticker no longer posts this to Slack.
+    # Kept for tests/compat — live activity feed replaces heartbeat spam.
     return f"_Tempa is still working on it… ({minutes}m)_"
 
 
@@ -72,6 +72,24 @@ def msg_interrupted() -> str:
         "_Tempa restarted while working on your request — "
         "the previous run was interrupted. Please ask again if you still need it._"
     )
+
+
+def msg_unavailable() -> str:
+    return (
+        "_Tempa’s agent runtime isn’t available right now — "
+        "ask the owner to check Connections (agent API key), then ask again._"
+    )
+
+
+def msg_stopped() -> str:
+    return "_Stopped._"
+
+
+def msg_activity(*, steps: list[str], done: bool = False) -> str:
+    """IDE-like live activity block (Tempa-branded)."""
+    header = "*Tempa* · Done" if done else "*Tempa* · Working…"
+    body = "\n".join(f"• {s}" for s in steps[-12:] if s.strip()) or "• Starting…"
+    return f"{header}\n{body}"
 
 
 def wants_channel_post(text: str) -> bool:

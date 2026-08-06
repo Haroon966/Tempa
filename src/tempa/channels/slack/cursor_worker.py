@@ -97,7 +97,7 @@ def _build_agent_prompt(job: dict[str, Any], *, comments: str = "", ci_logs: str
         cwd = str(job.get("worktree_path") or job.get("local_cwd") or "/repos/rumixtempa")
         pack_ctx = load_rumi_pack_context(cwd)
         parts = [
-            "You are Rumi (via Tempa) answering a Slack teammate. Cursor runs you in the "
+            "You are Rumi (via Tempa) answering a Slack teammate. Tempa runs you in the "
             "background against the vendored Taleemabad agent-skills pack.",
             f"Requester Slack user: {job.get('user_id')}",
             f"Working directory (use this cwd for all reads/scripts): {cwd}",
@@ -122,7 +122,7 @@ def _build_agent_prompt(job: dict[str, Any], *, comments: str = "", ci_logs: str
         return "\n\n".join(parts)
 
     parts = [
-        "You are Tempa working a Slack engineering request via Cursor.",
+        "You are Tempa working a Slack engineering request in the background.",
         f"Requester Slack user: {job.get('user_id')}",
         f"Mode: {job.get('mode')}",
         "Rules: Do not merge PRs. Do not combine this work into another user's PR or branch. "
@@ -812,11 +812,13 @@ async def _process_job(job: dict[str, Any]) -> None:
             return
         if _is_timeout_error(err):
             jobs.update_job(job_id, status="needs_help", phase="needs_help", error=err[:500])
+            from tempa.core.chat_errors import sanitize_user_error
+
             await asyncio.to_thread(
                 cqa.notify_done,
                 summary=(
-                    f"Background Cursor job timed out after retry for ask:\n"
-                    f"{(ask or '')[:400]}\n\n(internal: {err[:200]})"
+                    f"Background Tempa job timed out after retry for ask:\n"
+                    f"{(ask or '')[:400]}\n\n{sanitize_user_error(err)}"
                 ),
                 channel_id=channel_id,
                 thread_ts=thread_ts,

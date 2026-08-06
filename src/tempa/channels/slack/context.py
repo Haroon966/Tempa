@@ -28,9 +28,9 @@ def reply_thread_ts(event: dict[str, Any], *, event_type: str) -> str:
 def should_handle_channel_thread(event: dict[str, Any], text: str) -> bool:
     """Route channel thread messages after Tempa has participated or a Jira draft is active.
 
-    Permanent rule: if Tempa (or a Cursor job) already owns the thread, every human
-    follow-up is handled without requiring another @mention — including after a
-    session is completed.
+    Permanent rule: if Tempa already owns the thread (assistant reply, agent
+    session, coding job, or pin), every human follow-up is handled without
+    requiring another @mention — including after a session is completed.
     """
     if is_dm_event(event) or not event.get("thread_ts"):
         return False
@@ -43,6 +43,22 @@ def should_handle_channel_thread(event: dict[str, Any], text: str) -> bool:
         from tempa.channels.slack.cursor_threads import is_cursor_thread
 
         if is_cursor_thread(channel_id, thread_ts):
+            return True
+    except Exception:
+        pass
+
+    try:
+        from tempa.agent.sessions import get_session
+
+        if get_session(channel=channel_id, thread_id=thread_ts):
+            return True
+    except Exception:
+        pass
+
+    try:
+        from tempa.agent.runner import thread_has_active_run
+
+        if thread_has_active_run(channel=channel_id, thread_id=thread_ts):
             return True
     except Exception:
         pass
@@ -61,7 +77,6 @@ def should_handle_channel_thread(event: dict[str, Any], text: str) -> bool:
         logging.getLogger(__name__).exception(
             "should_handle_channel_thread: participation check failed"
         )
-        # Narrow fallback — only reopen if a Cursor job already owns this thread.
         try:
             from tempa.channels.slack.cursor_jobs import thread_has_cursor_job
 

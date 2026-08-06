@@ -15,9 +15,14 @@ GUEST_PRIVATE_COMING_SOON = (
 )
 
 GUEST_CODING_DENIED = (
-    "Repo coding via Cursor is limited to allowlisted Slack users. "
+    "Repo coding via Tempa is limited to allowlisted Slack users. "
     "Ask the Tempa owner to add your user ID to `SLACK_ALLOWED_USER_IDS` "
     "(or set `SLACK_ALLOW_ALL=true` only on a trusted workspace)."
+)
+
+GUEST_DEPLOY_DENIED = (
+    "Deploy / Coolify actions via Tempa are limited to allowlisted Slack users. "
+    "Ask the Tempa owner to add your user ID to `SLACK_ALLOWED_USER_IDS`."
 )
 
 ERROR_CLAUDE_RUNNER = (

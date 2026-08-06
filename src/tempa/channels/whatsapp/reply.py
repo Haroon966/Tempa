@@ -5,7 +5,6 @@ import logging
 import re
 from pathlib import Path
 
-from tempa.channels.whatsapp.chat import run_whatsapp_reply
 from tempa.channels.whatsapp.media import transcribe_whatsapp_audio
 from tempa.channels.whatsapp.numbers import is_owner_whatsapp_number, remember_message_lid_mapping
 from tempa.channels.whatsapp.outbound import send_whatsapp_message
@@ -186,29 +185,61 @@ async def handle_inbound_whatsapp(
     meet_url = _MEET_URL_RE.search(text)
     meet_url = meet_url.group(0) if meet_url else None
 
-    try:
-        reply = await run_whatsapp_reply(
-            text,
-            context={
-                "channel": "whatsapp",
-                "whatsapp_number": from_number,
-                "whatsapp_chat_id": chat_id or from_number,
-                "is_group": is_group,
-                "message_id": message_id,
-                "inbound_whatsapp": True,
-                "meet_url": meet_url,
-            },
-        )
-    except Exception as exc:
-        logger.exception("WhatsApp reply failed")
-        reply = f"Tempa encountered an error: {exc}"
-
-    reply_target = chat_id if chat_id and "@" in chat_id else from_number
+    # Permanent cutover: interactive WhatsApp uses Tempa agent (Cursor), not Groq chat.
+    from tempa.agent.runner import (
+        cancel_thread_run,
+        handle_interactive_turn,
+        is_cancel_request,
+        tempa_agent_available,
+    )
+    from tempa.channels.slack.cursor_progress import msg_stopped, msg_unavailable
     from tempa.channels.whatsapp.numbers import owner_delivery_for_number
 
+    thread_id = chat_id or from_number
+    reply_target = chat_id if chat_id and "@" in chat_id else from_number
     if is_owner_whatsapp_number(from_number, chat_id=chat_id, raw_item=raw_item):
         reply_target = owner_delivery_for_number(from_number)
-    send_result = await send_whatsapp_message(reply_target, reply, source_channel="whatsapp_auto_reply")
+
+    if is_cancel_request(text):
+        cancelled = cancel_thread_run(channel="whatsapp", thread_id=thread_id)
+        reply = msg_stopped() if cancelled else "Nothing running to stop."
+    elif not tempa_agent_available():
+        reply = msg_unavailable()
+    else:
+        try:
+            await send_whatsapp_message(
+                reply_target,
+                "_Tempa is on it…_",
+                source_channel="tempa_agent",
+                skip_safety=True,
+                require_user_confirmation=False,
+            )
+        except Exception:
+            logger.debug("whatsapp ack failed", exc_info=True)
+        try:
+            outcome = await handle_interactive_turn(
+                user_message=text,
+                channel="whatsapp",
+                thread_id=thread_id,
+                user_id=from_number,
+                channel_kind="whatsapp",
+                extra_context={
+                    "channel": "whatsapp",
+                    "whatsapp_number": from_number,
+                    "whatsapp_chat_id": chat_id or from_number,
+                    "is_group": is_group,
+                    "message_id": message_id,
+                    "meet_url": meet_url,
+                },
+            )
+            reply = str(outcome.get("reply") or "").strip() or "Done."
+        except Exception as exc:
+            logger.exception("WhatsApp Tempa agent turn failed")
+            from tempa.channels.slack.cursor_progress import msg_problem
+
+            reply = msg_problem(exc)
+
+    send_result = await send_whatsapp_message(reply_target, reply, source_channel="tempa_agent")
 
     record_conversation_turn(
         role="assistant",
@@ -217,4 +248,4 @@ async def handle_inbound_whatsapp(
         chat_id=chat_id or from_number,
     )
 
-    return {"handled": 1, "reply": reply, "send": send_result, "meet_url": meet_url}
+    return {"handled": 1, "reply": reply, "send": send_result, "meet_url": meet_url, "tempa_agent": True}

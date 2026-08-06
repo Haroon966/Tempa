@@ -69,9 +69,14 @@ async def send_slack_message(
     if not slack_configured():
         return {"status": "disconnected", "reason": "Slack not configured"}
 
-    auto_reply = source_channel in ("slack_auto_reply", "slack", "slack_owner_send")
+    auto_reply = source_channel in ("slack_auto_reply", "slack", "slack_owner_send", "tempa_agent")
     if require_user_confirmation is None:
-        require_user_confirmation = source_channel not in ("slack_auto_reply", "slack", "slack_owner_send")
+        require_user_confirmation = source_channel not in (
+            "slack_auto_reply",
+            "slack",
+            "slack_owner_send",
+            "tempa_agent",
+        )
     if auto_reply:
         skip_safety = True
 

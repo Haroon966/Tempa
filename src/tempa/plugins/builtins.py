@@ -101,6 +101,50 @@ def _register_calendar_tools() -> None:
         ]
         return {"status": "ok", "count": len(payload), "events": payload}
 
+    def calendar_create_event(
+        summary: str = "",
+        start_iso: str = "",
+        duration_minutes: int = 60,
+        with_meet: bool = True,
+        attendee_emails: str = "",
+    ) -> dict[str, Any]:
+        from tempa.channels.calendar.events import create_calendar_event
+
+        if not summary.strip() or not start_iso.strip():
+            return {"status": "error", "reason": "summary and start_iso required"}
+        try:
+            start = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        except ValueError:
+            return {"status": "error", "reason": "start_iso must be ISO-8601"}
+        emails = [e.strip() for e in (attendee_emails or "").split(",") if e.strip()]
+        result = create_calendar_event(
+            summary=summary.strip(),
+            start=start,
+            duration_minutes=int(duration_minutes) or 60,
+            with_meet=bool(with_meet),
+            attendee_emails=emails or None,
+        )
+        if not result.ok:
+            return {"status": "error", "reason": result.error}
+        return {
+            "status": "ok",
+            "summary": result.summary,
+            "when": result.when,
+            "meet_url": result.meet_url,
+            "attendees": result.invited_attendees or [],
+            "note": "Uses Tempa workspace Google Calendar, not the Slack user's personal calendar.",
+        }
+
+    def calendar_delete_by_title(title: str = "") -> dict[str, Any]:
+        from tempa.channels.calendar.events import delete_calendar_events_by_title
+
+        if not title.strip():
+            return {"status": "error", "reason": "title required"}
+        result = delete_calendar_events_by_title(title.strip())
+        if not result.ok:
+            return {"status": "error", "reason": result.error}
+        return {"status": "ok", "deleted": result.deleted or []}
+
     register_tool(
         "calendar.list_events",
         "List upcoming Google Calendar events",
@@ -108,6 +152,35 @@ def _register_calendar_tools() -> None:
         input_schema={
             "type": "object",
             "properties": {"days": {"type": "integer", "default": 7}},
+        },
+    )
+    register_tool(
+        "calendar.create_event",
+        "Create a Google Calendar event (Tempa workspace calendar). start_iso is ISO-8601.",
+        calendar_create_event,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "start_iso": {"type": "string"},
+                "duration_minutes": {"type": "integer", "default": 60},
+                "with_meet": {"type": "boolean", "default": True},
+                "attendee_emails": {
+                    "type": "string",
+                    "description": "Comma-separated guest emails",
+                },
+            },
+            "required": ["summary", "start_iso"],
+        },
+    )
+    register_tool(
+        "calendar.delete_by_title",
+        "Delete upcoming calendar events matching a title",
+        calendar_delete_by_title,
+        input_schema={
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
         },
     )
 
@@ -124,6 +197,88 @@ def _register_meet_tools() -> None:
             return {"status": "error", "reason": str(exc)}
         return {"status": "queued", "meeting_id": meeting_id, "meet_url": meet_url}
 
+    def meet_list(limit: int = 10) -> dict[str, Any]:
+        import asyncio
+
+        from tempa.meet.archive import list_meetings
+
+        try:
+            rows = asyncio.run(list_meetings(limit=max(1, min(int(limit), 50)), include_artifacts=True))
+        except RuntimeError:
+            # Already in an event loop — schedule on a fresh loop in a thread.
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                rows = pool.submit(
+                    lambda: asyncio.run(
+                        list_meetings(limit=max(1, min(int(limit), 50)), include_artifacts=True)
+                    )
+                ).result(timeout=60)
+        slim = [
+            {
+                "id": r.get("id"),
+                "title": r.get("title"),
+                "meet_url": r.get("meet_url"),
+                "started_at": r.get("started_at"),
+                "has_minutes": bool((r.get("artifacts") or {}).get("minutes")),
+                "has_transcript": bool((r.get("artifacts") or {}).get("transcript")),
+            }
+            for r in rows
+        ]
+        return {"status": "ok", "count": len(slim), "meetings": slim}
+
+    def meet_get_minutes(meeting_id: str = "") -> dict[str, Any]:
+        import asyncio
+
+        from tempa.meet.archive import list_meetings
+
+        mid = (meeting_id or "").strip()
+        if not mid:
+            return {"status": "error", "reason": "meeting_id required"}
+
+        def _load() -> dict[str, Any]:
+            rows = asyncio.run(list_meetings(limit=200, include_artifacts=True))
+            for r in rows:
+                if str(r.get("id") or "") == mid:
+                    return {
+                        "status": "ok",
+                        "meeting_id": mid,
+                        "title": r.get("title"),
+                        "minutes": r.get("minutes") or {},
+                        "artifacts": r.get("artifacts") or {},
+                    }
+            return {"status": "error", "reason": f"meeting {mid} not found"}
+
+        try:
+            return _load()
+        except RuntimeError:
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(_load).result(timeout=60)
+
+    def meet_generate_minutes_from_text(transcript: str = "", source_name: str = "transcript.txt") -> dict[str, Any]:
+        """On-demand minutes via Groq backend (background STT/minutes engine)."""
+        import asyncio
+
+        from tempa.meet.archive import generate_minutes_from_transcript
+
+        text = (transcript or "").strip()
+        if not text:
+            return {"status": "error", "reason": "transcript required"}
+
+        async def _run() -> dict[str, Any]:
+            return await generate_minutes_from_transcript(text, source_name=source_name or "transcript.txt")
+
+        try:
+            result = asyncio.run(_run())
+        except RuntimeError:
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                result = pool.submit(lambda: asyncio.run(_run())).result(timeout=180)
+        return {"status": "ok", "minutes": result}
+
     register_tool(
         "meet.join",
         "Queue a Google Meet join for the given meet.google.com URL",
@@ -137,18 +292,60 @@ def _register_meet_tools() -> None:
             "required": ["meet_url"],
         },
     )
+    register_tool(
+        "meet.list",
+        "List recent Meet archives (auto-captured notes use Groq STT in the background)",
+        meet_list,
+        input_schema={
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 10}},
+        },
+    )
+    register_tool(
+        "meet.get_minutes",
+        "Fetch stored minutes/artifacts for a meeting id from Tempa archives",
+        meet_get_minutes,
+        input_schema={
+            "type": "object",
+            "properties": {"meeting_id": {"type": "string"}},
+            "required": ["meeting_id"],
+        },
+    )
+    register_tool(
+        "meet.generate_minutes",
+        "Generate meeting minutes from transcript text (uses Groq minutes backend)",
+        meet_generate_minutes_from_text,
+        input_schema={
+            "type": "object",
+            "properties": {
+                "transcript": {"type": "string"},
+                "source_name": {"type": "string", "default": "transcript.txt"},
+            },
+            "required": ["transcript"],
+        },
+    )
 
 
 def _register_preference_tools() -> None:
     from tempa.rag.procedural import add_fact, add_preference, list_durable, list_preferences
 
+    def memory_add_preference(rule: str = "", user_id: str = "") -> dict[str, Any]:
+        tags = [f"user:{user_id.strip()}"] if user_id.strip() else []
+        return add_preference(rule, source="tempa_agent", tags=tags or None)
+
+    def memory_add_fact(text: str = "", kind: str = "fact") -> dict[str, Any]:
+        return add_fact(text, kind=kind or "fact", source="tempa_agent", tags=["scope:team"])
+
     register_tool(
         "memory.add_preference",
-        "Store a user preference or procedural rule",
-        lambda rule="": add_preference(rule, source="plugin"),
+        "Store a user preference or procedural rule (pass user_id to scope to that person)",
+        memory_add_preference,
         input_schema={
             "type": "object",
-            "properties": {"rule": {"type": "string"}},
+            "properties": {
+                "rule": {"type": "string"},
+                "user_id": {"type": "string"},
+            },
             "required": ["rule"],
         },
     )
@@ -160,8 +357,8 @@ def _register_preference_tools() -> None:
     )
     register_tool(
         "memory.add_fact",
-        "Store a durable org fact, person, project, or decision",
-        lambda text="", kind="fact": add_fact(text, kind=kind or "fact", source="plugin"),
+        "Store a durable org/team fact, person, project, or decision",
+        memory_add_fact,
         input_schema={
             "type": "object",
             "properties": {

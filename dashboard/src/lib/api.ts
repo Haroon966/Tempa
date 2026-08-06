@@ -992,63 +992,6 @@ export async function fetchQaAgentPlaybook(findingId: string, target: "claude" |
   )
 }
 
-export type PresenceStatus =
-  | "leave"
-  | "half_day"
-  | "leave_early"
-  | "remote"
-  | "late"
-  | "partial_away"
-  | "ooo"
-  | "back"
-  | "office"
-  | "field_visit"
-  | "travel"
-  | "limited"
-  | "other"
-
-export type PresenceLocation = "i10" | "niete" | "h9" | "rawalpindi" | "moawin_hq" | "other_site"
-
-export interface PresenceEntry {
-  date: string
-  user_id: string
-  name: string
-  image?: string
-  status: PresenceStatus
-  location: PresenceLocation | null
-  location_raw: string | null
-  reason: string | null
-  half: "first" | "second" | null
-  note: string
-  raw_text: string
-  source: "llm" | "rules" | string
-  ts: string
-  message_ts: string
-  updated_at?: string
-}
-
-export interface PresencePayload {
-  date: string
-  channel: { id: string; name: string }
-  updated_at: string
-  llm_model: string
-  counts: Record<PresenceStatus, number>
-  groups: Record<PresenceStatus, PresenceEntry[]>
-  by_location: Record<PresenceLocation, PresenceEntry[]>
-}
-
-export async function fetchPresence(date?: string) {
-  const qs = date ? `?date=${encodeURIComponent(date)}` : ""
-  const key = `presence${qs}`
-  return fetchJsonCached(key, 15_000, () => request<PresencePayload>(`/api/presence${qs}`))
-}
-
-export async function postPresenceSync() {
-  return request<{ sync: Record<string, unknown>; presence: PresencePayload }>("/api/presence/sync", {
-    method: "POST",
-  })
-}
-
 export async function fetchOrchestrator() {
   return fetchJsonCached("orchestrator", 60_000, () =>
     request<import("@/types/dashboard").OrchestratorManifest>("/api/orchestrator"),

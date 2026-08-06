@@ -209,15 +209,11 @@ def _build_app() -> AsyncApp:
     @assistant.user_message
     async def on_assistant_user_message(event, say, body, set_status):
         await set_status("is thinking...")
-        from tempa.channels.slack.session import mark_inbound_seen
-
-        event_id = str(body.get("event_id") or "")
-        channel_id = str(event.get("channel") or "")
-        message_ts = str(event.get("ts") or "")
-        # Prefer message-event DM path when both fire; skip duplicate assistant delivery.
-        if not mark_inbound_seen(event_id=event_id, channel_id=channel_id, message_ts=message_ts):
-            logger.info("Slack assistant duplicate skipped %s", message_ts)
+        # DMs are owned by the message event handler. Assistant UI only shows status —
+        # pre-marking here used to make handle_inbound_slack drop the real turn.
+        if _is_dm_event(event):
             return
+        event_id = str(body.get("event_id") or "")
         logger.info(
             "Slack assistant message from %s: %s",
             event.get("user"),
@@ -271,16 +267,10 @@ def _build_app() -> AsyncApp:
             else:
                 await ack()
             return
-        # DMs: handle here as the primary path. AsyncAssistant may also fire — dedupe by event/ts.
+        # DMs: message event is the sole scheduler (assistant only paints status).
+        # Dedupe lives in handle_inbound_slack via mark_inbound_seen.
         await ack()
-        from tempa.channels.slack.session import mark_inbound_seen
-
         event_id = str(body.get("event_id") or "")
-        channel_id = str(event.get("channel") or "")
-        message_ts = str(event.get("ts") or "")
-        if not mark_inbound_seen(event_id=event_id, channel_id=channel_id, message_ts=message_ts):
-            logger.info("Slack DM duplicate skipped %s", message_ts)
-            return
         logger.info(
             "Slack DM from %s: %s",
             event.get("user"),

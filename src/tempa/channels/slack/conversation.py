@@ -200,12 +200,13 @@ def participants_from_turns(
 
 
 def bot_participated_in_thread(channel_id: str, thread_ts: str) -> bool:
-    """True when Tempa already replied in this Slack thread or DM.
+    """True when Tempa already owns this Slack thread or DM.
 
     Sources (any one is enough):
     1. In-memory conversation turns
-    2. Disk conversation.jsonl (Cursor sync posts land here)
-    3. A Cursor job already bound to this channel+thread
+    2. Disk conversation.jsonl
+    3. A Cursor/Tempa coding job bound to this channel+thread
+    4. An interactive Tempa agent session (create/resume) for this thread
     """
     if not channel_id or not thread_ts:
         return False
@@ -222,6 +223,20 @@ def bot_participated_in_thread(channel_id: str, thread_ts: str) -> bool:
         from tempa.channels.slack.cursor_jobs import thread_has_cursor_job
 
         if thread_has_cursor_job(channel_id=channel_id, thread_ts=thread_ts):
+            return True
+    except Exception:
+        pass
+    try:
+        from tempa.agent.sessions import get_session
+
+        if get_session(channel=channel_id, thread_id=thread_ts):
+            return True
+    except Exception:
+        pass
+    try:
+        from tempa.agent.runner import thread_has_active_run
+
+        if thread_has_active_run(channel=channel_id, thread_id=thread_ts):
             return True
     except Exception:
         pass

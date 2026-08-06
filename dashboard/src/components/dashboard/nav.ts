@@ -4,7 +4,6 @@ import {
   GitBranchIcon,
   InboxIcon,
   LayoutDashboardIcon,
-  MapPinIcon,
   MessageSquareIcon,
   SettingsIcon,
   StethoscopeIcon,
@@ -16,7 +15,6 @@ export const NAV_ITEMS = [
   { value: "agent", path: "/agent", label: "Agent", icon: MessageSquareIcon, group: "work" },
   { value: "meetings", path: "/meetings/live", label: "Meetings", icon: VideoIcon, group: "work" },
   { value: "inbox", path: "/inbox/mail", label: "Inbox", icon: InboxIcon, group: "work" },
-  { value: "presence", path: "/presence", label: "Presence", icon: MapPinIcon, group: "work" },
   { value: "activity", path: "/activity", label: "Activity", icon: ActivityIcon, group: "monitor" },
   { value: "sessions", path: "/sessions", label: "Sessions", icon: BotIcon, group: "monitor" },
   { value: "qa", path: "/qa", label: "QA", icon: GitBranchIcon, group: "monitor" },
@@ -56,10 +54,6 @@ export const PAGE_META: Record<NavSection, { title: string; description: string 
   inbox: {
     title: "Inbox",
     description: "Synced mail and actions awaiting your approval",
-  },
-  presence: {
-    title: "Presence",
-    description: "Who is on leave, remote, in office, or on a field visit — from Slack #presence",
   },
   activity: {
     title: "Activity",

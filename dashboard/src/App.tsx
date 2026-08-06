@@ -40,9 +40,6 @@ const MailTab = lazy(() =>
 const QaTab = lazy(() =>
   import("@/components/tabs/qa-tab").then((m) => ({ default: m.QaTab })),
 )
-const PresenceTab = lazy(() =>
-  import("@/components/tabs/presence-tab").then((m) => ({ default: m.PresenceTab })),
-)
 const SessionsTab = lazy(() =>
   import("@/components/tabs/sessions-tab").then((m) => ({ default: m.SessionsTab })),
 )
@@ -140,14 +137,6 @@ export default function App() {
           element={
             <LazyRoute>
               <QaTab />
-            </LazyRoute>
-          }
-        />
-        <Route
-          path="presence"
-          element={
-            <LazyRoute>
-              <PresenceTab />
             </LazyRoute>
           }
         />

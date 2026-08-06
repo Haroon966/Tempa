@@ -91,7 +91,7 @@ def format_rumi_user_reply(agent_text: str) -> str:
     body = (agent_text or "").strip() or "_Rumi had nothing to add._"
     footer = (
         "\n\n---\n"
-        "_Rumi (via Tempa / Cursor). Reply in this thread to steer, refine, or undo — "
+        "_Rumi (via Tempa). Reply in this thread to steer, refine, or undo — "
         "you have full control of the next step._"
     )
     if footer.strip() in body:
@@ -113,7 +113,7 @@ def format_rumi_capability_reply(cwd: str | Path = "/repos/rumixtempa") -> str:
         return (
             "Yes — Tempa is wired to the *Rumi* skills pack, but the pack isn’t mounted "
             "here yet (`/repos/rumixtempa`). After `docker compose up -d tempa-daemon`, "
-            "ask again or say *use rumi to …* and I’ll run it in Cursor."
+            "ask again or say *use rumi to …* and I’ll run it for you."
         )
     lines: list[str] = []
     for raw in inventory.splitlines():
@@ -125,8 +125,8 @@ def format_rumi_capability_reply(cwd: str | Path = "/repos/rumixtempa") -> str:
             lines.append(f"• *{name}*")
     body = "\n".join(lines) if lines else inventory
     return (
-        "Yes — Tempa has the *Rumi* skills pack wired in. I run them via Cursor in the "
-        "background when you ask me to *use rumi to …*.\n\n"
+        "Yes — Tempa has the *Rumi* skills pack wired in. Ask me to *use rumi to …* "
+        "and I’ll run the pack in the background.\n\n"
         f"*Available skills:*\n{body}\n\n"
         "Example: `use rumi to list my team’s Notion cards`\n\n"
         "---\n"

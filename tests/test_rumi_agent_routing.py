@@ -119,9 +119,11 @@ def test_format_rumi_capability_reply_lists_skills():
     assert "meeting summary" not in out.lower()
 
 
-def test_msg_rumi_working_mentions_cursor_background():
+def test_msg_rumi_working_is_tempa_branded():
     msg = msg_rumi_working()
-    assert "Rumi" in msg and "Cursor" in msg
+    assert "Rumi" in msg
+    assert "Cursor" not in msg
+    assert "background" in msg.lower()
 
 
 @pytest.mark.asyncio

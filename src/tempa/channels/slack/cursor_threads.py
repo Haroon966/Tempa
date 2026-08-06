@@ -264,13 +264,23 @@ def thread_coding_context_blob(context: dict[str, Any] | None = None) -> str:
     ctx = dict(context or {})
     channel_id = str(ctx.get("slack_channel_id") or ctx.get("channel_id") or "")
     thread_ts = str(ctx.get("slack_thread_ts") or ctx.get("thread_ts") or "")
+    conv_key = str(ctx.get("slack_conversation_key") or "").strip()
+    if not conv_key:
+        is_dm = bool(ctx.get("slack_is_dm")) or str(channel_id).startswith("D")
+        if is_dm and channel_id:
+            conv_key = channel_id
+        else:
+            conv_key = thread_ts
     parts: list[str] = []
-    if channel_id and thread_ts:
+    if channel_id and (conv_key or thread_ts):
         try:
             from tempa.channels.slack.conversation import list_thread_messages
 
             for row in list_thread_messages(
-                channel_id=channel_id, thread_ts=thread_ts, limit=40
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                conversation_key=conv_key,
+                limit=40,
             ):
                 text = str(row.get("text") or "").strip()
                 if text:
@@ -282,7 +292,7 @@ def thread_coding_context_blob(context: dict[str, Any] | None = None) -> str:
                 from tempa.channels.slack.conversation import get_recent_messages
 
                 for row in get_recent_messages(
-                    limit=40, channel_id=channel_id, conversation_key=thread_ts
+                    limit=40, channel_id=channel_id, conversation_key=conv_key or thread_ts
                 ):
                     text = str(row.get("text") or "").strip()
                     if text:
@@ -361,10 +371,10 @@ def ambiguous_repo_message() -> str:
     repos = load_cursor_repos()
     if not repos:
         return (
-            "Coding work goes through Cursor, but no repos are configured. "
+            "Coding work needs a configured repo. "
             "Add a `repos:` entry in `config/cursor_threads.yaml`."
         )
-    lines = ["Which repo should Cursor work on? Configured:"]
+    lines = ["Which repo should Tempa work on? Configured:"]
     for row in repos:
         aliases = ", ".join(row.get("aliases") or [row.get("id") or "?"])
         label = row.get("label") or row.get("id") or row.get("local_cwd") or row.get("repo")

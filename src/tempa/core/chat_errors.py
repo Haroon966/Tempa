@@ -42,11 +42,17 @@ def _norm(err: str | BaseException | None) -> str:
 
 def classify_exception(exc: Exception) -> dict[str, Any]:
     text = str(exc).lower()
-    if "groq" in text or "api key" in text:
+    if "groq" in text or ("api key" in text and "cursor" not in text):
         return ChatError(
             "GROQ_UNAVAILABLE",
             "Groq API is unavailable — check your API key in Connections.",
         ).to_payload()
+    if "cursor" in text and ("api key" in text or "not set" in text or "unavailable" in text):
+        return ChatError(
+            "AGENT_UNAVAILABLE",
+            "Tempa’s agent runtime isn’t available — ask the owner to check Connections.",
+        ).to_payload()
+
     if "gmail" in text and "not connected" in text:
         return ChatError(
             "GMAIL_NOT_CONNECTED",
@@ -90,7 +96,7 @@ def sanitize_user_error(err: str | BaseException | None) -> str:
     if "cursor_api_key" in lower or "cursor api key" in lower or (
         "cursor" in lower and "not configured" in lower
     ):
-        return "Cursor isn’t configured on Tempa yet — ask the owner to set `CURSOR_API_KEY`."
+        return "Tempa’s agent runtime isn’t configured yet — ask the owner to set it up in Connections."
     if "local repo path" in lower or "local_cwd" in lower or (
         "not available" in lower and ("repo" in lower or "/repos" in lower)
     ):
@@ -124,13 +130,13 @@ def sanitize_user_error(err: str | BaseException | None) -> str:
         return (
             "I couldn’t start a cloud job on that repo (default branch). "
             "Please ask again — I’ll pin `main` and retry. "
-            "If it keeps failing, the Cursor GitHub connection may not see that repo."
+            "If it keeps failing, check the GitHub connection for that repo."
         )
     if "failed to verify existence of branch" in lower or (
         "branch" in lower and "repository" in lower and "ensure the branch" in lower
     ):
         return (
-            "I couldn’t reach that GitHub branch from Cursor cloud. "
+            "I couldn’t reach that GitHub branch from cloud. "
             "Please ask again — I’ll clone it locally and open the PR from Tempa."
         )
 

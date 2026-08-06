@@ -27,11 +27,12 @@ async def test_guest_can_create_jira_ticket():
         "tempa.channels.jira.tickets.handle_jira_ticket_message",
         new_callable=AsyncMock,
         return_value="Ticket preview ready",
-    ), patch("tempa.channels.slack.reply.send_slack_message", new_callable=AsyncMock) as mock_send, patch(
-        "tempa.channels.slack.reply.record_conversation_turn"
-    ), patch("tempa.channels.slack.reply.touch_event"):
+    ), patch(
+        "tempa.agent.slack_ingress._post", new_callable=AsyncMock
+    ) as mock_post, patch("tempa.channels.slack.reply.record_conversation_turn"), patch(
+        "tempa.channels.slack.reply.touch_event"
+    ):
         result = await handle_inbound_slack(event, event_id="evt-1")
 
     assert result.get("jira_ticket") is True
-    assert result.get("skipped_coordinator") is True
-    mock_send.assert_called_once()
+    mock_post.assert_awaited()

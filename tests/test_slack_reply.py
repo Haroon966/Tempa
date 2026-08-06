@@ -61,15 +61,18 @@ def test_mark_inbound_seen_dedupes_by_message_ts():
 
 
 @pytest.mark.asyncio
-async def test_owner_dm_triggers_coordinator_and_say(monkeypatch, tmp_path):
+async def test_owner_dm_triggers_tempa_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("TEMPA_DATA_DIR", str(tmp_path))
     from tempa.settings import get_settings
 
     get_settings.cache_clear()
 
     say = AsyncMock()
-    with patch("tempa.agents.graph.run_coordinator_full", new_callable=AsyncMock) as mock_coord:
-        mock_coord.return_value = {"response": "Hello from Tempa"}
+    with patch(
+        "tempa.agent.slack_ingress.run_slack_tempa_turn",
+        new_callable=AsyncMock,
+        return_value={"handled": 1, "reply": "Hello from Tempa", "ok": True},
+    ) as mock_agent:
         result = await handle_inbound_slack(
             {
                 "user": "U_OWNER",
@@ -84,20 +87,23 @@ async def test_owner_dm_triggers_coordinator_and_say(monkeypatch, tmp_path):
         )
 
     assert result["handled"] == 1
-    say.assert_awaited_once_with(text="Hello from Tempa")
-    mock_coord.assert_awaited_once()
+    assert result.get("tempa_agent") is True
+    mock_agent.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_guest_dm_triggers_coordinator(monkeypatch, tmp_path):
+async def test_guest_dm_triggers_tempa_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("TEMPA_DATA_DIR", str(tmp_path))
     from tempa.settings import get_settings
 
     get_settings.cache_clear()
 
     say = AsyncMock()
-    with patch("tempa.agents.graph.run_coordinator_full", new_callable=AsyncMock) as mock_coord:
-        mock_coord.return_value = {"response": "Hello guest"}
+    with patch(
+        "tempa.agent.slack_ingress.run_slack_tempa_turn",
+        new_callable=AsyncMock,
+        return_value={"handled": 1, "reply": "Hello guest", "ok": True},
+    ) as mock_agent:
         result = await handle_inbound_slack(
             {
                 "user": "U_STRANGER",
@@ -112,21 +118,22 @@ async def test_guest_dm_triggers_coordinator(monkeypatch, tmp_path):
         )
 
     assert result["handled"] == 1
-    mock_coord.assert_awaited_once()
-    ctx = mock_coord.await_args.args[1]
-    assert ctx["slack_privileged"] is False
-    say.assert_awaited_once_with(text="Hello guest")
+    mock_agent.assert_awaited_once()
+    kwargs = mock_agent.await_args.kwargs
+    assert kwargs["user_id"] == "U_STRANGER"
+    assert kwargs["slack_ctx"]["slack_privileged"] is False
 
 
 @pytest.mark.asyncio
-async def test_guest_private_integration_gets_coming_soon(monkeypatch, tmp_path):
+async def test_guest_private_integration_denied_in_ingress(monkeypatch, tmp_path):
     monkeypatch.setenv("TEMPA_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor_test")
     from tempa.settings import get_settings
 
     get_settings.cache_clear()
 
-    say = AsyncMock()
-    with patch("tempa.agents.graph.run_coordinator_full", new_callable=AsyncMock) as mock_coord:
+    say = AsyncMock(return_value={"ts": "9.9"})
+    with patch("tempa.agent.runner.handle_interactive_turn", new_callable=AsyncMock) as mock_turn:
         result = await handle_inbound_slack(
             {
                 "user": "U_STRANGER",
@@ -141,22 +148,25 @@ async def test_guest_private_integration_gets_coming_soon(monkeypatch, tmp_path)
         )
 
     assert result["handled"] == 1
-    assert result.get("skipped_coordinator") is True
-    assert "slack yet" in result["reply"].lower()
-    mock_coord.assert_not_called()
-    say.assert_awaited_once()
+    assert result.get("denied") is True
+    assert "aren't available" in result["reply"].lower()
+    mock_turn.assert_not_called()
+    say.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_app_mention_replies_in_thread(monkeypatch, tmp_path):
+async def test_app_mention_replies_via_tempa_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("TEMPA_DATA_DIR", str(tmp_path))
     from tempa.settings import get_settings
 
     get_settings.cache_clear()
 
     say = AsyncMock()
-    with patch("tempa.agents.graph.run_coordinator_full", new_callable=AsyncMock) as mock_coord:
-        mock_coord.return_value = {"response": "On it"}
+    with patch(
+        "tempa.agent.slack_ingress.run_slack_tempa_turn",
+        new_callable=AsyncMock,
+        return_value={"handled": 1, "reply": "On it", "ok": True},
+    ) as mock_agent:
         result = await handle_inbound_slack(
             {
                 "user": "U_COLLEAGUE",
@@ -170,7 +180,8 @@ async def test_app_mention_replies_in_thread(monkeypatch, tmp_path):
         )
 
     assert result["handled"] == 1
-    say.assert_awaited_once_with(text="On it", thread_ts="3.0")
+    mock_agent.assert_awaited_once()
+    assert mock_agent.await_args.kwargs["reply_thread"] == "3.0"
 
 
 @pytest.mark.asyncio
@@ -183,14 +194,17 @@ async def test_duplicate_event_skipped():
         "text": "ping",
         "ts": "4.0",
     }
-    with patch("tempa.agents.graph.run_coordinator_full", new_callable=AsyncMock) as mock_coord:
-        mock_coord.return_value = {"response": "pong"}
+    with patch(
+        "tempa.agent.slack_ingress.run_slack_tempa_turn",
+        new_callable=AsyncMock,
+        return_value={"handled": 1, "reply": "pong", "ok": True},
+    ) as mock_agent:
         first = await handle_inbound_slack(event, event_id="EvDup", say=say)
         second = await handle_inbound_slack(event, event_id="EvDup", say=say)
 
     assert first["handled"] == 1
     assert second.get("duplicate") is True
-    assert mock_coord.await_count == 1
+    assert mock_agent.await_count == 1
 
 
 @pytest.mark.asyncio

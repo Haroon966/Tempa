@@ -38,9 +38,13 @@ async def send_whatsapp_message(
     from tempa.channels.whatsapp.session import sync_connection_from_bridge
 
     if require_user_confirmation is None:
-        require_user_confirmation = source_channel not in ("whatsapp_auto_reply", "whatsapp")
+        require_user_confirmation = source_channel not in (
+            "whatsapp_auto_reply",
+            "whatsapp",
+            "tempa_agent",
+        )
 
-    auto_reply = source_channel in ("whatsapp_auto_reply", "whatsapp")
+    auto_reply = source_channel in ("whatsapp_auto_reply", "whatsapp", "tempa_agent")
     if auto_reply:
         skip_safety = True
 

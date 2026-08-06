@@ -54,24 +54,6 @@ def _save_disk(profiles: dict[str, dict[str, str]]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _from_presence() -> dict[str, dict[str, str]]:
-    try:
-        from tempa.channels.slack.presence_store import load_members
-
-        out: dict[str, dict[str, str]] = {}
-        for member in load_members():
-            uid = str(member.get("user_id") or "").strip()
-            if not uid:
-                continue
-            out[uid] = {
-                "name": str(member.get("name") or uid),
-                "image": str(member.get("image") or ""),
-            }
-        return out
-    except Exception:
-        return {}
-
-
 def _response_dict(response: Any) -> dict[str, Any]:
     if isinstance(response, dict):
         return response
@@ -106,14 +88,7 @@ def _ensure_mem() -> dict[str, dict[str, str]]:
     now = time.time()
     with _lock:
         if now - _mem_loaded_at > _MEM_TTL_S or not _mem:
-            merged = _load_disk()
-            for uid, row in _from_presence().items():
-                prev = merged.get(uid) or {}
-                merged[uid] = {
-                    "name": row.get("name") or prev.get("name") or uid,
-                    "image": row.get("image") or prev.get("image") or "",
-                }
-            _mem = merged
+            _mem = _load_disk()
             _mem_loaded_at = now
         return _mem
 

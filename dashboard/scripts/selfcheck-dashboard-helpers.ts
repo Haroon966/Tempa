@@ -5,8 +5,6 @@
 import assert from "node:assert/strict"
 import { recentDoneJobs } from "../src/lib/qa-jobs.ts"
 import { parseYoutubeVideoId } from "../src/lib/youtube.ts"
-import { buildClusters, flattenEntries } from "../src/components/presence/presence-board-model.ts"
-import type { PresenceEntry, PresencePayload } from "../src/lib/api.ts"
 
 assert.equal(parseYoutubeVideoId("https://youtu.be/sBg6Ra_soEU"), "sBg6Ra_soEU")
 assert.equal(parseYoutubeVideoId("https://www.youtube.com/watch?v=abcDEF12345"), "abcDEF12345")
@@ -26,30 +24,5 @@ assert.deepEqual(
   done.map((j) => j.id),
   ["new", "mid"],
 )
-
-const entry = (over: Partial<PresenceEntry>): PresenceEntry =>
-  ({
-    user_id: "U1",
-    name: "Ada",
-    status: "office",
-    location: "i10",
-    message_ts: "1.0",
-    ts: "2026-07-01T09:00:00Z",
-    source: "slack",
-    note: "",
-    raw_text: "",
-    ...over,
-  }) as PresenceEntry
-
-const payload = {
-  groups: { office: [entry({})] },
-  by_location: { i10: [entry({})] },
-  counts: {},
-} as unknown as PresencePayload
-
-const flat = flattenEntries(payload)
-assert.equal(flat.length, 1)
-const clusters = buildClusters(flat)
-assert.equal(clusters.filter((c) => c.entries.some((e) => e.user_id === "U1")).length, 1)
 
 console.log("selfcheck-dashboard-helpers: ok")
