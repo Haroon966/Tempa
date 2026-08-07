@@ -4,6 +4,15 @@ __pycache__/
 .venv/
 venv/
 data/
+# Personal knowledge directory (contacts / Slack / WhatsApp / routing)
+data/vault/knowledge/people.md
+data/vault/knowledge/directory.json
+data/vault/knowledge/channels.md
+data/vault/knowledge/routing.md
+config/varys/vault-templates/knowledge/people.md
+config/varys/vault-templates/knowledge/directory.json
+config/varys/vault-templates/knowledge/channels.md
+config/varys/vault-templates/knowledge/routing.md
 *.egg-info/
 dist/
 build/

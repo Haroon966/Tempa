@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     meet_auto_send_summary_slack: bool = True
     meet_auto_send_summary_email: bool = True
     meet_punjab_daily_sync_slack_channel: str = "region-punjab"
+    meet_moawin_huddle_slack_channel: str = "region-punjab-moawin"
     meet_admission_timeout_seconds: int = 600
     meet_record_video: bool = True
     meet_record_video_width: int = 1280

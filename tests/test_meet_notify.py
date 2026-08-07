@@ -10,6 +10,7 @@ from tempa.meet.notify import (
     build_meeting_summary_email,
     build_meeting_summary_html,
     format_meeting_summary,
+    is_moawin_daily_huddle,
     is_punjab_daily_sync,
     notify_meeting_completed,
 )
@@ -144,6 +145,13 @@ def test_is_punjab_daily_sync_matches_title_variants():
     assert not is_punjab_daily_sync("Optional: Sense-making Sessions")
 
 
+def test_is_moawin_daily_huddle_matches_title():
+    assert is_moawin_daily_huddle("Daily Huddle-Moawin Team")
+    assert is_moawin_daily_huddle("daily huddle — moawin team")
+    assert not is_moawin_daily_huddle("Moawin CCs Training Session 01")
+    assert not is_moawin_daily_huddle("Team Punjab – Daily Sync")
+
+
 @pytest.mark.asyncio
 async def test_notify_sends_slack_and_email_to_owner_and_organizer():
     minutes = {"tldr": "Pilot feedback loops agreed."}
@@ -165,6 +173,7 @@ async def test_notify_sends_slack_and_email_to_owner_and_organizer():
         settings.meet_auto_send_summary_slack = True
         settings.meet_auto_send_summary_email = True
         settings.slack_owner_user_id = "UOWNER"
+        settings.meet_moawin_huddle_slack_channel = "region-punjab-moawin"
 
         results = await notify_meeting_completed(record, minutes)
 
@@ -193,14 +202,60 @@ async def test_notify_does_not_post_punjab_channel():
         settings.meet_auto_send_summary_slack = True
         settings.meet_auto_send_summary_email = False
         settings.slack_owner_user_id = "U1"
+        settings.meet_moawin_huddle_slack_channel = "region-punjab-moawin"
 
         results = await notify_meeting_completed(
             {"title": "Team Punjab – Daily Sync", "organizer_email": ""},
             {"tldr": "Done."},
         )
 
+    assert "slack_channel" not in results
     assert "slack_punjab_channel" not in results
     assert results.get("slack") == "sent"
+
+
+@pytest.mark.asyncio
+async def test_notify_moawin_huddle_posts_channel_and_emails_attendees():
+    record = {
+        "title": "Daily Huddle-Moawin Team",
+        "youtube_url": "https://youtu.be/lArMX5FrkGQ",
+        "attendee_emails": ["mahrah.ashraf@taleemabad.com", "ali.ahmed@taleemabad.com"],
+        "organizer_email": "mahrah.ashraf@taleemabad.com",
+    }
+    minutes = {"tldr": "Aligned on feedback forms."}
+
+    with (
+        patch("tempa.settings.get_settings") as mock_settings,
+        patch("tempa.meet.notify._send_slack_dm", new_callable=AsyncMock, return_value="sent"),
+        patch("tempa.meet.notify._send_slack_channel", new_callable=AsyncMock, return_value="sent") as mock_ch,
+        patch("tempa.meet.notify.find_slack_user_id_by_email", return_value="UORG"),
+        patch("tempa.meet.notify._send_email_summary", new_callable=AsyncMock, return_value="sent") as mock_email,
+        patch("tempa.meet.notify.get_calendar_owner_email", create=True),
+        patch(
+            "tempa.channels.calendar.events.get_calendar_owner_email",
+            return_value="owner@example.com",
+        ),
+    ):
+        settings = mock_settings.return_value
+        settings.meet_auto_send_summary_whatsapp = False
+        settings.meet_auto_send_summary_slack = True
+        settings.meet_auto_send_summary_email = True
+        settings.slack_owner_user_id = "UOWNER"
+        settings.meet_moawin_huddle_slack_channel = "region-punjab-moawin"
+
+        results = await notify_meeting_completed(record, minutes)
+
+    assert results["slack_channel"] == "sent"
+    mock_ch.assert_awaited_once()
+    assert mock_ch.await_args.args[0] == "region-punjab-moawin"
+    assert "youtu.be/lArMX5FrkGQ" in mock_ch.await_args.args[1]
+    emailed = {call.kwargs["to"] for call in mock_email.await_args_list}
+    assert emailed == {
+        "mahrah.ashraf@taleemabad.com",
+        "owner@example.com",
+        "ali.ahmed@taleemabad.com",
+    }
+    assert results["email"] == "sent"
 
 
 @pytest.mark.asyncio
@@ -216,6 +271,7 @@ async def test_notify_skips_whatsapp_by_default():
         settings.meet_auto_send_summary_slack = False
         settings.meet_auto_send_summary_email = False
         settings.slack_owner_user_id = ""
+        settings.meet_moawin_huddle_slack_channel = "region-punjab-moawin"
 
         results = await notify_meeting_completed(
             {"title": "Weekly"},

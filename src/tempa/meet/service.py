@@ -43,6 +43,12 @@ def _delegate_to_worker() -> bool:
     return os.environ.get("TEMPA_MEET_DELEGATE_TO_WORKER", "").lower() in ("1", "true", "yes")
 
 
+def _join_storage_state_path() -> str | None:
+    from tempa.meet.storage_state import materialize_storage_state_path
+
+    return materialize_storage_state_path()
+
+
 def build_worker_config(
     meet_url: str,
     meeting_id: str | None = None,
@@ -81,7 +87,7 @@ def build_worker_config(
         stt=SttConfig(provider="groq", extra={"chunk_seconds": 15.0, "language": "en"}),
         join=JoinConfig(
             headless=not bool(display),
-            storage_state_path=str(settings.google_storage_state_path),
+            storage_state_path=_join_storage_state_path(),
             bot_name="Tempa",
             disable_mic=True,
             disable_camera=virtual_cam is None,
@@ -1033,3 +1039,24 @@ async def repair_meeting_finalize(
         recording_started_at=meta.get("recording_started_at"),
         recording_ended_at=meta.get("recording_ended_at"),
     )
+
+
+async def finalize_interrupted_meet_jobs(*, send_notifications: bool = True) -> int:
+    """Finalize jobs marked interrupted (YouTube upload + optional Slack/email)."""
+    from tempa.meet.job_store import list_interrupted_job_ids, update_job_status
+
+    done = 0
+    for meeting_id in list_interrupted_job_ids():
+        try:
+            await repair_meeting_finalize(meeting_id, send_notifications=send_notifications)
+            done += 1
+            logger.info("Finalized interrupted meet job %s", meeting_id)
+        except Exception:
+            logger.exception("Failed to finalize interrupted meet job %s", meeting_id)
+            update_job_status(
+                meeting_id,
+                status="failed",
+                error="interrupted finalize failed",
+                leave_reason="worker_interrupted",
+            )
+    return done

@@ -32,9 +32,13 @@ class MeetReadiness:
 
 
 def meet_readiness() -> MeetReadiness:
+    from tempa.meet.storage_state import meet_auth_ready, materialize_storage_state_path
+
     settings = get_settings()
     consent = has_recording_consent()
-    meet_auth = settings.google_storage_state_path.exists()
+    # Rematerialize from .enc if shutdown/encryption removed the plaintext.
+    materialize_storage_state_path()
+    meet_auth = meet_auth_ready()
     google = google_connection_status()
     google_ok = bool(google.get("connected"))
     ready = consent and meet_auth and google_ok

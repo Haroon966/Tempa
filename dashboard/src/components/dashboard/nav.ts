@@ -13,7 +13,7 @@ import {
 export const NAV_ITEMS = [
   { value: "overview", path: "/overview", label: "Overview", icon: LayoutDashboardIcon, group: "work" },
   { value: "agent", path: "/agent", label: "Agent", icon: MessageSquareIcon, group: "work" },
-  { value: "meetings", path: "/meetings/live", label: "Meetings", icon: VideoIcon, group: "work" },
+  { value: "meetings", path: "/meetings/today", label: "Meetings", icon: VideoIcon, group: "work" },
   { value: "inbox", path: "/inbox/mail", label: "Inbox", icon: InboxIcon, group: "work" },
   { value: "activity", path: "/activity", label: "Activity", icon: ActivityIcon, group: "monitor" },
   { value: "sessions", path: "/sessions", label: "Sessions", icon: BotIcon, group: "monitor" },
@@ -49,7 +49,7 @@ export const PAGE_META: Record<NavSection, { title: string; description: string 
   },
   meetings: {
     title: "Meetings",
-    description: "Live Meet sessions and archived recordings",
+    description: "Today’s schedule and archived recordings",
   },
   inbox: {
     title: "Inbox",

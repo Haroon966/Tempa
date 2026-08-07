@@ -16,6 +16,11 @@ def is_punjab_daily_sync(title: str) -> bool:
     return _normalize_title_key(title) == "teampunjabdailysync"
 
 
+def is_moawin_daily_huddle(title: str) -> bool:
+    key = _normalize_title_key(title)
+    return "moawin" in key and "huddle" in key
+
+
 def _meeting_tldr(minutes: dict[str, Any], live_notes_excerpt: str = "") -> str:
     summary = str(minutes.get("tldr") or minutes.get("summary") or "").strip()
     if not summary and live_notes_excerpt.strip():
@@ -522,6 +527,31 @@ async def _send_slack_dm(user_id: str, msg: str) -> str:
     return "sent"
 
 
+async def _send_slack_channel(channel: str, msg: str) -> str:
+    """Post meeting summary to a Slack channel (name, #name, or C… id)."""
+    import asyncio
+
+    from tempa.channels.slack.formatting import prepare_slack_reply
+    from tempa.channels.slack.lookup import find_channel_by_hint
+    from tempa.channels.slack.outbound import _split_text, send_slack_message
+
+    hint = (channel or "").strip().lstrip("#")
+    if not hint:
+        return "skipped"
+    channel_id = hint
+    if not (hint.startswith("C") and len(hint) >= 9 and hint[1:].isalnum()):
+        channel_id, _name = await asyncio.to_thread(find_channel_by_hint, hint)
+        if not channel_id:
+            logger.warning("Meet summary Slack channel not found: %s", hint)
+            return "error"
+    formatted = prepare_slack_reply(msg)
+    for chunk in _split_text(formatted):
+        sent = await send_slack_message(channel_id, chunk, source_channel="slack_auto_reply")
+        if sent.get("status") not in ("sent", "pending"):
+            return str(sent.get("status") or "error")
+    return "sent"
+
+
 def find_slack_user_id_by_email(email: str) -> str | None:
     """Resolve Slack user id from email (needs users:read.email)."""
     cleaned = (email or "").strip()
@@ -567,8 +597,25 @@ async def _send_email_summary(
         return "error"
 
 
-def _summary_email_recipients(record: dict[str, Any]) -> list[str]:
-    """Organizer + calendar owner, deduped."""
+def _attendee_emails_from_record(record: dict[str, Any]) -> list[str]:
+    raw = record.get("attendee_emails") or []
+    if isinstance(raw, str):
+        import json
+
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = [part.strip() for part in raw.split(",") if part.strip()]
+    emails: list[str] = []
+    for item in raw if isinstance(raw, list) else []:
+        cleaned = str(item or "").strip().lower()
+        if cleaned and "@" in cleaned and cleaned not in emails:
+            emails.append(cleaned)
+    return emails
+
+
+def _summary_email_recipients(record: dict[str, Any], *, include_attendees: bool = False) -> list[str]:
+    """Organizer + calendar owner (+ attendees when requested), deduped."""
     emails: list[str] = []
     organizer = str(record.get("organizer_email") or "").strip().lower()
     if organizer and "@" in organizer:
@@ -581,6 +628,10 @@ def _summary_email_recipients(record: dict[str, Any]) -> list[str]:
             emails.append(owner)
     except Exception:
         logger.debug("Calendar owner email lookup failed", exc_info=True)
+    if include_attendees:
+        for email in _attendee_emails_from_record(record):
+            if email not in emails:
+                emails.append(email)
     return emails
 
 
@@ -590,14 +641,21 @@ async def notify_meeting_completed(
     *,
     notify_number: str | None = None,
     live_notes_excerpt: str = "",
+    slack_channel: str | None = None,
+    email_attendees: bool | None = None,
 ) -> dict[str, str]:
-    """Send post-meeting notes to organizer + owner via Slack DM and email only."""
+    """Send post-meeting notes via Slack DM/email; Moawin huddles also channel + attendees."""
     from tempa.settings import get_settings
 
     settings = get_settings()
     title = str(record.get("title") or "Meeting")
     meet_link = str(record.get("meet_link") or "")
     youtube_url = str(record.get("youtube_url") or "")
+    moawin = is_moawin_daily_huddle(title)
+    if slack_channel is None and moawin:
+        slack_channel = (settings.meet_moawin_huddle_slack_channel or "").strip() or None
+    if email_attendees is None:
+        email_attendees = moawin
     results: dict[str, str] = {}
 
     # WhatsApp kept behind flag for opt-in only (default off).
@@ -675,8 +733,15 @@ async def notify_meeting_completed(
         elif owner_id:
             results["slack"] = "skipped"
 
+        if slack_channel:
+            try:
+                results["slack_channel"] = await _send_slack_channel(slack_channel, slack_msg)
+            except Exception:
+                logger.exception("Meet Slack channel summary failed for %s", slack_channel)
+                results["slack_channel"] = "error"
+
     if settings.meet_auto_send_summary_email:
-        recipients = _summary_email_recipients(record)
+        recipients = _summary_email_recipients(record, include_attendees=bool(email_attendees))
         email_statuses: list[str] = []
         for to in recipients:
             status = await _send_email_summary(

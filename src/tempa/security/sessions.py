@@ -80,9 +80,10 @@ def read_secret_file(rel_path: str) -> str:
     settings = get_settings()
     plain = settings.sessions_dir / rel_path
     enc = plain.with_suffix(plain.suffix + ".enc")
-    if plain.exists():
+    # Empty plain must not shadow a real .enc (common after encrypt/decrypt races).
+    if plain.exists() and plain.stat().st_size > 0:
         return plain.read_text(encoding="utf-8").strip()
-    if enc.exists():
+    if enc.exists() and enc.stat().st_size > 0:
         fernet = _get_fernet()
         return fernet.decrypt(enc.read_bytes()).decode("utf-8").strip()
     return ""
@@ -92,7 +93,11 @@ def secret_file_exists(rel_path: str) -> bool:
     settings = get_settings()
     plain = settings.sessions_dir / rel_path
     enc = plain.with_suffix(plain.suffix + ".enc")
-    return plain.exists() or enc.exists()
+    if plain.exists() and plain.stat().st_size > 0:
+        return True
+    if enc.exists() and enc.stat().st_size > 0:
+        return True
+    return False
 
 
 def delete_secret_file(rel_path: str) -> None:

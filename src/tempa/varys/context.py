@@ -36,17 +36,27 @@ def detect_project_wing(cwd: Path | None = None) -> str:
     return "workspace"
 
 
-def _read_vault_snippets(wing: str, *, max_chars: int = 6000) -> str:
+def _read_vault_snippets(wing: str, *, max_chars: int = 12000) -> str:
     settings = get_settings()
     vault = settings.varys_vault_dir
     parts: list[str] = []
     total = 0
     candidates: list[Path] = []
-    for sub in ("memory", f"projects/{wing}", "logs"):
+    # knowledge/ first — people/channels address book for messaging
+    for sub in ("knowledge", "memory", f"projects/{wing}", "logs"):
         base = vault / sub
         if base.is_dir():
-            candidates.extend(sorted(base.rglob("*.md")))
-    for path in candidates[:20]:
+            # Prefer short routing/readme before large tables
+            files = sorted(base.rglob("*.md"), key=lambda p: (0 if p.name in {"README.md", "routing.md"} else 1, p.name))
+            candidates.extend(files)
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        ordered.append(path)
+    for path in ordered[:30]:
         try:
             text = path.read_text(encoding="utf-8").strip()
         except OSError:
@@ -56,6 +66,11 @@ def _read_vault_snippets(wing: str, *, max_chars: int = 6000) -> str:
         rel = path.relative_to(vault)
         chunk = f"### {rel}\n{text}\n"
         if total + len(chunk) > max_chars:
+            # Keep a stub so the agent knows the file exists to search/open
+            stub = f"### {rel}\n_(truncated — full file in vault; search memory or open path)_\n"
+            if total + len(stub) <= max_chars:
+                parts.append(stub)
+                total += len(stub)
             break
         parts.append(chunk)
         total += len(chunk)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -230,12 +231,82 @@ async def repair_archives_missing_minutes(*, min_segments: int = 3) -> int:
             minutes = await generate_minutes_from_transcript(text, source_name="transcript.txt")
             meeting_dir = _meeting_dir_for_id(meeting["id"])
             record = {**meeting, "minutes": minutes, "minutes_status": "complete"}
+            await _maybe_attach_youtube(record)
             write_meeting_artifacts(meeting_dir, record, meeting.get("followups") or [])
             await save_meeting_archive(record)
             repaired += 1
         except Exception:
             logger.exception("Failed to repair minutes for %s", meeting["id"])
     return repaired
+
+
+async def repair_archives_missing_youtube(*, limit: int = 3) -> int:
+    """Upload a few archived meetings that still have local video but no YouTube id."""
+    from tempa.meet.youtube_upload import maybe_upload_meeting_to_youtube
+    from tempa.settings import get_settings
+
+    if not get_settings().meet_youtube_upload_enabled:
+        return 0
+    uploaded = 0
+    for meeting in await list_meetings():
+        if uploaded >= limit:
+            break
+        if str(meeting.get("youtube_video_id") or "").strip():
+            continue
+        meeting_id = str(meeting.get("id") or "")
+        if not meeting_id:
+            continue
+        try:
+            yt = await asyncio.to_thread(
+                maybe_upload_meeting_to_youtube,
+                meeting_id,
+                meeting.get("title") or f"Meeting {meeting_id[:8]}",
+                meet_link=meeting.get("meet_link") or "",
+                audio_path_hint=meeting.get("audio_path") or "",
+            )
+        except Exception:
+            logger.exception("YouTube repair upload failed for %s", meeting_id)
+            continue
+        if not yt or not yt.get("youtube_video_id"):
+            continue
+        record = {
+            **meeting,
+            "youtube_video_id": yt["youtube_video_id"],
+            "youtube_url": yt.get("youtube_url") or f"https://youtu.be/{yt['youtube_video_id']}",
+        }
+        meeting_dir = _meeting_dir_for_id(meeting_id)
+        write_meeting_artifacts(meeting_dir, record, meeting.get("followups") or [])
+        await save_meeting_archive(record)
+        uploaded += 1
+    return uploaded
+
+
+async def _maybe_attach_youtube(record: dict[str, Any]) -> None:
+    """Best-effort YouTube upload when repairing an archive that still has local video."""
+    from tempa.meet.youtube_upload import maybe_upload_meeting_to_youtube
+    from tempa.settings import get_settings
+
+    if not get_settings().meet_youtube_upload_enabled:
+        return
+    if str(record.get("youtube_video_id") or "").strip():
+        return
+    meeting_id = str(record.get("id") or "")
+    if not meeting_id:
+        return
+    try:
+        yt = await asyncio.to_thread(
+            maybe_upload_meeting_to_youtube,
+            meeting_id,
+            record.get("title") or f"Meeting {meeting_id[:8]}",
+            meet_link=record.get("meet_link") or "",
+            audio_path_hint=record.get("audio_path") or "",
+        )
+    except Exception:
+        logger.exception("YouTube attach during minutes repair failed for %s", meeting_id)
+        return
+    if yt and yt.get("youtube_video_id"):
+        record["youtube_video_id"] = yt["youtube_video_id"]
+        record["youtube_url"] = yt.get("youtube_url") or f"https://youtu.be/{yt['youtube_video_id']}"
 
 
 async def save_meeting_archive(record: dict[str, Any]) -> str:

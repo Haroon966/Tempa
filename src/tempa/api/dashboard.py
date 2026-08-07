@@ -514,11 +514,12 @@ def _component_checks(
     rag_error: str | None = None,
 ) -> list[dict[str, Any]]:
     """End-to-end readiness per major Tempa subsystem."""
-    from tempa.security.sessions import secret_file_exists
+    from tempa.meet.storage_state import meet_auth_ready, materialize_storage_state_path
 
     settings = get_settings()
     groq_ok = groq.get("connected", False)
-    storage_ok = secret_file_exists("google/storage_state.json")
+    materialize_storage_state_path()
+    storage_ok = meet_auth_ready()
     wa_connected = whatsapp.get("connected", False)
     pause_reply = whatsapp.get("pause_auto_reply")
 

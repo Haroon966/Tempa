@@ -443,16 +443,49 @@ async def lifespan(app: FastAPI):
 
         log = logging.getLogger(__name__)
         try:
+            from tempa.meet.archive import repair_archives_missing_youtube
+            from tempa.meet.job_store import recover_stale_running_jobs
+            from tempa.meet.service import finalize_interrupted_meet_jobs
+
+            # In-process meets never hit worker_main — recover + finalize here so
+            # daemon restarts still upload YouTube and send Slack after a kill.
+            recovered = await asyncio.to_thread(recover_stale_running_jobs, on_startup=True)
+            if recovered:
+                log.info("Marked %s orphaned meet job(s) interrupted for finalize", recovered)
+            finalized = await finalize_interrupted_meet_jobs(send_notifications=True)
+            if finalized:
+                log.info("Finalized %s interrupted meet job(s)", finalized)
+
             synced = await sync_meeting_archives_from_disk()
             repaired = await repair_archives_missing_minutes(min_segments=3)
-            if synced or repaired:
-                log.info("Meeting archives: synced %s from disk, repaired %s minutes", synced, repaired)
+            yt_repaired = await repair_archives_missing_youtube(limit=3)
+            if synced or repaired or yt_repaired:
+                log.info(
+                    "Meeting archives: synced %s from disk, repaired %s minutes, uploaded %s YouTube",
+                    synced,
+                    repaired,
+                    yt_repaired,
+                )
         except Exception as exc:
             log.warning("Meeting archive sync failed: %s", exc)
 
     asyncio.create_task(_sync_meeting_archives_background(), name="meeting-archive-sync")
     await init_contacts_db()
     sweep_stale_tasks()
+
+    async def _refresh_knowledge_directory_background() -> None:
+        import logging
+
+        log = logging.getLogger(__name__)
+        try:
+            from tempa.knowledge.sync import refresh_and_sync_knowledge
+
+            result = await asyncio.to_thread(refresh_and_sync_knowledge)
+            log.info("Knowledge directory refreshed: %s", result)
+        except Exception as exc:
+            log.warning("Knowledge directory refresh failed: %s", exc)
+
+    asyncio.create_task(_refresh_knowledge_directory_background(), name="knowledge-directory-refresh")
 
     async def _warm_embedder_background() -> None:
         import logging
@@ -1798,6 +1831,12 @@ if (window.opener) {{
         sessions = list_active_sessions()
         live = await asyncio.to_thread(get_live_meeting_views)
         return {"active": live, "sessions": sessions}
+
+    @app.get("/api/meetings/today")
+    async def meetings_today():
+        from tempa.meet.today import get_todays_meetings
+
+        return await get_todays_meetings()
 
     @app.get("/api/meetings/{meeting_id}/live")
     async def meeting_live(meeting_id: str):

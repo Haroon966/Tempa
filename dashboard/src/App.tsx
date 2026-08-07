@@ -31,8 +31,8 @@ const ActivityTab = lazy(() =>
 const PendingTab = lazy(() =>
   import("@/components/tabs/pending-tab").then((m) => ({ default: m.PendingTab })),
 )
-const LiveMeetingTab = lazy(() =>
-  import("@/components/tabs/live-meeting-tab").then((m) => ({ default: m.LiveMeetingTab })),
+const TodayMeetingTab = lazy(() =>
+  import("@/components/tabs/today-meeting-tab").then((m) => ({ default: m.TodayMeetingTab })),
 )
 const MailTab = lazy(() =>
   import("@/components/tabs/mail-tab").then((m) => ({ default: m.MailTab })),
@@ -151,10 +151,10 @@ export default function App() {
 
         <Route path="meetings" element={<MeetingsTab />}>
           <Route
-            path="live"
+            path="today"
             element={
               <LazyRoute>
-                <LiveMeetingTab />
+                <TodayMeetingTab />
               </LazyRoute>
             }
           />
@@ -166,6 +166,7 @@ export default function App() {
               </LazyRoute>
             }
           />
+          <Route path="live" element={<Navigate to="/meetings/today" replace />} />
         </Route>
 
         <Route path="inbox" element={<InboxTab />}>
@@ -216,7 +217,7 @@ export default function App() {
         />
 
         {/* Legacy redirects */}
-        <Route path="live-meeting" element={<Navigate to="/meetings/live" replace />} />
+        <Route path="live-meeting" element={<Navigate to="/meetings/today" replace />} />
         <Route path="data" element={<Navigate to="/meetings/archive" replace />} />
         <Route path="mail" element={<Navigate to="/inbox/mail" replace />} />
         <Route path="pending" element={<Navigate to="/inbox/approvals" replace />} />

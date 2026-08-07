@@ -268,6 +268,25 @@ export async function fetchActiveMeetings() {
   return request<{ active: ActiveMeetingLive[]; sessions: unknown[] }>("/api/meetings/active")
 }
 
+export interface TodayMeetingEvent {
+  id: string
+  summary: string
+  start: string
+  end: string
+  meet_url: string | null
+  has_meet: boolean
+  all_day: boolean
+  meeting_id?: string | null
+  status?: string | null
+  archive?: import("@/types/dashboard").MeetingRecord | null
+}
+
+export async function fetchTodaysMeetings() {
+  return request<{ date: string; timezone: string; events: TodayMeetingEvent[] }>(
+    "/api/meetings/today",
+  )
+}
+
 export async function fetchMeetingDetail(meetingId: string) {
   return request<{
     meeting: import("@/types/dashboard").MeetingRecord

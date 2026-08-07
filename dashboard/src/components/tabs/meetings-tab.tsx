@@ -1,16 +1,16 @@
 import { NavLink, Outlet, useLocation, Navigate } from "react-router-dom"
-import { ArchiveIcon, RadioIcon } from "lucide-react"
+import { ArchiveIcon, CalendarIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const SUB_TABS = [
-  { path: "/meetings/live", label: "Live", icon: RadioIcon },
+  { path: "/meetings/today", label: "Today", icon: CalendarIcon },
   { path: "/meetings/archive", label: "Archive", icon: ArchiveIcon },
 ] as const
 
 export function MeetingsTab() {
   const { pathname } = useLocation()
   const isSubRoute = SUB_TABS.some((t) => t.path === pathname)
-  if (!isSubRoute) return <Navigate to="/meetings/live" replace />
+  if (!isSubRoute) return <Navigate to="/meetings/today" replace />
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-5">

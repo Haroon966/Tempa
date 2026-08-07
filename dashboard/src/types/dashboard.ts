@@ -76,6 +76,9 @@ export interface ConnectionInfo {
   jira_users?: number
   identity_links?: number
   user_sync?: { last_sync_at?: string; sync_status?: string }
+  server_uuid?: string
+  project_uuid?: string
+  github_app_uuid?: string
 }
 
 export interface AgentInfo {

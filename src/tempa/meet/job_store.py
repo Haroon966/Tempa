@@ -41,7 +41,13 @@ def recover_stale_running_jobs(
     now = datetime.now(timezone.utc)
     recovered = 0
     changed = False
-    stale_statuses = ("running", "finalizing")
+    # waiting_to_record is live (browser may already be up); on crash it must finalize
+    # like running, or YT/Slack never run (in-process daemon restart path).
+    stale_statuses = (
+        ("running", "finalizing", "waiting_to_record")
+        if on_startup
+        else ("running", "finalizing")
+    )
     owned = active_meeting_ids or frozenset()
     with _lock:
         statuses = _read_statuses_unlocked()
